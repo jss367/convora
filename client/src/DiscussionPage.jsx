@@ -1,6 +1,5 @@
 import React, { useState, useEffect } from 'react';
 import { useParams } from 'react-router-dom';
-import { Input, Button, Card, CardHeader, CardContent, CardFooter } from '@/components/ui/card';
 
 const VoteOptions = {
     STRONGLY_AGREE: 'Strongly Agree',
@@ -49,32 +48,30 @@ const DiscussionPage = () => {
         <div className="container mx-auto p-4">
             <h1 className="text-2xl font-bold mb-4">Discussion: {discussionId}</h1>
             <div className="mb-4">
-                <Input
+                <input
                     type="text"
                     value={newQuestion}
                     onChange={(e) => setNewQuestion(e.target.value)}
                     placeholder="Enter a new question or statement"
-                    className="mr-2"
+                    className="mr-2 p-2 border rounded"
                 />
-                <Button onClick={handleAddQuestion}>Add Question</Button>
+                <button onClick={handleAddQuestion} className="px-4 py-2 bg-blue-500 text-white rounded">Add Question</button>
             </div>
             {questions.map((question) => (
-                <Card key={question.id} className="mb-4">
-                    <CardHeader>{question.text}</CardHeader>
-                    <CardContent>
-                        {Object.entries(question.votes).map(([option, count]) => (
-                            <div key={option} className="mb-2">
-                                <span>{option}: {count}</span>
-                                <Button
-                                    onClick={() => handleVote(question.id, option)}
-                                    className="ml-2"
-                                >
-                                    Vote
-                                </Button>
-                            </div>
-                        ))}
-                    </CardContent>
-                </Card>
+                <div key={question.id} className="mb-4 p-4 border rounded">
+                    <h2 className="text-xl mb-2">{question.text}</h2>
+                    {Object.entries(question.votes).map(([option, count]) => (
+                        <div key={option} className="mb-2">
+                            <span>{option}: {count}</span>
+                            <button
+                                onClick={() => handleVote(question.id, option)}
+                                className="ml-2 px-2 py-1 bg-gray-200 rounded"
+                            >
+                                Vote
+                            </button>
+                        </div>
+                    ))}
+                </div>
             ))}
         </div>
     );
