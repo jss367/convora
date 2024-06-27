@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { useParams } from 'react-router-dom';
 
 const VoteOptions = {
@@ -21,13 +21,7 @@ const DiscussionPage = () => {
                 {
                     id: Date.now(),
                     text: newQuestion,
-                    votes: {
-                        [VoteOptions.STRONGLY_AGREE]: 0,
-                        [VoteOptions.AGREE]: 0,
-                        [VoteOptions.UNSURE]: 0,
-                        [VoteOptions.DISAGREE]: 0,
-                        [VoteOptions.STRONGLY_DISAGREE]: 0,
-                    },
+                    votes: Object.fromEntries(Object.values(VoteOptions).map(option => [option, 0])),
                 },
             ]);
             setNewQuestion('');
@@ -35,42 +29,45 @@ const DiscussionPage = () => {
     };
 
     const handleVote = (questionId, option) => {
-        setQuestions(
-            questions.map((q) =>
-                q.id === questionId
-                    ? { ...q, votes: { ...q.votes, [option]: q.votes[option] + 1 } }
-                    : q
-            )
-        );
+        setQuestions(questions.map(q =>
+            q.id === questionId ? { ...q, votes: { ...q.votes, [option]: q.votes[option] + 1 } } : q
+        ));
     };
 
     return (
-        <div className="container mx-auto p-4">
-            <h1 className="text-2xl font-bold mb-4">Discussion: {discussionId}</h1>
-            <div className="mb-4">
+        <div className="max-w-4xl mx-auto mt-10 px-4">
+            <h1 className="text-4xl font-bold mb-8 text-center text-gray-800">Discussion: {discussionId}</h1>
+            <div className="bg-white shadow-lg rounded-lg p-6 mb-8">
                 <input
                     type="text"
                     value={newQuestion}
                     onChange={(e) => setNewQuestion(e.target.value)}
                     placeholder="Enter a new question or statement"
-                    className="mr-2 p-2 border rounded"
+                    className="w-full p-3 border border-gray-300 rounded-md mb-4 focus:outline-none focus:ring-2 focus:ring-primary"
                 />
-                <button onClick={handleAddQuestion} className="px-4 py-2 bg-blue-500 text-white rounded">Add Question</button>
+                <button
+                    onClick={handleAddQuestion}
+                    className="w-full bg-primary text-white py-3 rounded-md hover:bg-opacity-90 transition duration-300"
+                >
+                    Add Question
+                </button>
             </div>
             {questions.map((question) => (
-                <div key={question.id} className="mb-4 p-4 border rounded">
-                    <h2 className="text-xl mb-2">{question.text}</h2>
-                    {Object.entries(question.votes).map(([option, count]) => (
-                        <div key={option} className="mb-2">
-                            <span>{option}: {count}</span>
-                            <button
-                                onClick={() => handleVote(question.id, option)}
-                                className="ml-2 px-2 py-1 bg-gray-200 rounded"
-                            >
-                                Vote
-                            </button>
-                        </div>
-                    ))}
+                <div key={question.id} className="bg-white shadow-lg rounded-lg p-6 mb-6">
+                    <h2 className="text-xl font-semibold mb-4">{question.text}</h2>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        {Object.entries(question.votes).map(([option, count]) => (
+                            <div key={option} className="flex items-center justify-between bg-gray-100 p-3 rounded-md">
+                                <span className="font-medium">{option}: {count}</span>
+                                <button
+                                    onClick={() => handleVote(question.id, option)}
+                                    className="bg-secondary text-white px-4 py-2 rounded-md hover:bg-opacity-90 transition duration-300"
+                                >
+                                    Vote
+                                </button>
+                            </div>
+                        ))}
+                    </div>
                 </div>
             ))}
         </div>
