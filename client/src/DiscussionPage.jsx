@@ -1,5 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useParams } from 'react-router-dom';
+import { db } from './firebase';
+import { collection, addDoc, onSnapshot, doc, updateDoc, increment } from 'firebase/firestore';
 
 const VoteOptions = {
     STRONGLY_AGREE: 'Strongly Agree',
@@ -14,24 +16,28 @@ const DiscussionPage = () => {
     const [questions, setQuestions] = useState([]);
     const [newQuestion, setNewQuestion] = useState('');
 
-    const handleAddQuestion = () => {
+    useEffect(() => {
+        const unsubscribe = onSnapshot(collection(db, 'discussions', discussionId, 'questions'), (snapshot) => {
+            setQuestions(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+        });
+        return () => unsubscribe();
+    }, [discussionId]);
+
+    const handleAddQuestion = async () => {
         if (newQuestion.trim() !== '') {
-            setQuestions([
-                ...questions,
-                {
-                    id: Date.now(),
-                    text: newQuestion,
-                    votes: Object.fromEntries(Object.values(VoteOptions).map(option => [option, 0])),
-                },
-            ]);
+            await addDoc(collection(db, 'discussions', discussionId, 'questions'), {
+                text: newQuestion,
+                votes: Object.fromEntries(Object.values(VoteOptions).map(option => [option, 0])),
+            });
             setNewQuestion('');
         }
     };
 
-    const handleVote = (questionId, option) => {
-        setQuestions(questions.map(q =>
-            q.id === questionId ? { ...q, votes: { ...q.votes, [option]: q.votes[option] + 1 } } : q
-        ));
+    const handleVote = async (questionId, option) => {
+        const questionRef = doc(db, 'discussions', discussionId, 'questions', questionId);
+        await updateDoc(questionRef, {
+            [`votes.${option}`]: increment(1)
+        });
     };
 
     return (
