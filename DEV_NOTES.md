@@ -15,6 +15,3 @@ Access it at http://localhost:5173/
 git push heroku my_branch:main
 
 This allows you to be working on a branch, `my_branch`, and push to main in heroku
-
-
-
