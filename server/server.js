@@ -1,15 +1,64 @@
-// Add a new question to a discussion
+const express = require('express');
+const bodyParser = require('body-parser');
+const cors = require('cors');
+const { Pool } = require('pg');
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+// Database setup
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: {
+    rejectUnauthorized: false
+  }
+});
+
+app.use(cors());
+app.use(bodyParser.json());
+
+// Your routes go here
+app.post('/api/discussions', async (req, res) => {
+  const { topic } = req.body;
+  try {
+    const result = await pool.query(
+      'INSERT INTO discussions (topic) VALUES ($1) RETURNING id',
+      [topic]
+    );
+    res.json({ success: true, id: result.rows[0].id });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.get('/api/discussions/:id', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const result = await pool.query(
+      'SELECT * FROM discussions WHERE id = $1',
+      [id]
+    );
+    if (result.rows.length > 0) {
+      res.json(result.rows[0]);
+    } else {
+      res.status(404).json({ error: 'Discussion not found' });
+    }
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 app.post('/api/discussions/:id/questions', async (req, res) => {
   const { id } = req.params;
   const { question } = req.body;
   try {
-    // First, check if the discussion exists
     const discussionCheck = await pool.query('SELECT * FROM discussions WHERE id = $1', [id]);
     if (discussionCheck.rows.length === 0) {
       return res.status(404).json({ error: 'Discussion not found' });
     }
 
-    // If discussion exists, add the new question
     const result = await pool.query(
       'INSERT INTO questions (discussion_id, text) VALUES ($1, $2) RETURNING *',
       [id, question]
@@ -33,7 +82,6 @@ app.post('/api/discussions/:id/questions', async (req, res) => {
   }
 });
 
-// Vote on a question
 app.post('/api/discussions/:discussionId/questions/:questionId/vote', async (req, res) => {
   const { discussionId, questionId } = req.params;
   const { option } = req.body;
@@ -51,7 +99,6 @@ app.post('/api/discussions/:discussionId/questions/:questionId/vote', async (req
   }
 
   try {
-    // Update the vote count and return the updated question
     const result = await pool.query(
       `UPDATE questions 
        SET ${voteOptions[option]} = ${voteOptions[option]} + 1 
@@ -79,4 +126,9 @@ app.post('/api/discussions/:discussionId/questions/:questionId/vote', async (req
     console.error(err);
     res.status(500).json({ error: 'Server error' });
   }
+});
+
+// Start the server
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
 });
