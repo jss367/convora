@@ -21,6 +21,7 @@ const DiscussionPage = () => {
     const [questionType, setQuestionType] = useState(QuestionTypes.AGREEMENT);
     const [minValue, setMinValue] = useState(0);
     const [maxValue, setMaxValue] = useState(100);
+    const [sliderValues, setSliderValues] = useState({});
 
     const handleAddQuestion = () => {
         if (newQuestion.trim() !== '') {
@@ -55,6 +56,12 @@ const DiscussionPage = () => {
             }
             return q;
         }));
+        // Reset the slider value after submission
+        setSliderValues(prev => ({ ...prev, [questionId]: undefined }));
+    };
+
+    const handleSliderChange = (questionId, value) => {
+        setSliderValues(prev => ({ ...prev, [questionId]: value }));
     };
 
     const renderVotingMechanism = (question) => {
@@ -75,19 +82,28 @@ const DiscussionPage = () => {
                 </div>
             );
         } else {
+            const sliderValue = sliderValues[question.id] !== undefined ? sliderValues[question.id] : Math.floor((question.maxValue + question.minValue) / 2);
             return (
                 <div className="mt-4">
                     <input
                         type="range"
                         min={question.minValue}
                         max={question.maxValue}
+                        value={sliderValue}
                         className="w-full"
-                        onChange={(e) => handleVote(question.id, parseInt(e.target.value))}
+                        onChange={(e) => handleSliderChange(question.id, parseInt(e.target.value))}
                     />
                     <div className="flex justify-between mt-2">
                         <span>{question.minValue}</span>
+                        <span>{sliderValue}</span>
                         <span>{question.maxValue}</span>
                     </div>
+                    <button
+                        onClick={() => handleVote(question.id, sliderValue)}
+                        className="mt-4 bg-secondary text-white px-4 py-2 rounded-md hover:bg-opacity-90 transition duration-300"
+                    >
+                        Submit
+                    </button>
                     {question.votes.length > 0 && (
                         <div className="mt-4">
                             <h3 className="font-semibold">Responses:</h3>
