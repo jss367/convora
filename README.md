@@ -15,11 +15,6 @@ From there, users can submit questions and people can vote on how much they agre
 
 
 
-
-
-API key: AIzaSyCLqKIHZK1b9LqoYHWrkT2_vQCEXY5-Cb8
-
-
 ## Tech notes:
 
 This is a React app with a Node.js backend.
