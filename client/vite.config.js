@@ -7,9 +7,10 @@ export default defineConfig({
   root: path.resolve(__dirname, ''),
   build: {
     outDir: path.resolve(__dirname, '../dist'),
+    emptyOutDir: true,
   },
   server: {
-    port: 5173,
+    port: process.env.PORT || 5173,
   },
   resolve: {
     alias: {
