@@ -88,10 +88,16 @@ app.get('/api/discussions/:id', async (req, res) => {
 });
 
 // Database functions
-async function getQuestions(discussionId) {
+async function getQuestions(discussionIdentifier) {
   const result = await pool.query(
-    'SELECT questions.*, json_agg(votes.*) as votes FROM questions LEFT JOIN votes ON questions.id = votes.question_id WHERE discussion_id = $1 GROUP BY questions.id ORDER BY questions.id',
-    [discussionId]
+    `SELECT questions.*, json_agg(votes.*) as votes 
+     FROM questions 
+     LEFT JOIN votes ON questions.id = votes.question_id 
+     JOIN discussions ON questions.discussion_id = discussions.id
+     WHERE discussions.id = $1 OR discussions.topic = $1
+     GROUP BY questions.id 
+     ORDER BY questions.id`,
+    [discussionIdentifier]
   );
   return result.rows;
 }

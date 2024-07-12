@@ -9,10 +9,11 @@
 
 Access it at http://localhost:5173/
 
+^^^^ - I think that's old
 
+start server in dev mode
 
-
-
+`NODE_ENV=development node server.js`
 
 
 
@@ -54,6 +55,8 @@ CREATE TABLE votes (
 Local database is called convora
 
 Connect to it: `\c convora`
+
+
 
 
 
