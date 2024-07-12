@@ -19,7 +19,7 @@ app.use(cors());
 app.use(bodyParser.json());
 
 // Serve static files from the React app
-app.use(express.static(path.join(__dirname, '../client/dist')));
+app.use(express.static(path.join(__dirname, '../dist')));
 
 // Your routes go here
 app.post('/api/discussions', async (req, res) => {
@@ -55,7 +55,7 @@ app.get('/api/discussions/:id', async (req, res) => {
 });
 
 app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, '../client/dist/index.html'));
+  res.sendFile(path.join(__dirname, '../dist/index.html'));
 });
 
 app.post('/api/discussions/:id/questions', async (req, res) => {

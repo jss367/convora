@@ -8,7 +8,7 @@
         "dev:server": "nodemon server/server.js",
         "dev:client": "cd client && vite",
         "build": "cd client && vite build",
-        "heroku-postbuild": "cd client && npm install && npm run build"
+        "heroku-postbuild": "npm install && npm run build"
     },
     "keywords": [
         "discussion",
