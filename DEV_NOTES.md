@@ -8,3 +8,13 @@
 `npm run dev:client`
 
 Access it at http://localhost:5173/
+
+
+# Pushing from your git branch to heroku main
+
+git push heroku my_branch:main
+
+This allows you to be working on a branch, `my_branch`, and push to main in heroku
+
+
+
