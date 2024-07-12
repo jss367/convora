@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
+import io from 'socket.io-client';
 
 const QuestionTypes = {
     AGREEMENT: 'Agreement',
@@ -14,6 +15,8 @@ const VoteOptions = {
     STRONGLY_DISAGREE: 'Strongly Disagree',
 };
 
+const socket = io(process.env.REACT_APP_SOCKET_URL || 'http://localhost:3001'); // allow local or prod
+
 const DiscussionPage = () => {
     const { discussionId } = useParams();
     const [questions, setQuestions] = useState([]);
@@ -23,21 +26,27 @@ const DiscussionPage = () => {
     const [maxValue, setMaxValue] = useState(100);
     const [sliderValues, setSliderValues] = useState({});
 
+    useEffect(() => {
+        socket.emit('joinDiscussion', discussionId);
+
+        socket.on('questions', (updatedQuestions) => {
+            setQuestions(updatedQuestions);
+        });
+
+        return () => {
+            socket.off('questions');
+        };
+    }, [discussionId]);
+
     const handleAddQuestion = () => {
         if (newQuestion.trim() !== '') {
-            setQuestions([
-                ...questions,
-                {
-                    id: Date.now(),
-                    text: newQuestion,
-                    type: questionType,
-                    votes: questionType === QuestionTypes.AGREEMENT
-                        ? Object.fromEntries(Object.values(VoteOptions).map(option => [option, 0]))
-                        : [],
-                    minValue: questionType === QuestionTypes.NUMERICAL ? minValue : null,
-                    maxValue: questionType === QuestionTypes.NUMERICAL ? maxValue : null,
-                },
-            ]);
+            const question = {
+                text: newQuestion,
+                type: questionType,
+                minValue: questionType === QuestionTypes.NUMERICAL ? minValue : null,
+                maxValue: questionType === QuestionTypes.NUMERICAL ? maxValue : null,
+            };
+            socket.emit('addQuestion', discussionId, question);
             setNewQuestion('');
             setQuestionType(QuestionTypes.AGREEMENT);
             setMinValue(0);
@@ -46,17 +55,7 @@ const DiscussionPage = () => {
     };
 
     const handleVote = (questionId, value) => {
-        setQuestions(questions.map(q => {
-            if (q.id === questionId) {
-                if (q.type === QuestionTypes.AGREEMENT) {
-                    return { ...q, votes: { ...q.votes, [value]: q.votes[value] + 1 } };
-                } else {
-                    return { ...q, votes: [...q.votes, value] };
-                }
-            }
-            return q;
-        }));
-        // Reset the slider value after submission
+        socket.emit('vote', discussionId, questionId, value);
         setSliderValues(prev => ({ ...prev, [questionId]: undefined }));
     };
 
@@ -68,9 +67,9 @@ const DiscussionPage = () => {
         if (question.type === QuestionTypes.AGREEMENT) {
             return (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    {Object.entries(question.votes).map(([option, count]) => (
+                    {Object.values(VoteOptions).map((option) => (
                         <div key={option} className="flex items-center justify-between bg-gray-100 p-3 rounded-md">
-                            <span className="font-medium">{option}: {count}</span>
+                            <span className="font-medium">{option}: {question.votes ? question.votes.filter(v => v.value === option).length : 0}</span>
                             <button
                                 onClick={() => handleVote(question.id, option)}
                                 className="bg-secondary text-white px-4 py-2 rounded-md hover:bg-opacity-90 transition duration-300"
@@ -82,21 +81,21 @@ const DiscussionPage = () => {
                 </div>
             );
         } else {
-            const sliderValue = sliderValues[question.id] !== undefined ? sliderValues[question.id] : Math.floor((question.maxValue + question.minValue) / 2);
+            const sliderValue = sliderValues[question.id] !== undefined ? sliderValues[question.id] : Math.floor((question.max_value + question.min_value) / 2);
             return (
                 <div className="mt-4">
                     <input
                         type="range"
-                        min={question.minValue}
-                        max={question.maxValue}
+                        min={question.min_value}
+                        max={question.max_value}
                         value={sliderValue}
                         className="w-full"
                         onChange={(e) => handleSliderChange(question.id, parseInt(e.target.value))}
                     />
                     <div className="flex justify-between mt-2">
-                        <span>{question.minValue}</span>
+                        <span>{question.min_value}</span>
                         <span>{sliderValue}</span>
-                        <span>{question.maxValue}</span>
+                        <span>{question.max_value}</span>
                     </div>
                     <button
                         onClick={() => handleVote(question.id, sliderValue)}
@@ -104,12 +103,12 @@ const DiscussionPage = () => {
                     >
                         Submit
                     </button>
-                    {question.votes.length > 0 && (
+                    {question.votes && question.votes.length > 0 && (
                         <div className="mt-4">
                             <h3 className="font-semibold">Responses:</h3>
                             <ul className="list-disc pl-5">
                                 {question.votes.map((vote, index) => (
-                                    <li key={index}>{vote}</li>
+                                    <li key={index}>{vote.value}</li>
                                 ))}
                             </ul>
                         </div>
