@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import io from 'socket.io-client';
 
@@ -26,17 +26,24 @@ const DiscussionPage = () => {
     const [maxValue, setMaxValue] = useState(100);
     const [sliderValues, setSliderValues] = useState({});
 
+    const handleQuestionsUpdate = useCallback((updatedQuestions) => {
+        setQuestions(prevQuestions => {
+            // Merge the updated questions with the existing ones
+            const questionMap = new Map(prevQuestions.map(q => [q.id, q]));
+            updatedQuestions.forEach(q => questionMap.set(q.id, q));
+            return Array.from(questionMap.values());
+        });
+    }, []);
+
     useEffect(() => {
         socket.emit('joinDiscussion', topic);
 
-        socket.on('questions', (updatedQuestions) => {
-            setQuestions(updatedQuestions);
-        });
+        socket.on('questions', handleQuestionsUpdate);
 
         return () => {
-            socket.off('questions');
+            socket.off('questions', handleQuestionsUpdate);
         };
-    }, [topic]);
+    }, [topic, handleQuestionsUpdate]);
 
     const handleAddQuestion = () => {
         if (newQuestion.trim() !== '') {

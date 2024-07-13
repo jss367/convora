@@ -100,17 +100,31 @@ app.get('/api/discussions/:id', async (req, res) => {
 // Database functions
 async function getQuestions(topic) {
   const query = `
-    SELECT questions.*, json_agg(votes.*) as votes 
-    FROM questions 
-    LEFT JOIN votes ON questions.id = votes.question_id 
-    JOIN discussions ON questions.discussion_id = discussions.id
-    WHERE discussions.topic = $1
-    GROUP BY questions.id 
-    ORDER BY questions.id
+    SELECT 
+      q.id, 
+      q.text, 
+      q.type, 
+      q.min_value, 
+      q.max_value, 
+      json_agg(
+        json_build_object(
+          'id', v.id,
+          'value', v.value
+        )
+      ) FILTER (WHERE v.id IS NOT NULL) as votes 
+    FROM questions q
+    JOIN discussions d ON q.discussion_id = d.id
+    LEFT JOIN votes v ON q.id = v.question_id 
+    WHERE d.topic = $1
+    GROUP BY q.id 
+    ORDER BY q.id
   `;
 
   const result = await pool.query(query, [topic]);
-  return result.rows;
+  return result.rows.map(row => ({
+    ...row,
+    votes: row.votes || []
+  }));
 }
 
 async function addQuestion(topic, question) {
