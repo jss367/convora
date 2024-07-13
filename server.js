@@ -53,10 +53,10 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('vote', async (discussionId, questionId, vote) => {
+  socket.on('vote', async (topic, questionId, vote) => {
     await addVote(questionId, vote);
-    const questions = await getQuestions(discussionId);
-    io.to(discussionId).emit('questions', questions);
+    const questions = await getQuestions(topic);
+    io.to(topic).emit('questions', questions);
   });
 
   socket.on('disconnect', () => {
@@ -98,17 +98,18 @@ app.get('/api/discussions/:id', async (req, res) => {
 });
 
 // Database functions
-async function getQuestions(discussionIdentifier) {
-  const result = await pool.query(
-    `SELECT questions.*, json_agg(votes.*) as votes 
-     FROM questions 
-     LEFT JOIN votes ON questions.id = votes.question_id 
-     JOIN discussions ON questions.discussion_id = discussions.id
-     WHERE discussions.id = $1 OR discussions.topic = $1
-     GROUP BY questions.id 
-     ORDER BY questions.id`,
-    [discussionIdentifier]
-  );
+async function getQuestions(topic) {
+  const query = `
+    SELECT questions.*, json_agg(votes.*) as votes 
+    FROM questions 
+    LEFT JOIN votes ON questions.id = votes.question_id 
+    JOIN discussions ON questions.discussion_id = discussions.id
+    WHERE discussions.topic = $1
+    GROUP BY questions.id 
+    ORDER BY questions.id
+  `;
+
+  const result = await pool.query(query, [topic]);
   return result.rows;
 }
 
