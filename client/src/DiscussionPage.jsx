@@ -17,9 +17,11 @@ const VoteOptions = {
 
 const SOCKET_URL = process.env.REACT_APP_SOCKET_URL || 'https://convora-e40a9ae358dc.herokuapp.com/'; // allow local or prod
 const socket = io(SOCKET_URL);
+console.log('Socket created with URL:', SOCKET_URL);
 
 const DiscussionPage = () => {
     const { topic } = useParams();
+    console.log('Topic from URL params:', topic);
     const [questions, setQuestions] = useState([]);
     const [newQuestion, setNewQuestion] = useState('');
     const [questionType, setQuestionType] = useState(QuestionTypes.AGREEMENT);
@@ -37,16 +39,27 @@ const DiscussionPage = () => {
     }, []);
 
     useEffect(() => {
+        console.log('useEffect running');
+        console.log('Current topic:', topic);
+
         socket.emit('joinDiscussion', topic);
+        console.log('Emitted joinDiscussion event with topic:', topic);
 
         socket.on('questions', handleQuestionsUpdate);
+        console.log('Set up questions event listener');
 
         return () => {
+            console.log('Cleaning up effect');
             socket.off('questions', handleQuestionsUpdate);
         };
     }, [topic, handleQuestionsUpdate]);
 
     const handleAddQuestion = () => {
+        console.log('handleAddQuestion called');
+        console.log('Current topic:', topic);
+        console.log('New question:', newQuestion);
+        console.log('Question type:', questionType);
+
         if (newQuestion.trim() !== '') {
             const question = {
                 text: newQuestion,
@@ -54,11 +67,15 @@ const DiscussionPage = () => {
                 minValue: questionType === QuestionTypes.NUMERICAL ? minValue : null,
                 maxValue: questionType === QuestionTypes.NUMERICAL ? maxValue : null,
             };
+            console.log('Emitting addQuestion event with topic:', topic);
+            console.log('Question object:', question);
             socket.emit('addQuestion', topic, question);
             setNewQuestion('');
             setQuestionType(QuestionTypes.AGREEMENT);
             setMinValue(0);
             setMaxValue(100);
+        } else {
+            console.log('New question is empty, not adding');
         }
     };
 

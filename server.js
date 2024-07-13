@@ -47,11 +47,13 @@ io.on('connection', (socket) => {
   });
 
   socket.on('addQuestion', async (topic, question) => {
+    console.log('Received addQuestion event');
+    console.log('topic:', topic)
+    console.log('question:', question)
+
     try {
-      console.log('In socket.on(addQuestion)')
-      console.log('topic:', topic)
-      console.log('question:', question)
       await addQuestion(topic, question);
+      console.log('Question added successfully');
       const updatedQuestions = await getQuestions(topic);
       console.log('Retrieved updated questions:', updatedQuestions);
       io.to(topic).emit('questions', updatedQuestions);
