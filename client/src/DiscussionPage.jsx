@@ -2,6 +2,8 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import io from 'socket.io-client';
 
+const VERSION = '0.0.1';
+
 const QuestionTypes = {
     AGREEMENT: 'Agreement',
     NUMERICAL: 'Numerical',
@@ -146,6 +148,7 @@ const DiscussionPage = () => {
     return (
         <div className="max-w-4xl mx-auto mt-10 px-4">
             <h1 className="text-4xl font-bold mb-8 text-center text-gray-800">Discussion: {topic}</h1>
+            <div className="text-right mb-4 text-gray-500">Version: {VERSION}</div>
             <div className="bg-white shadow-lg rounded-lg p-6 mb-8">
                 <input
                     type="text"
