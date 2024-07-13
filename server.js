@@ -48,8 +48,12 @@ io.on('connection', (socket) => {
 
   socket.on('addQuestion', async (topic, question) => {
     try {
+      console.log('In socket.on(addQuestion)')
+      console.log('topic:', topic)
+      console.log('question:', question)
       await addQuestion(topic, question);
       const updatedQuestions = await getQuestions(topic);
+      console.log('Retrieved updated questions:', updatedQuestions);
       io.to(topic).emit('questions', updatedQuestions);
     } catch (error) {
       console.error('Error adding question:', error);
@@ -132,8 +136,9 @@ async function getQuestions(topic) {
 }
 
 async function addQuestion(topic, question) {
-  console.log(`Entering addQuestion with topic and question: ${topic} and ${question}`)
-  console.log(topic, question);
+  console.log('Entering addQuestion');
+  console.log('Topic:', topic);
+  console.log('Question:', question);
   // First, get the discussion ID for the given topic
   const discussionResult = await pool.query(
     'SELECT id FROM discussions WHERE topic = $1',
