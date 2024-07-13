@@ -23,7 +23,6 @@ console.log('Socket created with URL:', SOCKET_URL);
 
 const DiscussionPage = () => {
     const { topic } = useParams();
-    console.log('Topic from URL params:', topic);
     const [questions, setQuestions] = useState([]);
     const [newQuestion, setNewQuestion] = useState('');
     const [questionType, setQuestionType] = useState(QuestionTypes.AGREEMENT);
