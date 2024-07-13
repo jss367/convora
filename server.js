@@ -11,8 +11,9 @@ const app = express();
 const server = http.createServer(app);
 const io = socketIo(server, {
   cors: {
-    origin: process.env.CLIENT_URL || "http://localhost:3000",
-    methods: ["GET", "POST"]
+    origin: process.env.CLIENT_URL || "https://convora-e40a9ae358dc.herokuapp.com",
+    methods: ["GET", "POST"],
+    credentials: true
   }
 });
 
@@ -23,7 +24,10 @@ const pool = new Pool({
   ssl: isProduction ? { rejectUnauthorized: false } : false
 });
 
-app.use(cors());
+app.use(cors({
+  origin: process.env.CLIENT_URL || "https://convora-e40a9ae358dc.herokuapp.com",
+  credentials: true
+}));
 app.use(bodyParser.json());
 app.use(express.static(path.join(__dirname, 'dist')));
 

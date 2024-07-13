@@ -15,7 +15,8 @@ const VoteOptions = {
     STRONGLY_DISAGREE: 'Strongly Disagree',
 };
 
-const socket = io(process.env.REACT_APP_SOCKET_URL || 'http://localhost:3001'); // allow local or prod
+const SOCKET_URL = process.env.REACT_APP_SOCKET_URL || 'https://convora-e40a9ae358dc.herokuapp.com/'; // allow local or prod
+const socket = io(SOCKET_URL);
 
 const DiscussionPage = () => {
     const { topic } = useParams();
