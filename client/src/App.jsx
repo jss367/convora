@@ -1,7 +1,7 @@
 import React from 'react';
-import { BrowserRouter as Router, Route, Routes } from 'react-router-dom';
-import HomePage from './HomePage';
+import { Route, BrowserRouter as Router, Routes } from 'react-router-dom';
 import DiscussionPage from './DiscussionPage';
+import HomePage from './HomePage';
 
 const App = () => {
     return (
@@ -13,7 +13,7 @@ const App = () => {
                 <main className="container mx-auto p-4">
                     <Routes>
                         <Route path="/" element={<HomePage />} />
-                        <Route path="/:discussionId" element={<DiscussionPage />} />
+                        <Route path="/:topic" element={<DiscussionPage />} />
                     </Routes>
                 </main>
             </div>
