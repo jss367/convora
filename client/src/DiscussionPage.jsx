@@ -18,7 +18,7 @@ const VoteOptions = {
 const socket = io(process.env.REACT_APP_SOCKET_URL || 'http://localhost:3001'); // allow local or prod
 
 const DiscussionPage = () => {
-    const { discussionId } = useParams();
+    const { topic } = useParams();
     const [questions, setQuestions] = useState([]);
     const [newQuestion, setNewQuestion] = useState('');
     const [questionType, setQuestionType] = useState(QuestionTypes.AGREEMENT);
@@ -27,7 +27,7 @@ const DiscussionPage = () => {
     const [sliderValues, setSliderValues] = useState({});
 
     useEffect(() => {
-        socket.emit('joinDiscussion', discussionId);
+        socket.emit('joinDiscussion', topic);
 
         socket.on('questions', (updatedQuestions) => {
             setQuestions(updatedQuestions);
@@ -36,7 +36,7 @@ const DiscussionPage = () => {
         return () => {
             socket.off('questions');
         };
-    }, [discussionId]);
+    }, [topic]);
 
     const handleAddQuestion = () => {
         if (newQuestion.trim() !== '') {
@@ -46,7 +46,7 @@ const DiscussionPage = () => {
                 minValue: questionType === QuestionTypes.NUMERICAL ? minValue : null,
                 maxValue: questionType === QuestionTypes.NUMERICAL ? maxValue : null,
             };
-            socket.emit('addQuestion', discussionId, question);
+            socket.emit('addQuestion', topic, question);
             setNewQuestion('');
             setQuestionType(QuestionTypes.AGREEMENT);
             setMinValue(0);
@@ -55,7 +55,7 @@ const DiscussionPage = () => {
     };
 
     const handleVote = (questionId, value) => {
-        socket.emit('vote', discussionId, questionId, value);
+        socket.emit('vote', topic, questionId, value);
         setSliderValues(prev => ({ ...prev, [questionId]: undefined }));
     };
 
@@ -120,7 +120,7 @@ const DiscussionPage = () => {
 
     return (
         <div className="max-w-4xl mx-auto mt-10 px-4">
-            <h1 className="text-4xl font-bold mb-8 text-center text-gray-800">Discussion: {discussionId}</h1>
+            <h1 className="text-4xl font-bold mb-8 text-center text-gray-800">Discussion: {topic}</h1>
             <div className="bg-white shadow-lg rounded-lg p-6 mb-8">
                 <input
                     type="text"

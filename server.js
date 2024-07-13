@@ -114,22 +114,32 @@ async function getQuestions(topic) {
 }
 
 async function addQuestion(topic, question) {
+  console.log(`Entering addQuestion with topic and question: ${topic} and ${question}`)
+  console.log(topic, question);
   // First, get the discussion ID for the given topic
   const discussionResult = await pool.query(
     'SELECT id FROM discussions WHERE topic = $1',
     [topic]
   );
+
+  let discussionId;
   if (discussionResult.rows.length === 0) {
-    throw new Error('Discussion not found');
+    // If the discussion doesn't exist, create it
+    const newDiscussionResult = await pool.query(
+      'INSERT INTO discussions (topic) VALUES ($1) RETURNING id',
+      [topic]
+    );
+    discussionId = newDiscussionResult.rows[0].id;
+  } else {
+    discussionId = discussionResult.rows[0].id;
   }
-  const discussionId = discussionResult.rows[0].id;
 
   // Now insert the question using the numeric discussion ID
-  const result = await pool.query(
+  const questionResult = await pool.query(
     'INSERT INTO questions (discussion_id, text, type, min_value, max_value) VALUES ($1, $2, $3, $4, $5) RETURNING *',
     [discussionId, question.text, question.type, question.minValue, question.maxValue]
   );
-  return result.rows[0];
+  return questionResult.rows[0];
 }
 
 async function addVote(questionId, vote) {
