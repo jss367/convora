@@ -31,16 +31,26 @@ app.use(express.static(path.join(__dirname, 'dist')));
 io.on('connection', (socket) => {
   console.log('New client connected');
 
-  socket.on('joinDiscussion', async (discussionId) => {
-    socket.join(discussionId);
-    const questions = await getQuestions(discussionId);
-    socket.emit('questions', questions);
+  socket.on('joinDiscussion', async (topic) => {
+    socket.join(topic);
+    try {
+      const questions = await getQuestions(topic);
+      socket.emit('questions', questions);
+    } catch (error) {
+      console.error('Error getting questions:', error);
+      socket.emit('error', { message: 'Failed to get questions' });
+    }
   });
 
-  socket.on('addQuestion', async (discussionId, question) => {
-    await addQuestion(discussionId, question);
-    const questions = await getQuestions(discussionId);
-    io.to(discussionId).emit('questions', questions);
+  socket.on('addQuestion', async (topic, question) => {
+    try {
+      await addQuestion(topic, question);
+      const updatedQuestions = await getQuestions(topic);
+      io.to(topic).emit('questions', updatedQuestions);
+    } catch (error) {
+      console.error('Error adding question:', error);
+      socket.emit('error', { message: 'Failed to add question' });
+    }
   });
 
   socket.on('vote', async (discussionId, questionId, vote) => {
@@ -102,11 +112,23 @@ async function getQuestions(discussionIdentifier) {
   return result.rows;
 }
 
-async function addQuestion(discussionId, question) {
-  await pool.query(
-    'INSERT INTO questions (discussion_id, text, type, min_value, max_value) VALUES ($1, $2, $3, $4, $5)',
+async function addQuestion(topic, question) {
+  // First, get the discussion ID for the given topic
+  const discussionResult = await pool.query(
+    'SELECT id FROM discussions WHERE topic = $1',
+    [topic]
+  );
+  if (discussionResult.rows.length === 0) {
+    throw new Error('Discussion not found');
+  }
+  const discussionId = discussionResult.rows[0].id;
+
+  // Now insert the question using the numeric discussion ID
+  const result = await pool.query(
+    'INSERT INTO questions (discussion_id, text, type, min_value, max_value) VALUES ($1, $2, $3, $4, $5) RETURNING *',
     [discussionId, question.text, question.type, question.minValue, question.maxValue]
   );
+  return result.rows[0];
 }
 
 async function addVote(questionId, vote) {
