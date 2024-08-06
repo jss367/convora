@@ -1,64 +1,32 @@
 
 
 
-# Buliding locally
-
-`npm install`  <--- do in root directory but might also need to do it in the client directory
-
-`npm run dev:client`
-
-Access it at http://localhost:5173/
-
-^^^^ - I think that's old
+# Buliding locally (Development Mode)
 
 start server in dev mode
 
-`NODE_ENV=development node server.js`
+`node server.js`
 
 
+Start the database server:
 
-
-You can now start the database server using:
-
-    pg_ctl -D /usr/local/var/postgres -l logfile start
-
-Actually, do this instead:
-
-brew services start postgresql@14
+`brew services start postgresql@14`
 
 # Databases
 
-For reference, here are the databases, both locally and on heroku
+- Name: `convora`
+- Connect: `psql -U julius -d convora`
 
-CREATE TABLE discussions (
-  id SERIAL PRIMARY KEY,
-  topic TEXT NOT NULL
-);
+## See tables
 
-CREATE TABLE questions (
-  id SERIAL PRIMARY KEY,
-  discussion_id INTEGER REFERENCES discussions(id),
-  text TEXT NOT NULL,
-  type TEXT NOT NULL,
-  min_value INTEGER,
-  max_value INTEGER
-);
+* `\dt`
 
-CREATE TABLE votes (
-  id SERIAL PRIMARY KEY,
-  question_id INTEGER REFERENCES questions(id),
-  value TEXT NOT NULL
-);
+* `\d+ questions`
 
 
+## Connect to remote database
 
-Local database is called convora
-
-Connect to it: `\c convora`
-
-
-
-
+`heroku pg:psql`
 
 
 # Pushing from your git branch to heroku main
@@ -69,7 +37,11 @@ Connect to it: `\c convora`
 
 This allows you to be working on a branch, `my_branch`, and push to main in heroku
 
+# Notes
 
-# Connect to database
-
-`heroku pg:psql`
+The client and server are on the same domain, so I don't need to do things like this:
+```
+const socket = io(SOCKET_URL, {
+    withCredentials: true,
+});
+```

@@ -17,9 +17,14 @@ const VoteOptions = {
     STRONGLY_DISAGREE: 'Strongly Disagree',
 };
 
-const SOCKET_URL = process.env.REACT_APP_SOCKET_URL || 'https://convora-e40a9ae358dc.herokuapp.com/'; // allow local or prod
+// const SOCKET_URL = process.env.REACT_APP_SOCKET_URL || 'https://convora-e40a9ae358dc.herokuapp.com/';
+// Environmental variables are not being passed, so hard-code it here.
+const SOCKET_URL = 'http://localhost:3001' || 'https://convora-e40a9ae358dc.herokuapp.com/';
+
 const socket = io(SOCKET_URL);
+console.log('Environment SOCKET_URL:', process.env.REACT_APP_SOCKET_URL);
 console.log('Socket created with URL:', SOCKET_URL);
+
 
 const DiscussionPage = () => {
     const { topic } = useParams();
