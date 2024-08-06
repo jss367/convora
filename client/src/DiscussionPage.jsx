@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import io from 'socket.io-client';
 
-const VERSION = '0.0.3';
+const VERSION = '0.0.4';
 
 const QuestionTypes = {
     AGREEMENT: 'Agreement',
@@ -53,9 +53,17 @@ const DiscussionPage = () => {
     const handleQuestionsUpdate = useCallback((updatedQuestions) => {
         console.log('Received updated questions:', updatedQuestions);
         setQuestions(prevQuestions => {
-            // Merge the updated questions with the existing ones
             const questionMap = new Map(prevQuestions.map(q => [q.id, q]));
-            updatedQuestions.forEach(q => questionMap.set(q.id, q));
+            updatedQuestions.forEach(q => {
+                if (questionMap.has(q.id)) {
+                    // Merge the new question data with the existing data,
+                    // preserving the timestamp if it exists
+                    questionMap.set(q.id, { ...questionMap.get(q.id), ...q });
+                } else {
+                    // For new questions, add them with the current timestamp
+                    questionMap.set(q.id, { ...q, timestamp: Date.now() });
+                }
+            });
             return Array.from(questionMap.values());
         });
     }, []);
@@ -145,7 +153,9 @@ const DiscussionPage = () => {
         if (!showUnansweredOnly) {
             return questions;
         }
-        return questions.filter(question => !question.votes || !question.votes.some(vote => vote.userId === 'currentUserId')); // Replace 'currentUserId' with actual user ID
+        return questions.filter(question =>
+            !question.votes || !question.votes.some(vote => vote.userId === userId)
+        );
     };
 
 
