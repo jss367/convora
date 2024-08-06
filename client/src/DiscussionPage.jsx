@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import io from 'socket.io-client';
 
-const VERSION = '0.0.2';
+const VERSION = '0.0.3';
 
 const QuestionTypes = {
     AGREEMENT: 'Agreement',
@@ -43,6 +43,12 @@ const DiscussionPage = () => {
     const [sliderValues, setSliderValues] = useState({});
     const [sortOption, setSortOption] = useState(SortOptions.MOST_RECENT);
     const [showUnansweredOnly, setShowUnansweredOnly] = useState(false);
+    const [userId, setUserId] = useState(null);
+
+    useEffect(() => {
+        // Generate a unique user ID for this session
+        setUserId(Math.random().toString(36).substr(2, 9));
+    }, []);
 
     const handleQuestionsUpdate = useCallback((updatedQuestions) => {
         console.log('Received updated questions:', updatedQuestions);
@@ -97,7 +103,7 @@ const DiscussionPage = () => {
     };
 
     const handleVote = (questionId, value) => {
-        socket.emit('vote', topic, questionId, value);
+        socket.emit('vote', topic, questionId, value, userId);
         setSliderValues(prev => ({ ...prev, [questionId]: undefined }));
     };
 
@@ -145,23 +151,35 @@ const DiscussionPage = () => {
 
     const renderVotingMechanism = (question) => {
         if (question.type === QuestionTypes.AGREEMENT) {
+            const userVote = question.votes.find(v => v.userId === userId);
             return (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     {Object.values(VoteOptions).map((option) => (
                         <div key={option} className="flex items-center justify-between bg-gray-100 p-3 rounded-md">
-                            <span className="font-medium">{option}: {question.votes ? question.votes.filter(v => v.value === option).length : 0}</span>
+                            <span className="font-medium">
+                                {option}: {question.votes ? question.votes.filter(v => v.value === option).length : 0}
+                            </span>
                             <button
                                 onClick={() => handleVote(question.id, option)}
-                                className="bg-secondary text-white px-4 py-2 rounded-md hover:bg-opacity-90 transition duration-300"
+                                className={`px-4 py-2 rounded-md transition duration-300 ${userVote && userVote.value === option
+                                    ? 'bg-primary text-white hover:bg-opacity-90'
+                                    : 'bg-secondary text-white hover:bg-opacity-90'
+                                    }`}
                             >
-                                Vote
+                                {userVote && userVote.value === option ? 'Undo Vote' : 'Vote'}
                             </button>
                         </div>
                     ))}
                 </div>
             );
         } else {
-            const sliderValue = sliderValues[question.id] !== undefined ? sliderValues[question.id] : Math.floor((question.max_value + question.min_value) / 2);
+            const userVote = question.votes.find(v => v.userId === userId);
+            const sliderValue = sliderValues[question.id] !== undefined
+                ? sliderValues[question.id]
+                : (userVote
+                    ? userVote.value
+                    : Math.floor((question.max_value + question.min_value) / 2));
+
             return (
                 <div className="mt-4">
                     <input
@@ -179,9 +197,10 @@ const DiscussionPage = () => {
                     </div>
                     <button
                         onClick={() => handleVote(question.id, sliderValue)}
-                        className="mt-4 bg-secondary text-white px-4 py-2 rounded-md hover:bg-opacity-90 transition duration-300"
+                        className={`mt-4 px-4 py-2 rounded-md transition duration-300 ${userVote ? 'bg-primary text-white hover:bg-opacity-90' : 'bg-secondary text-white hover:bg-opacity-90'
+                            }`}
                     >
-                        Submit
+                        {userVote ? 'Update Vote' : 'Submit'}
                     </button>
                     {question.votes && question.votes.length > 0 && (
                         <div className="mt-4">
