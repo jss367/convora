@@ -28,6 +28,11 @@ Start the database server:
 
 `heroku pg:psql`
 
+# Updating
+
+To see the impact of code changes, you'll need to build it first
+* `npm run build`
+* `node server.js`
 
 # Pushing from your git branch to heroku main
 
@@ -45,3 +50,5 @@ const socket = io(SOCKET_URL, {
     withCredentials: true,
 });
 ```
+
+The frontend is React and the backend is Node.js.

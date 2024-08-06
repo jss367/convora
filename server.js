@@ -67,14 +67,14 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('vote', async (topic, questionId, vote) => {
+  socket.on('vote', async (topic, questionId, vote, userId) => {
     try {
-      await addVote(questionId, vote);
+      await addVote(questionId, vote, userId);
       const questions = await getQuestions(topic);
       io.to(topic).emit('questions', questions);
     } catch (error) {
-      console.error('Error adding vote:', error);
-      socket.emit('error', { message: 'Failed to add vote' });
+      console.error('Error handling vote:', error);
+      socket.emit('error', { message: 'Failed to handle vote' });
     }
   });
 
@@ -128,7 +128,8 @@ async function getQuestions(topic) {
       COALESCE(json_agg(
         json_build_object(
           'id', v.id,
-          'value', v.value
+          'value', v.value,
+          'userId', v.user_id
         ) ORDER BY v.id
       ) FILTER (WHERE v.id IS NOT NULL), '[]'::json) as votes 
     FROM questions q
@@ -185,11 +186,48 @@ async function addQuestion(topic, question) {
   }
 }
 
-async function addVote(questionId, vote) {
-  await pool.query(
-    'INSERT INTO votes (question_id, value) VALUES ($1, $2)',
-    [questionId, vote]
-  );
+async function addVote(questionId, vote, userId) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    // Check if the user has already voted on this question
+    const existingVoteResult = await client.query(
+      'SELECT * FROM votes WHERE question_id = $1 AND user_id = $2',
+      [questionId, userId]
+    );
+
+    if (existingVoteResult.rows.length > 0) {
+      // User has already voted
+      const existingVote = existingVoteResult.rows[0];
+      if (existingVote.value === vote) {
+        // If voting for the same option, remove the vote
+        await client.query(
+          'DELETE FROM votes WHERE id = $1',
+          [existingVote.id]
+        );
+      } else {
+        // If voting for a different option, update the vote
+        await client.query(
+          'UPDATE votes SET value = $1 WHERE id = $2',
+          [vote, existingVote.id]
+        );
+      }
+    } else {
+      // User hasn't voted yet, add new vote
+      await client.query(
+        'INSERT INTO votes (question_id, user_id, value) VALUES ($1, $2, $3)',
+        [questionId, userId, vote]
+      );
+    }
+
+    await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    client.release();
+  }
 }
 
 // Catch-all route
