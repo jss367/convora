@@ -68,9 +68,14 @@ io.on('connection', (socket) => {
   });
 
   socket.on('vote', async (topic, questionId, vote) => {
-    await addVote(questionId, vote);
-    const questions = await getQuestions(topic);
-    io.to(topic).emit('questions', questions);
+    try {
+      await addVote(questionId, vote);
+      const questions = await getQuestions(topic);
+      io.to(topic).emit('questions', questions);
+    } catch (error) {
+      console.error('Error adding vote:', error);
+      socket.emit('error', { message: 'Failed to add vote' });
+    }
   });
 
   socket.on('disconnect', () => {
@@ -120,12 +125,12 @@ async function getQuestions(topic) {
       q.type, 
       q.min_value, 
       q.max_value, 
-      json_agg(
+      COALESCE(json_agg(
         json_build_object(
           'id', v.id,
           'value', v.value
-        )
-      ) FILTER (WHERE v.id IS NOT NULL) as votes 
+        ) ORDER BY v.id
+      ) FILTER (WHERE v.id IS NOT NULL), '[]'::json) as votes 
     FROM questions q
     JOIN discussions d ON q.discussion_id = d.id
     LEFT JOIN votes v ON q.id = v.question_id 
@@ -135,10 +140,7 @@ async function getQuestions(topic) {
   `;
 
   const result = await pool.query(query, [topic]);
-  return result.rows.map(row => ({
-    ...row,
-    votes: row.votes || []
-  }));
+  return result.rows;
 }
 
 async function addQuestion(topic, question) {
@@ -146,27 +148,41 @@ async function addQuestion(topic, question) {
   console.log('Topic:', topic);
   console.log('Question:', question);
 
-  const discussionResult = await pool.query(
-    'SELECT id FROM discussions WHERE topic = $1',
-    [topic]
-  );
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
 
-  let discussionId;
-  if (discussionResult.rows.length === 0) {
-    const newDiscussionResult = await pool.query(
-      'INSERT INTO discussions (topic) VALUES ($1) RETURNING id',
+    // Get or create discussion
+    let discussionId;
+    const discussionResult = await client.query(
+      'SELECT id FROM discussions WHERE topic = $1',
       [topic]
     );
-    discussionId = newDiscussionResult.rows[0].id;
-  } else {
-    discussionId = discussionResult.rows[0].id;
-  }
+    if (discussionResult.rows.length === 0) {
+      const newDiscussionResult = await client.query(
+        'INSERT INTO discussions (topic) VALUES ($1) RETURNING id',
+        [topic]
+      );
+      discussionId = newDiscussionResult.rows[0].id;
+    } else {
+      discussionId = discussionResult.rows[0].id;
+    }
 
-  const questionResult = await pool.query(
-    'INSERT INTO questions (discussion_id, text, type, min_value, max_value) VALUES ($1, $2, $3, $4, $5) RETURNING *',
-    [discussionId, question.text, question.type, question.minValue, question.maxValue]
-  );
-  return questionResult.rows[0];
+    // Insert the question
+    const questionResult = await client.query(
+      'INSERT INTO questions (discussion_id, text, type, min_value, max_value) VALUES ($1, $2, $3, $4, $5) RETURNING *',
+      [discussionId, question.text, question.type, question.minValue, question.maxValue]
+    );
+
+    await client.query('COMMIT');
+    console.log('Question added successfully:', questionResult.rows[0]);
+    return questionResult.rows[0];
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    client.release();
+  }
 }
 
 async function addVote(questionId, vote) {
