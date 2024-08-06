@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import io from 'socket.io-client';
 
-const VERSION = '0.0.1';
+const VERSION = '0.0.2';
 
 const QuestionTypes = {
     AGREEMENT: 'Agreement',
@@ -15,6 +15,13 @@ const VoteOptions = {
     UNSURE: 'Unsure',
     DISAGREE: 'Disagree',
     STRONGLY_DISAGREE: 'Strongly Disagree',
+};
+
+const SortOptions = {
+    MOST_RECENT: 'Most Recent',
+    MOST_AGREEMENT: 'Most Agreement',
+    MOST_DISAGREEMENT: 'Most Disagreement',
+    MOST_CONTROVERSIAL: 'Most Controversial',
 };
 
 // const SOCKET_URL = process.env.REACT_APP_SOCKET_URL || 'https://convora-e40a9ae358dc.herokuapp.com/';
@@ -34,8 +41,11 @@ const DiscussionPage = () => {
     const [minValue, setMinValue] = useState(0);
     const [maxValue, setMaxValue] = useState(100);
     const [sliderValues, setSliderValues] = useState({});
+    const [sortOption, setSortOption] = useState(SortOptions.MOST_RECENT);
+    const [showUnansweredOnly, setShowUnansweredOnly] = useState(false);
 
     const handleQuestionsUpdate = useCallback((updatedQuestions) => {
+        console.log('Received updated questions:', updatedQuestions);
         setQuestions(prevQuestions => {
             // Merge the updated questions with the existing ones
             const questionMap = new Map(prevQuestions.map(q => [q.id, q]));
@@ -55,7 +65,7 @@ const DiscussionPage = () => {
         console.log('Set up questions event listener');
 
         return () => {
-            console.log('Cleaning up effect');
+            console.log('Leaving discussion:', topic);
             socket.off('questions', handleQuestionsUpdate);
         };
     }, [topic, handleQuestionsUpdate]);
@@ -72,6 +82,7 @@ const DiscussionPage = () => {
                 type: questionType,
                 minValue: questionType === QuestionTypes.NUMERICAL ? minValue : null,
                 maxValue: questionType === QuestionTypes.NUMERICAL ? maxValue : null,
+                timestamp: Date.now(),
             };
             console.log('Emitting addQuestion event with topic:', topic);
             console.log('Question object:', question);
@@ -93,6 +104,44 @@ const DiscussionPage = () => {
     const handleSliderChange = (questionId, value) => {
         setSliderValues(prev => ({ ...prev, [questionId]: value }));
     };
+
+
+    const sortQuestions = (questions) => {
+        switch (sortOption) {
+            case SortOptions.MOST_RECENT:
+                return [...questions].sort((a, b) => b.timestamp - a.timestamp);
+            case SortOptions.MOST_AGREEMENT:
+                return [...questions].sort((a, b) => getAgreementCount(b) - getAgreementCount(a));
+            case SortOptions.MOST_DISAGREEMENT:
+                return [...questions].sort((a, b) => getDisagreementCount(b) - getDisagreementCount(a));
+            case SortOptions.MOST_CONTROVERSIAL:
+                return [...questions].sort((a, b) => getControversyScore(b) - getControversyScore(a));
+            default:
+                return questions;
+        }
+    };
+
+    const getAgreementCount = (question) => {
+        return (question.votes || []).filter(v => v.value === VoteOptions.STRONGLY_AGREE || v.value === VoteOptions.AGREE).length;
+    };
+
+    const getDisagreementCount = (question) => {
+        return (question.votes || []).filter(v => v.value === VoteOptions.STRONGLY_DISAGREE || v.value === VoteOptions.DISAGREE).length;
+    };
+
+    const getControversyScore = (question) => {
+        const agreementCount = getAgreementCount(question);
+        const disagreementCount = getDisagreementCount(question);
+        return Math.min(agreementCount, disagreementCount);
+    };
+
+    const filterQuestions = (questions) => {
+        if (!showUnansweredOnly) {
+            return questions;
+        }
+        return questions.filter(question => !question.votes || !question.votes.some(vote => vote.userId === 'currentUserId')); // Replace 'currentUserId' with actual user ID
+    };
+
 
     const renderVotingMechanism = (question) => {
         if (question.type === QuestionTypes.AGREEMENT) {
@@ -149,6 +198,8 @@ const DiscussionPage = () => {
         }
     };
 
+    const sortedAndFilteredQuestions = filterQuestions(sortQuestions(questions));
+
     return (
         <div className="max-w-4xl mx-auto mt-10 px-4">
             <h1 className="text-4xl font-bold mb-8 text-center text-gray-800">Discussion: {topic}</h1>
@@ -202,7 +253,30 @@ const DiscussionPage = () => {
                     Add Question
                 </button>
             </div>
-            {questions.map((question) => (
+            {/* Sorting and filtering controls */}
+            <div className="mb-6 flex justify-between items-center">
+                <select
+                    value={sortOption}
+                    onChange={(e) => setSortOption(e.target.value)}
+                    className="p-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary"
+                >
+                    {Object.values(SortOptions).map(option => (
+                        <option key={option} value={option}>{option}</option>
+                    ))}
+                </select>
+                <label className="flex items-center">
+                    <input
+                        type="checkbox"
+                        checked={showUnansweredOnly}
+                        onChange={(e) => setShowUnansweredOnly(e.target.checked)}
+                        className="mr-2"
+                    />
+                    Show unanswered only
+                </label>
+            </div>
+
+            {/* Questions list */}
+            {sortedAndFilteredQuestions.map((question) => (
                 <div key={question.id} className="bg-white shadow-lg rounded-lg p-6 mb-6">
                     <h2 className="text-xl font-semibold mb-4">{question.text}</h2>
                     <p className="mb-4">Type: {question.type}</p>
