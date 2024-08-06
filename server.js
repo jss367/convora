@@ -9,25 +9,29 @@ const cors = require('cors');
 
 const app = express();
 const server = http.createServer(app);
-const io = socketIo(server, {
-  cors: {
-    origin: process.env.CLIENT_URL || "https://convora-e40a9ae358dc.herokuapp.com",
-    methods: ["GET", "POST"],
-    credentials: true
-  }
-});
 
 const isProduction = process.env.NODE_ENV === 'production';
+const clientUrl = process.env.CLIENT_URL || 'http://localhost:3000';
+
+// Enable CORS for your client URL
+app.use(cors({
+  origin: clientUrl,
+  credentials: true,
+}));
+
+const io = socketIo(server, {
+  cors: {
+    origin: clientUrl,
+    methods: ['GET', 'POST'],
+    credentials: true,
+  },
+});
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL || 'postgresql://username:password@localhost:5432/convora',
-  ssl: isProduction ? { rejectUnauthorized: false } : false
+  ssl: isProduction ? { rejectUnauthorized: false } : false,
 });
 
-app.use(cors({
-  origin: process.env.CLIENT_URL || "https://convora-e40a9ae358dc.herokuapp.com",
-  credentials: true
-}));
 app.use(bodyParser.json());
 app.use(express.static(path.join(__dirname, 'dist')));
 
@@ -48,8 +52,8 @@ io.on('connection', (socket) => {
 
   socket.on('addQuestion', async (topic, question) => {
     console.log('Received addQuestion event');
-    console.log('topic:', topic)
-    console.log('question:', question)
+    console.log('topic:', topic);
+    console.log('question:', question);
 
     try {
       await addQuestion(topic, question);
@@ -141,7 +145,7 @@ async function addQuestion(topic, question) {
   console.log('Entering addQuestion');
   console.log('Topic:', topic);
   console.log('Question:', question);
-  // First, get the discussion ID for the given topic
+
   const discussionResult = await pool.query(
     'SELECT id FROM discussions WHERE topic = $1',
     [topic]
@@ -149,7 +153,6 @@ async function addQuestion(topic, question) {
 
   let discussionId;
   if (discussionResult.rows.length === 0) {
-    // If the discussion doesn't exist, create it
     const newDiscussionResult = await pool.query(
       'INSERT INTO discussions (topic) VALUES ($1) RETURNING id',
       [topic]
@@ -159,7 +162,6 @@ async function addQuestion(topic, question) {
     discussionId = discussionResult.rows[0].id;
   }
 
-  // Now insert the question using the numeric discussion ID
   const questionResult = await pool.query(
     'INSERT INTO questions (discussion_id, text, type, min_value, max_value) VALUES ($1, $2, $3, $4, $5) RETURNING *',
     [discussionId, question.text, question.type, question.minValue, question.maxValue]
