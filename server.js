@@ -32,6 +32,26 @@ const pool = new Pool({
   ssl: isProduction ? { rejectUnauthorized: false } : false,
 });
 
+function parseOptions(options) {
+  if (Array.isArray(options)) {
+    return options;
+  }
+  if (typeof options === 'string') {
+    try {
+      const parsed = JSON.parse(options);
+      return Array.isArray(parsed) ? parsed : [options];
+    } catch (e) {
+      console.warn('Failed to parse options as JSON, falling back to comma-separated string:', options);
+      return options.split(',').map(opt => opt.trim());
+    }
+  }
+  if (options === null || options === undefined) {
+    return [];
+  }
+  console.warn('Unexpected options type:', typeof options);
+  return [String(options)];
+}
+
 app.use(bodyParser.json());
 app.use(express.static(path.join(__dirname, 'dist')));
 
@@ -125,6 +145,7 @@ async function getQuestions(topic) {
       q.type, 
       q.min_value, 
       q.max_value, 
+      q.options,
       COALESCE(json_agg(
         json_build_object(
           'id', v.id,
@@ -141,7 +162,10 @@ async function getQuestions(topic) {
   `;
 
   const result = await pool.query(query, [topic]);
-  return result.rows;
+  return result.rows.map(row => ({
+    ...row,
+    options: parseOptions(row.options)
+  }));
 }
 
 async function addQuestion(topic, question) {
@@ -169,24 +193,57 @@ async function addQuestion(topic, question) {
       discussionId = discussionResult.rows[0].id;
     }
 
+    // Ensure options is a valid JSON array
+    const optionsJson = JSON.stringify(Array.isArray(question.options) ? question.options : []);
+
     // Insert the question
     const questionResult = await client.query(
-      'INSERT INTO questions (discussion_id, text, type, min_value, max_value) VALUES ($1, $2, $3, $4, $5) RETURNING *',
-      [discussionId, question.text, question.type, question.minValue, question.maxValue]
+      'INSERT INTO questions (discussion_id, text, type, min_value, max_value, options) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
+      [discussionId, question.text, question.type, question.minValue, question.maxValue, optionsJson]
     );
 
     await client.query('COMMIT');
     console.log('Question added successfully:', questionResult.rows[0]);
-    return questionResult.rows[0];
+    return {
+      ...questionResult.rows[0],
+      options: parseOptions(questionResult.rows[0].options)
+    };
   } catch (e) {
     await client.query('ROLLBACK');
+    console.error('Error in addQuestion:', e);
     throw e;
   } finally {
     client.release();
   }
 }
 
+// might get rid of this
+async function migrateOptionsToJson() {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const result = await client.query('SELECT id, options FROM questions WHERE options IS NOT NULL');
+
+    for (const row of result.rows) {
+      const parsedOptions = parseOptions(row.options);
+      await client.query('UPDATE questions SET options = $1 WHERE id = $2', [JSON.stringify(parsedOptions), row.id]);
+    }
+
+    await client.query('COMMIT');
+    console.log('Migration completed successfully');
+  } catch (e) {
+    await client.query('ROLLBACK');
+    console.error('Error during migration:', e);
+  } finally {
+    client.release();
+  }
+}
+migrateOptionsToJson().catch(console.error);
+// might get rid of above
+
 async function addVote(questionId, vote, userId) {
+  console.log('Adding vote:', questionId, vote, userId);
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -198,32 +255,40 @@ async function addVote(questionId, vote, userId) {
     );
 
     if (existingVoteResult.rows.length > 0) {
-      // User has already voted
+      console.log('User has already voted');
       const existingVote = existingVoteResult.rows[0];
-      if (existingVote.value === vote) {
-        // If voting for the same option, remove the vote
+      // For checkbox, we need to handle multiple values
+      if (Array.isArray(vote)) {
+        await client.query(
+          'UPDATE votes SET value = $1 WHERE id = $2',
+          [JSON.stringify(vote), existingVote.id]
+        );
+      } else if (existingVote.value === vote) {
+        console.log('Voting for a option they already voted for');
         await client.query(
           'DELETE FROM votes WHERE id = $1',
           [existingVote.id]
         );
       } else {
-        // If voting for a different option, update the vote
+        console.log('Voting for a different option');
         await client.query(
           'UPDATE votes SET value = $1 WHERE id = $2',
           [vote, existingVote.id]
         );
       }
     } else {
-      // User hasn't voted yet, add new vote
+      console.log('User has not voted yet');
       await client.query(
         'INSERT INTO votes (question_id, user_id, value) VALUES ($1, $2, $3)',
-        [questionId, userId, vote]
+        [questionId, userId, Array.isArray(vote) ? JSON.stringify(vote) : vote]
       );
     }
 
     await client.query('COMMIT');
+    console.log('Vote added/updated successfully');
   } catch (e) {
     await client.query('ROLLBACK');
+    console.error('Error in addVote:', e);
     throw e;
   } finally {
     client.release();
