@@ -180,6 +180,7 @@ async function addQuestion(topic, question) {
     return questionResult.rows[0];
   } catch (e) {
     await client.query('ROLLBACK');
+    console.error('Error in addQuestion:', e);
     throw e;
   } finally {
     client.release();
@@ -187,6 +188,7 @@ async function addQuestion(topic, question) {
 }
 
 async function addVote(questionId, vote, userId) {
+  console.log('Adding vote:', questionId, vote, userId); // Add this log
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -228,8 +230,10 @@ async function addVote(questionId, vote, userId) {
     }
 
     await client.query('COMMIT');
+    console.log('Vote added/updated successfully');
   } catch (e) {
     await client.query('ROLLBACK');
+    console.error('Error in addVote:', e);
     throw e;
   } finally {
     client.release();

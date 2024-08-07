@@ -79,6 +79,7 @@ const DiscussionPage = () => {
     }, [topic, handleQuestionsUpdate]);
 
     const handleAddQuestion = () => {
+        console.log('Inside handleAddQuestion');
         if (newQuestion.trim() !== '') {
             const question = {
                 text: newQuestion,
@@ -90,12 +91,15 @@ const DiscussionPage = () => {
                     : null,
                 timestamp: Date.now(),
             };
+            console.log('Adding question:', question);
             socket.emit('addQuestion', topic, question);
             setNewQuestion('');
             setQuestionType(QuestionTypes.AGREEMENT);
             setMinValue(0);
             setMaxValue(100);
             setOptionsText('');
+        } else {
+            console.log('Failed to add question')
         }
     };
 
@@ -430,7 +434,10 @@ const OpenEndedQuestion = ({ question, userVote, handleVote }) => {
                 rows="4"
             />
             <button
-                onClick={() => handleVote(question.id, response)}
+                onClick={() => {
+                    console.log('Submitting open-ended response:', response); // Add this log
+                    handleVote(question.id, response);
+                }}
                 className="px-4 py-2 bg-primary text-white rounded hover:bg-opacity-90 transition duration-300"
             >
                 {userVote ? 'Update Response' : 'Submit Response'}
