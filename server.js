@@ -188,7 +188,7 @@ async function addQuestion(topic, question) {
 }
 
 async function addVote(questionId, vote, userId) {
-  console.log('Adding vote:', questionId, vote, userId); // Add this log
+  console.log('Adding vote:', questionId, vote, userId);
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -200,7 +200,7 @@ async function addVote(questionId, vote, userId) {
     );
 
     if (existingVoteResult.rows.length > 0) {
-      // User has already voted
+      console.log('User has already voted');
       const existingVote = existingVoteResult.rows[0];
       // For checkbox, we need to handle multiple values
       if (Array.isArray(vote)) {
@@ -209,20 +209,20 @@ async function addVote(questionId, vote, userId) {
           [JSON.stringify(vote), existingVote.id]
         );
       } else if (existingVote.value === vote) {
-        // If voting for the same option, remove the vote (except for open-ended)
+        console.log('Voting for a option they already voted for');
         await client.query(
           'DELETE FROM votes WHERE id = $1',
           [existingVote.id]
         );
       } else {
-        // If voting for a different option, update the vote
+        console.log('Voting for a different option');
         await client.query(
           'UPDATE votes SET value = $1 WHERE id = $2',
           [vote, existingVote.id]
         );
       }
     } else {
-      // User hasn't voted yet, add new vote
+      console.log('User has not voted yet');
       await client.query(
         'INSERT INTO votes (question_id, user_id, value) VALUES ($1, $2, $3)',
         [questionId, userId, Array.isArray(vote) ? JSON.stringify(vote) : vote]

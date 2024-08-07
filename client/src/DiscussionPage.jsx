@@ -81,6 +81,7 @@ const DiscussionPage = () => {
     const handleAddQuestion = () => {
         console.log('Inside handleAddQuestion');
         if (newQuestion.trim() !== '') {
+            console.log('Here is the new question: ', newQuestion);
             const question = {
                 text: newQuestion,
                 type: questionType,
@@ -99,11 +100,12 @@ const DiscussionPage = () => {
             setMaxValue(100);
             setOptionsText('');
         } else {
-            console.log('Failed to add question')
+            console.log('Failed to add question.');
         }
     };
 
     const handleVote = (questionId, value) => {
+        console.log('Voting:', questionId, value);
         socket.emit('vote', topic, questionId, value, userId);
         setSliderValues(prev => ({ ...prev, [questionId]: undefined }));
     };
@@ -425,6 +427,10 @@ const DiscussionPage = () => {
 const OpenEndedQuestion = ({ question, userVote, handleVote }) => {
     const [response, setResponse] = useState(userVote ? userVote.value : '');
 
+    useEffect(() => {
+        setResponse(userVote ? userVote.value : '');
+    }, [userVote]);
+
     return (
         <div>
             <textarea
@@ -435,7 +441,7 @@ const OpenEndedQuestion = ({ question, userVote, handleVote }) => {
             />
             <button
                 onClick={() => {
-                    console.log('Submitting open-ended response:', response); // Add this log
+                    console.log('Submitting open-ended response:', response);
                     handleVote(question.id, response);
                 }}
                 className="px-4 py-2 bg-primary text-white rounded hover:bg-opacity-90 transition duration-300"
