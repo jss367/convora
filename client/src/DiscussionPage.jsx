@@ -8,9 +8,9 @@ const VERSION = '0.1.2';
 const QuestionTypes = {
     AGREEMENT: 'Agreement',
     NUMERICAL: 'Numerical',
-    MULTIPLE_CHOICE: 'Multiple Choice',
-    CHECKBOX: 'Checkbox',
-    RANKING: 'Ranking',
+    // MULTIPLE_CHOICE: 'Multiple Choice',
+    // CHECKBOX: 'Checkbox',
+    // RANKING: 'Ranking',
     OPEN_ENDED: 'Open Ended'
 };
 
@@ -29,13 +29,14 @@ const SortOptions = {
     MOST_CONTROVERSIAL: 'Most Controversial',
 };
 
-// const SOCKET_URL = process.env.REACT_APP_SOCKET_URL || 'https://convora-e40a9ae358dc.herokuapp.com/';
+console.log('Environment SOCKET_URL:', process.env.REACT_APP_SOCKET_URL);
+
+const SOCKET_URL = process.env.REACT_APP_SOCKET_URL || 'https://convora-e40a9ae358dc.herokuapp.com/';
 // Environmental variables are not being passed, so hard-code it here.
-const SOCKET_URL = 'http://localhost:3001' || 'https://convora-e40a9ae358dc.herokuapp.com/';
+
+console.log('Socket created with URL:', process.env.SOCKET_URL);
 
 const socket = io(SOCKET_URL);
-console.log('Environment SOCKET_URL:', process.env.REACT_APP_SOCKET_URL);
-console.log('Socket created with URL:', SOCKET_URL);
 
 const DiscussionPage = () => {
     const { topic } = useParams();
