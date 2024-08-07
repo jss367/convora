@@ -60,9 +60,15 @@ const DiscussionPage = () => {
             const questionMap = new Map(prevQuestions.map(q => [q.id, q]));
             updatedQuestions.forEach(q => {
                 if (questionMap.has(q.id)) {
-                    questionMap.set(q.id, { ...questionMap.get(q.id), ...q });
+                    // Merge the new question data with the existing data,
+                    // ensuring we keep the votes array
+                    questionMap.set(q.id, {
+                        ...questionMap.get(q.id),
+                        ...q,
+                        votes: q.votes || questionMap.get(q.id).votes || []
+                    });
                 } else {
-                    questionMap.set(q.id, { ...q, timestamp: Date.now() });
+                    questionMap.set(q.id, { ...q, timestamp: Date.now(), votes: q.votes || [] });
                 }
             });
             return Array.from(questionMap.values());
@@ -235,9 +241,9 @@ const DiscussionPage = () => {
                 );
             }
             case QuestionTypes.CHECKBOX: {
-                if (!Array.isArray(question.options)) {
-                    console.error('Invalid options for checkbox question:', question);
-                    return null;
+                if (!Array.isArray(question.options) || question.options.length === 0) {
+                    console.error('Invalid or missing options for checkbox question:', question);
+                    return <p>Error: This question has no options.</p>;
                 }
                 return (
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -423,7 +429,6 @@ const DiscussionPage = () => {
         </div>
     );
 };
-
 const OpenEndedQuestion = ({ question, userVote, handleVote }) => {
     const [response, setResponse] = useState(userVote ? userVote.value : '');
 
@@ -438,16 +443,31 @@ const OpenEndedQuestion = ({ question, userVote, handleVote }) => {
                 onChange={(e) => setResponse(e.target.value)}
                 className="w-full p-2 border rounded mb-2"
                 rows="4"
+                placeholder="Enter your response here"
             />
             <button
                 onClick={() => {
                     console.log('Submitting open-ended response:', response);
                     handleVote(question.id, response);
                 }}
-                className="px-4 py-2 bg-primary text-white rounded hover:bg-opacity-90 transition duration-300"
+                className="px-4 py-2 bg-primary text-white rounded hover:bg-opacity-90 transition duration-300 mb-4"
             >
                 {userVote ? 'Update Response' : 'Submit Response'}
             </button>
+
+            {question.votes && question.votes.length > 0 && (
+                <div className="mt-4">
+                    <h3 className="font-semibold mb-2">All Responses:</h3>
+                    <ul className="list-disc pl-5">
+                        {question.votes.map((vote, index) => (
+                            <li key={index} className="mb-2">
+                                {vote.value}
+                                {vote.userId === userVote?.userId && " (Your response)"}
+                            </li>
+                        ))}
+                    </ul>
+                </div>
+            )}
         </div>
     );
 };
@@ -455,13 +475,15 @@ const OpenEndedQuestion = ({ question, userVote, handleVote }) => {
 OpenEndedQuestion.propTypes = {
     question: PropTypes.shape({
         id: PropTypes.string.isRequired,
-        // Add other question properties as needed
+        votes: PropTypes.arrayOf(PropTypes.shape({
+            userId: PropTypes.string.isRequired,
+            value: PropTypes.string.isRequired
+        }))
     }).isRequired,
     userVote: PropTypes.shape({
+        userId: PropTypes.string.isRequired,
         value: PropTypes.string
     }),
     handleVote: PropTypes.func.isRequired
 };
-
-
 export default DiscussionPage;

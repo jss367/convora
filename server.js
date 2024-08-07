@@ -125,6 +125,7 @@ async function getQuestions(topic) {
       q.type, 
       q.min_value, 
       q.max_value, 
+      q.options,
       COALESCE(json_agg(
         json_build_object(
           'id', v.id,
@@ -141,7 +142,10 @@ async function getQuestions(topic) {
   `;
 
   const result = await pool.query(query, [topic]);
-  return result.rows;
+  return result.rows.map(row => ({
+    ...row,
+    options: JSON.parse(row.options || '[]')
+  }));
 }
 
 async function addQuestion(topic, question) {
