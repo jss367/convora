@@ -241,13 +241,13 @@ const DiscussionPage = () => {
                 );
             }
             case QuestionTypes.CHECKBOX: {
-                if (!Array.isArray(question.options) || question.options.length === 0) {
+                if (optionsText.length === 0) {
                     console.error('Invalid or missing options for checkbox question:', question);
                     return <p>Error: This question has no options.</p>;
                 }
                 return (
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        {question.options.map((option) => (
+                        {optionsText.map((option) => (
                             <label key={option} className="flex items-center space-x-2">
                                 <input
                                     type="checkbox"

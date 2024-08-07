@@ -32,6 +32,26 @@ const pool = new Pool({
   ssl: isProduction ? { rejectUnauthorized: false } : false,
 });
 
+function parseOptions(options) {
+  if (Array.isArray(options)) {
+    return options;
+  }
+  if (typeof options === 'string') {
+    try {
+      const parsed = JSON.parse(options);
+      return Array.isArray(parsed) ? parsed : [options];
+    } catch (e) {
+      console.warn('Failed to parse options as JSON, falling back to comma-separated string:', options);
+      return options.split(',').map(opt => opt.trim());
+    }
+  }
+  if (options === null || options === undefined) {
+    return [];
+  }
+  console.warn('Unexpected options type:', typeof options);
+  return [String(options)];
+}
+
 app.use(bodyParser.json());
 app.use(express.static(path.join(__dirname, 'dist')));
 
@@ -144,7 +164,7 @@ async function getQuestions(topic) {
   const result = await pool.query(query, [topic]);
   return result.rows.map(row => ({
     ...row,
-    options: JSON.parse(row.options || '[]')
+    options: parseOptions(row.options)
   }));
 }
 
@@ -173,15 +193,21 @@ async function addQuestion(topic, question) {
       discussionId = discussionResult.rows[0].id;
     }
 
+    // Ensure options is a valid JSON array
+    const optionsJson = JSON.stringify(Array.isArray(question.options) ? question.options : []);
+
     // Insert the question
     const questionResult = await client.query(
       'INSERT INTO questions (discussion_id, text, type, min_value, max_value, options) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
-      [discussionId, question.text, question.type, question.minValue, question.maxValue, JSON.stringify(question.options)]
+      [discussionId, question.text, question.type, question.minValue, question.maxValue, optionsJson]
     );
 
     await client.query('COMMIT');
     console.log('Question added successfully:', questionResult.rows[0]);
-    return questionResult.rows[0];
+    return {
+      ...questionResult.rows[0],
+      options: parseOptions(questionResult.rows[0].options)
+    };
   } catch (e) {
     await client.query('ROLLBACK');
     console.error('Error in addQuestion:', e);
@@ -190,6 +216,31 @@ async function addQuestion(topic, question) {
     client.release();
   }
 }
+
+// might get rid of this
+async function migrateOptionsToJson() {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const result = await client.query('SELECT id, options FROM questions WHERE options IS NOT NULL');
+
+    for (const row of result.rows) {
+      const parsedOptions = parseOptions(row.options);
+      await client.query('UPDATE questions SET options = $1 WHERE id = $2', [JSON.stringify(parsedOptions), row.id]);
+    }
+
+    await client.query('COMMIT');
+    console.log('Migration completed successfully');
+  } catch (e) {
+    await client.query('ROLLBACK');
+    console.error('Error during migration:', e);
+  } finally {
+    client.release();
+  }
+}
+migrateOptionsToJson().catch(console.error);
+// might get rid of above
 
 async function addVote(questionId, vote, userId) {
   console.log('Adding vote:', questionId, vote, userId);
