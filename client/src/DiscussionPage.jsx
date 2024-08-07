@@ -1,8 +1,9 @@
+import PropTypes from 'prop-types';
 import React, { useCallback, useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import io from 'socket.io-client';
 
-const VERSION = '0.1.1';
+const VERSION = '0.1.2';
 
 const QuestionTypes = {
     AGREEMENT: 'Agreement',
@@ -47,7 +48,7 @@ const DiscussionPage = () => {
     const [sortOption, setSortOption] = useState(SortOptions.MOST_RECENT);
     const [showUnansweredOnly, setShowUnansweredOnly] = useState(false);
     const [userId, setUserId] = useState(null);
-    const [options, setOptions] = useState([]);
+    const [optionsText, setOptionsText] = useState('');
 
     useEffect(() => {
         setUserId(Math.random().toString(36).substr(2, 9));
@@ -84,7 +85,9 @@ const DiscussionPage = () => {
                 type: questionType,
                 minValue: questionType === QuestionTypes.NUMERICAL ? minValue : null,
                 maxValue: questionType === QuestionTypes.NUMERICAL ? maxValue : null,
-                options: [QuestionTypes.MULTIPLE_CHOICE, QuestionTypes.CHECKBOX, QuestionTypes.RANKING].includes(questionType) ? options : null,
+                options: [QuestionTypes.MULTIPLE_CHOICE, QuestionTypes.CHECKBOX, QuestionTypes.RANKING].includes(questionType)
+                    ? optionsText.split('\n').filter(option => option.trim() !== '')
+                    : null,
                 timestamp: Date.now(),
             };
             socket.emit('addQuestion', topic, question);
@@ -92,7 +95,7 @@ const DiscussionPage = () => {
             setQuestionType(QuestionTypes.AGREEMENT);
             setMinValue(0);
             setMaxValue(100);
-            setOptions([]);
+            setOptionsText('');
         }
     };
 
@@ -306,24 +309,7 @@ const DiscussionPage = () => {
                 );
             }
             case QuestionTypes.OPEN_ENDED: {
-                const [response, setResponse] = useState(userVote ? userVote.value : '');
-
-                return (
-                    <div>
-                        <textarea
-                            value={response}
-                            onChange={(e) => setResponse(e.target.value)}
-                            className="w-full p-2 border rounded mb-2"
-                            rows="4"
-                        />
-                        <button
-                            onClick={() => handleVote(question.id, response)}
-                            className="px-4 py-2 bg-primary text-white rounded hover:bg-opacity-90 transition duration-300"
-                        >
-                            {userVote ? 'Update Response' : 'Submit Response'}
-                        </button>
-                    </div>
-                );
+                return <OpenEndedQuestion question={question} userVote={userVote} handleVote={handleVote} />;
             }
 
             default:
@@ -384,8 +370,8 @@ const DiscussionPage = () => {
                     <div className="mb-4">
                         <label className="block mb-2">Options (one per line):</label>
                         <textarea
-                            value={options.join('\n')}
-                            onChange={(e) => setOptions(e.target.value.split('\n').filter(option => option.trim() !== ''))}
+                            value={optionsText}
+                            onChange={(e) => setOptionsText(e.target.value)}
                             className="w-full p-3 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary"
                             rows="4"
                         />
@@ -431,5 +417,38 @@ const DiscussionPage = () => {
         </div>
     );
 };
+
+const OpenEndedQuestion = ({ question, userVote, handleVote }) => {
+    const [response, setResponse] = useState(userVote ? userVote.value : '');
+
+    return (
+        <div>
+            <textarea
+                value={response}
+                onChange={(e) => setResponse(e.target.value)}
+                className="w-full p-2 border rounded mb-2"
+                rows="4"
+            />
+            <button
+                onClick={() => handleVote(question.id, response)}
+                className="px-4 py-2 bg-primary text-white rounded hover:bg-opacity-90 transition duration-300"
+            >
+                {userVote ? 'Update Response' : 'Submit Response'}
+            </button>
+        </div>
+    );
+};
+
+OpenEndedQuestion.propTypes = {
+    question: PropTypes.shape({
+        id: PropTypes.string.isRequired,
+        // Add other question properties as needed
+    }).isRequired,
+    userVote: PropTypes.shape({
+        value: PropTypes.string
+    }),
+    handleVote: PropTypes.func.isRequired
+};
+
 
 export default DiscussionPage;
