@@ -3,7 +3,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import io from 'socket.io-client';
 
-const VERSION = '0.1.2';
+const VERSION = '0.1.3';
 
 const QuestionTypes = {
     AGREEMENT: 'Agreement',
