@@ -171,8 +171,8 @@ async function addQuestion(topic, question) {
 
     // Insert the question
     const questionResult = await client.query(
-      'INSERT INTO questions (discussion_id, text, type, min_value, max_value) VALUES ($1, $2, $3, $4, $5) RETURNING *',
-      [discussionId, question.text, question.type, question.minValue, question.maxValue]
+      'INSERT INTO questions (discussion_id, text, type, min_value, max_value, options) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
+      [discussionId, question.text, question.type, question.minValue, question.maxValue, JSON.stringify(question.options)]
     );
 
     await client.query('COMMIT');
@@ -200,8 +200,14 @@ async function addVote(questionId, vote, userId) {
     if (existingVoteResult.rows.length > 0) {
       // User has already voted
       const existingVote = existingVoteResult.rows[0];
-      if (existingVote.value === vote) {
-        // If voting for the same option, remove the vote
+      // For checkbox, we need to handle multiple values
+      if (Array.isArray(vote)) {
+        await client.query(
+          'UPDATE votes SET value = $1 WHERE id = $2',
+          [JSON.stringify(vote), existingVote.id]
+        );
+      } else if (existingVote.value === vote) {
+        // If voting for the same option, remove the vote (except for open-ended)
         await client.query(
           'DELETE FROM votes WHERE id = $1',
           [existingVote.id]
@@ -217,7 +223,7 @@ async function addVote(questionId, vote, userId) {
       // User hasn't voted yet, add new vote
       await client.query(
         'INSERT INTO votes (question_id, user_id, value) VALUES ($1, $2, $3)',
-        [questionId, userId, vote]
+        [questionId, userId, Array.isArray(vote) ? JSON.stringify(vote) : vote]
       );
     }
 
