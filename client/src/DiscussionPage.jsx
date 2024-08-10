@@ -189,25 +189,28 @@ const DiscussionPage = () => {
                     </div>
                 );
             case QuestionTypes.NUMERICAL: {
+                const minValue = question.minValue || 0;
+                const maxValue = question.maxValue || 100;
+                const defaultValue = Math.floor((minValue + maxValue) / 2);
                 const sliderValue = sliderValues[question.id] !== undefined
                     ? sliderValues[question.id]
                     : (userVote
                         ? userVote.value
-                        : Math.floor((question.maxValue + question.minValue) / 2));
+                        : defaultValue);
                 return (
                     <div className="mt-4">
                         <input
                             type="range"
-                            min={question.minValue}
-                            max={question.maxValue}
+                            min={minValue}
+                            max={maxValue}
                             value={sliderValue}
                             className="w-full"
                             onChange={(e) => handleSliderChange(question.id, parseInt(e.target.value))}
                         />
                         <div className="flex justify-between mt-2">
-                            <span>{question.minValue}</span>
+                            <span>{minValue}</span>
                             <span>{sliderValue}</span>
-                            <span>{question.maxValue}</span>
+                            <span>{maxValue}</span>
                         </div>
                         <button
                             onClick={() => handleVote(question.id, sliderValue)}
