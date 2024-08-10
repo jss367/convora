@@ -76,6 +76,10 @@ If you want to push from main, it would be:
 `git push heroku main:main`
 
 
+## Dashboard
+
+* `https://dashboard.heroku.com/apps/convora`
+
 ## Other Notes
 
 The client and server are on the same domain, so I don't need to do things like this:
