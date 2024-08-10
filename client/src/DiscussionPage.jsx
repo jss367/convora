@@ -9,9 +9,9 @@ console.log('Convora version:', VERSION);
 const QuestionTypes = {
     AGREEMENT: 'Agreement',
     NUMERICAL: 'Numerical',
-    // MULTIPLE_CHOICE: 'Multiple Choice',
-    // CHECKBOX: 'Checkbox',
-    // RANKING: 'Ranking',
+    MULTIPLE_CHOICE: 'Multiple Choice',
+    CHECKBOX: 'Checkbox',
+    RANKING: 'Ranking',
     OPEN_ENDED: 'Open Ended'
 };
 
@@ -319,6 +319,11 @@ const DiscussionPage = () => {
                                     }`}
                             >
                                 {option}
+                                {question.votes && (
+                                    <span className="ml-2">
+                                        ({question.votes.filter(v => v.value === option).length})
+                                    </span>
+                                )}
                             </button>
                         ))}
                     </div>
