@@ -1,9 +1,9 @@
 import PropTypes from 'prop-types';
 import React, { useCallback, useEffect, useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import io from 'socket.io-client';
 
-const VERSION = '0.1.7';
+const VERSION = '0.1.8';
 console.log('Convora version:', VERSION);
 
 const QuestionTypes = {
@@ -30,15 +30,14 @@ const SortOptions = {
     MOST_CONTROVERSIAL: 'Most Controversial',
 };
 
-console.log('Environment SOCKET_URL:', process.env.REACT_APP_SOCKET_URL);
-
 const SOCKET_URL = process.env.REACT_APP_SOCKET_URL || 'https://convora-e40a9ae358dc.herokuapp.com/';
-// Environmental variables are not being passed, so hard-code it here.
+console.log('Environment SOCKET_URL:', SOCKET_URL);
 
 const socket = io(SOCKET_URL);
 
 const DiscussionPage = () => {
     const { topic } = useParams();
+    const navigate = useNavigate();
     const [questions, setQuestions] = useState([]);
     const [newQuestion, setNewQuestion] = useState('');
     const [questionType, setQuestionType] = useState(QuestionTypes.AGREEMENT);
@@ -50,10 +49,45 @@ const DiscussionPage = () => {
     const [userId, setUserId] = useState(null);
     const [optionsText, setOptionsText] = useState('');
     const [error, setError] = useState(null);
+    const [newTopicName, setNewTopicName] = useState('');
+    const [showDuplicateModal, setShowDuplicateModal] = useState(false);
 
     useEffect(() => {
         setUserId(Math.random().toString(36).substr(2, 9));
     }, []);
+
+    const handleDuplicateDiscussion = async () => {
+        if (newTopicName.trim() === '') {
+            setError('New topic name cannot be empty.');
+            return;
+        }
+
+        try {
+            // Remove any trailing slash from SOCKET_URL and ensure a single leading slash
+            const baseUrl = SOCKET_URL.replace(/\/$/, '').replace(/^\/+/, '/');
+            const response = await fetch(`${baseUrl}/api/duplicate-discussion`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ originalTopic: topic, newTopic: newTopicName }),
+            });
+
+            if (response.ok) {
+                const result = await response.json();
+                navigate(`/discussion/${result.newTopic}`);
+            } else {
+                const errorData = await response.json();
+                setError(`Failed to duplicate discussion: ${errorData.error}`);
+            }
+        } catch (error) {
+            console.error('Error duplicating discussion:', error);
+            setError('An error occurred while duplicating the discussion.');
+        }
+
+        setShowDuplicateModal(false);
+        setNewTopicName('');
+    };
 
     const handleQuestionsUpdate = useCallback((updatedQuestions) => {
         console.log('Received updated questions:', updatedQuestions);
@@ -244,8 +278,6 @@ const DiscussionPage = () => {
                         ? parseInt(userVote.value)
                         : defaultValue);
 
-                console.log("Question:", question.id, "Slider value:", sliderValue);
-
                 return (
                     <div className="mt-4">
                         <input
@@ -387,7 +419,44 @@ const DiscussionPage = () => {
     return (
         <div className="max-w-4xl mx-auto mt-10 px-4">
             <h1 className="text-4xl font-bold mb-8 text-center text-gray-800">Discussion: {topic}</h1>
-            <div className="text-right mb-4 text-gray-500">Version: {VERSION}</div>
+
+            {/* Duplicate Discussion Button */}
+            <button
+                onClick={() => setShowDuplicateModal(true)}
+                className="mb-4 bg-blue-500 text-white py-2 px-4 rounded hover:bg-blue-600 transition duration-300"
+            >
+                Duplicate Discussion
+            </button>
+
+            {/* Duplicate Modal */}
+            {showDuplicateModal && (
+                <div className="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full flex items-center justify-center">
+                    <div className="bg-white p-5 rounded-lg shadow-xl">
+                        <h2 className="text-xl font-bold mb-4">Duplicate Discussion</h2>
+                        <input
+                            type="text"
+                            value={newTopicName}
+                            onChange={(e) => setNewTopicName(e.target.value)}
+                            placeholder="Enter new topic name"
+                            className="w-full p-2 border rounded mb-4"
+                        />
+                        <div className="flex justify-end">
+                            <button
+                                onClick={() => setShowDuplicateModal(false)}
+                                className="mr-2 px-4 py-2 bg-gray-300 rounded hover:bg-gray-400"
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                onClick={handleDuplicateDiscussion}
+                                className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600"
+                            >
+                                Duplicate
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
             <div className="bg-white shadow-lg rounded-lg p-6 mb-8">
                 <input
                     type="text"

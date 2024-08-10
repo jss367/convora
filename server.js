@@ -13,6 +13,11 @@ const server = http.createServer(app);
 const isProduction = process.env.NODE_ENV === 'production';
 const clientUrl = process.env.CLIENT_URL || 'http://localhost:3000';
 
+app.use((req, res, next) => {
+  console.log(`${new Date().toISOString()} - ${req.method} ${req.url}`);
+  next();
+});
+
 // Enable CORS for your client URL
 app.use(cors({
   origin: clientUrl,
@@ -101,6 +106,11 @@ io.on('connection', (socket) => {
   socket.on('disconnect', () => {
     console.log('Client disconnected');
   });
+});
+
+app.use((req, res, next) => {
+  console.log('Request body:', req.body);
+  next();
 });
 
 // HTTP routes
@@ -304,6 +314,60 @@ app.get('/api/discussions', async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// for some reason I'm getting duplicate forward slashes, so just throwing this hack in to fix it
+app.post(['/api/duplicate-discussion', '//api/duplicate-discussion'], async (req, res) => {
+  const { originalTopic, newTopic } = req.body;
+  console.log(`Attempting to duplicate discussion. Original: ${originalTopic}, New: ${newTopic}`);
+
+  if (!originalTopic || !newTopic) {
+    console.log('Missing required fields');
+    return res.status(400).json({ error: 'Original topic and new topic are required' });
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    // Get the original discussion
+    const originalDiscussionResult = await client.query(
+      'SELECT id FROM discussions WHERE topic = $1',
+      [originalTopic]
+    );
+
+    if (originalDiscussionResult.rows.length === 0) {
+      throw new Error('Original discussion not found');
+    }
+
+    const originalDiscussionId = originalDiscussionResult.rows[0].id;
+
+    // Create new discussion
+    const newDiscussionResult = await client.query(
+      'INSERT INTO discussions (topic) VALUES ($1) RETURNING id',
+      [newTopic]
+    );
+
+    const newDiscussionId = newDiscussionResult.rows[0].id;
+
+    // Copy questions from original to new discussion
+    await client.query(`
+      INSERT INTO questions (discussion_id, text, type, min_value, max_value, options)
+      SELECT $1, text, type, min_value, max_value, options
+      FROM questions
+      WHERE discussion_id = $2
+    `, [newDiscussionId, originalDiscussionId]);
+
+    await client.query('COMMIT');
+
+    res.json({ success: true, newTopic });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('Error duplicating discussion:', error);
+    res.status(500).json({ error: 'Failed to duplicate discussion' });
+  } finally {
+    client.release();
   }
 });
 
