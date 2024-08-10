@@ -115,6 +115,7 @@ const DiscussionPage = () => {
                 }
                 console.log('Updated question:', questionMap.get(q.id));
             });
+            console.log('Updated questions state:', Array.from(questionMap.values()));
             return Array.from(questionMap.values());
         });
     }, []);
@@ -187,10 +188,44 @@ const DiscussionPage = () => {
         }
     };
 
-    const handleVote = (questionId, value) => {
-        console.log('Voting:', questionId, value);
-        socket.emit('vote', topic, questionId, value, userId);
-        setSliderValues(prev => ({ ...prev, [questionId]: undefined }));
+    const handleVote = (questionId, value, isMultipleChoice = false) => {
+        console.log('Voting:', questionId, value, isMultipleChoice);
+        const question = questions.find(q => q.id === questionId);
+        const userVote = question.votes ? question.votes.find(v => v.userId === userId) : null;
+        let newValue;
+
+        if (isMultipleChoice) {
+            if (userVote && Array.isArray(userVote.value)) {
+                newValue = userVote.value.includes(value)
+                    ? userVote.value.filter(v => v !== value)
+                    : [...userVote.value, value];
+            } else {
+                newValue = [value];
+            }
+        } else {
+            newValue = value;
+        }
+
+        console.log('Emitting vote:', topic, questionId, newValue, userId);
+        socket.emit('vote', topic, questionId, newValue, userId);
+
+        // Update the local state immediately for a responsive UI
+        setQuestions(prevQuestions => {
+            const updatedQuestions = prevQuestions.map(q =>
+                q.id === questionId
+                    ? {
+                        ...q,
+                        votes: q.votes
+                            ? q.votes.some(v => v.userId === userId)
+                                ? q.votes.map(v => v.userId === userId ? { ...v, value: newValue } : v)
+                                : [...q.votes, { userId, value: newValue }]
+                            : [{ userId, value: newValue }]
+                    }
+                    : q
+            );
+            console.log('Updated questions after vote:', updatedQuestions);
+            return updatedQuestions;
+        });
     };
 
     const handleSliderChange = (questionId, value) => {
@@ -236,6 +271,7 @@ const DiscussionPage = () => {
     };
 
     const renderVotingMechanism = (question) => {
+        console.log('Rendering voting mechanism for question:', question);
         const userVote = question.votes ? question.votes.find(v => v.userId === userId) : null;
 
         if (!question || typeof question !== 'object') {
@@ -309,23 +345,24 @@ const DiscussionPage = () => {
                 }
                 return (
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        {question.options.map((option) => (
-                            <button
-                                key={option}
-                                onClick={() => handleVote(question.id, option)}
-                                className={`p-2 rounded-md transition duration-300 ${userVote && userVote.value === option
-                                    ? 'bg-primary text-white'
-                                    : 'bg-secondary text-white hover:bg-opacity-90'
-                                    }`}
-                            >
-                                {option}
-                                {question.votes && (
-                                    <span className="ml-2">
-                                        ({question.votes.filter(v => v.value === option).length})
-                                    </span>
-                                )}
-                            </button>
-                        ))}
+                        {question.options.map((option) => {
+                            const isSelected = userVote && Array.isArray(userVote.value) && userVote.value.includes(option);
+                            const voteCount = question.votes
+                                ? question.votes.filter(v => Array.isArray(v.value) && v.value.includes(option)).length
+                                : 0;
+                            return (
+                                <button
+                                    key={option}
+                                    onClick={() => handleVote(question.id, option, true)}
+                                    className={`p-2 rounded-md transition duration-300 ${isSelected
+                                        ? 'bg-primary text-white'
+                                        : 'bg-secondary text-white hover:bg-opacity-90'
+                                        }`}
+                                >
+                                    {option} ({voteCount})
+                                </button>
+                            );
+                        })}
                     </div>
                 );
             }

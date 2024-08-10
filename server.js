@@ -253,12 +253,23 @@ migrateOptionsToJson().catch(console.error);
 // might get rid of above
 
 async function addVote(questionId, vote, userId) {
-  console.log('Adding vote:', questionId, vote, userId);
+  console.log(`Adding vote - QuestionID: ${questionId}, Vote: ${JSON.stringify(vote)}, UserID: ${userId}`);
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
 
-    // Check if the user has already voted on this question
+    const questionTypeResult = await client.query(
+      'SELECT type FROM questions WHERE id = $1',
+      [questionId]
+    );
+
+    if (questionTypeResult.rows.length === 0) {
+      throw new Error('Question not found');
+    }
+
+    const questionType = questionTypeResult.rows[0].type;
+    console.log(`Question type: ${questionType}`);
+
     const existingVoteResult = await client.query(
       'SELECT * FROM votes WHERE question_id = $1 AND user_id = $2',
       [questionId, userId]
@@ -267,31 +278,41 @@ async function addVote(questionId, vote, userId) {
     if (existingVoteResult.rows.length > 0) {
       console.log('User has already voted');
       const existingVote = existingVoteResult.rows[0];
-      // For checkbox, we need to handle multiple values
-      if (Array.isArray(vote)) {
+      
+      if (questionType === 'Multiple Choice') {
+        let newValue = Array.isArray(existingVote.value) ? existingVote.value : JSON.parse(existingVote.value);
+        console.log('Existing vote value:', newValue);
+        
+        if (Array.isArray(newValue)) {
+          const index = newValue.indexOf(vote);
+          if (index > -1) {
+            newValue.splice(index, 1);
+            console.log('Removed vote:', vote);
+          } else {
+            newValue.push(vote);
+            console.log('Added vote:', vote);
+          }
+        } else {
+          newValue = [vote];
+          console.log('Created new vote array:', newValue);
+        }
+        
         await client.query(
           'UPDATE votes SET value = $1 WHERE id = $2',
-          [JSON.stringify(vote), existingVote.id]
+          [JSON.stringify(newValue), existingVote.id]
         );
-      } else if (existingVote.value === vote) {
-        console.log('Voting for a option they already voted for');
-        await client.query(
-          'DELETE FROM votes WHERE id = $1',
-          [existingVote.id]
-        );
+        console.log('Updated vote in database');
       } else {
-        console.log('Voting for a different option');
-        await client.query(
-          'UPDATE votes SET value = $1 WHERE id = $2',
-          [vote, existingVote.id]
-        );
+        // ... (handle other question types)
       }
     } else {
       console.log('User has not voted yet');
+      const voteValue = questionType === 'Multiple Choice' ? JSON.stringify([vote]) : vote;
       await client.query(
         'INSERT INTO votes (question_id, user_id, value) VALUES ($1, $2, $3)',
-        [questionId, userId, Array.isArray(vote) ? JSON.stringify(vote) : vote]
+        [questionId, userId, voteValue]
       );
+      console.log('Inserted new vote into database');
     }
 
     await client.query('COMMIT');
