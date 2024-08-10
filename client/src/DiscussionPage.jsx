@@ -3,7 +3,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import io from 'socket.io-client';
 
-const VERSION = '0.1.6';
+const VERSION = '0.1.7';
 console.log('Convora version:', VERSION);
 
 const QuestionTypes = {
@@ -109,8 +109,9 @@ const DiscussionPage = () => {
                 setError('Minimum value must be less than maximum value.');
                 return;
             }
-            question.minValue = minValue;
-            question.maxValue = maxValue;
+            question.minValue = parseInt(minValue);
+            question.maxValue = parseInt(maxValue);
+            console.log('Adding numerical question with min:', question.minValue, 'max:', question.maxValue);
         }
 
         // Handle questions with options
@@ -222,13 +223,14 @@ const DiscussionPage = () => {
                     </div>
                 );
             case QuestionTypes.NUMERICAL: {
-                const minValue = question.minValue || 0;
-                const maxValue = question.maxValue || 100;
+                const minValue = parseInt(question.minValue) || 0;
+                const maxValue = parseInt(question.maxValue) || 100;
                 const defaultValue = Math.floor((minValue + maxValue) / 2);
+                console.log("Question min:", minValue, "max:", maxValue, "default:", defaultValue);
                 const sliderValue = sliderValues[question.id] !== undefined
                     ? sliderValues[question.id]
                     : (userVote
-                        ? userVote.value
+                        ? parseInt(userVote.value)
                         : defaultValue);
                 return (
                     <div className="mt-4">
