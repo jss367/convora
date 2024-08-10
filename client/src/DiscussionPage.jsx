@@ -343,23 +343,47 @@ const DiscussionPage = () => {
                     console.error('Invalid options for multiple choice question:', question);
                     return null;
                 }
+
+                // Initialize vote counts for each option
+                const voteCounts = {};
+                question.options.forEach(option => {
+                    voteCounts[option] = 0;
+                });
+
+                // Count votes for each option
+                question.votes.forEach(vote => {
+                    let voteValue;
+                    try {
+                        voteValue = JSON.parse(vote.value);
+                    } catch (e) {
+                        console.error('Error parsing vote value:', vote.value);
+                        return;
+                    }
+                    if (Array.isArray(voteValue)) {
+                        voteValue.forEach(v => {
+                            if (voteCounts[v] !== undefined) {
+                                voteCounts[v]++;
+                            }
+                        });
+                    }
+                });
+
                 return (
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                         {question.options.map((option) => {
-                            const isSelected = userVote && Array.isArray(userVote.value) && userVote.value.includes(option);
-                            const voteCount = question.votes
-                                ? question.votes.filter(v => Array.isArray(v.value) && v.value.includes(option)).length
-                                : 0;
+                            const isSelected = userVote &&
+                                Array.isArray(JSON.parse(userVote.value)) &&
+                                JSON.parse(userVote.value).includes(option);
                             return (
                                 <button
                                     key={option}
                                     onClick={() => handleVote(question.id, option, true)}
                                     className={`p-2 rounded-md transition duration-300 ${isSelected
-                                        ? 'bg-primary text-white'
-                                        : 'bg-secondary text-white hover:bg-opacity-90'
+                                            ? 'bg-primary text-white'
+                                            : 'bg-secondary text-white hover:bg-opacity-90'
                                         }`}
                                 >
-                                    {option} ({voteCount})
+                                    {option} ({voteCounts[option]})
                                 </button>
                             );
                         })}
