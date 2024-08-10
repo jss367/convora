@@ -13,6 +13,11 @@ const server = http.createServer(app);
 const isProduction = process.env.NODE_ENV === 'production';
 const clientUrl = process.env.CLIENT_URL || 'http://localhost:3000';
 
+app.use((req, res, next) => {
+  console.log(`${new Date().toISOString()} - ${req.method} ${req.url}`);
+  next();
+});
+
 // Enable CORS for your client URL
 app.use(cors({
   origin: clientUrl,
@@ -101,6 +106,11 @@ io.on('connection', (socket) => {
   socket.on('disconnect', () => {
     console.log('Client disconnected');
   });
+});
+
+app.use((req, res, next) => {
+  console.log('Request body:', req.body);
+  next();
 });
 
 // HTTP routes
@@ -308,11 +318,12 @@ app.get('/api/discussions', async (req, res) => {
 });
 app.post('/api/duplicate-discussion', async (req, res) => {
   const { originalTopic, newTopic } = req.body;
+  console.log(`Attempting to duplicate discussion. Original: ${originalTopic}, New: ${newTopic}`);
 
   if (!originalTopic || !newTopic) {
+    console.log('Missing required fields');
     return res.status(400).json({ error: 'Original topic and new topic are required' });
   }
-
   const client = await pool.connect();
   try {
     await client.query('BEGIN');

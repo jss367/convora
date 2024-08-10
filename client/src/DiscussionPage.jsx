@@ -55,7 +55,6 @@ const DiscussionPage = () => {
     useEffect(() => {
         setUserId(Math.random().toString(36).substr(2, 9));
     }, []);
-
     const handleDuplicateDiscussion = async () => {
         if (newTopicName.trim() === '') {
             setError('New topic name cannot be empty.');
@@ -63,7 +62,9 @@ const DiscussionPage = () => {
         }
 
         try {
-            const response = await fetch(`${SOCKET_URL}/api/duplicate-discussion`, {
+            // Remove any trailing slash from SOCKET_URL
+            const baseUrl = SOCKET_URL.replace(/\/$/, '');
+            const response = await fetch(`${baseUrl}/api/duplicate-discussion`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -75,7 +76,8 @@ const DiscussionPage = () => {
                 const result = await response.json();
                 navigate(`/discussion/${result.newTopic}`);
             } else {
-                setError('Failed to duplicate discussion.');
+                const errorData = await response.json();
+                setError(`Failed to duplicate discussion: ${errorData.error}`);
             }
         } catch (error) {
             console.error('Error duplicating discussion:', error);
