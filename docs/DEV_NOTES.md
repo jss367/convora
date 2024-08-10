@@ -71,7 +71,7 @@ The frontend is React and the backend is Node.js.
 
 This allows you to be working on a branch, `my_branch`, and push to main in heroku.
 
-If you want to push from main, it would be:
+Push from a branch might make it a little easier to revert if it doesn't go well, but if you want to push from main, it would be:
 
 `git push heroku main:main`
 
