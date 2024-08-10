@@ -75,7 +75,7 @@ const DiscussionPage = () => {
                 const result = await response.json();
                 navigate(`/discussion/${result.newTopic}`);
             } else {
-                setError('Failed to duplicate discussion. Please try again.');
+                setError('Failed to duplicate discussion.');
             }
         } catch (error) {
             console.error('Error duplicating discussion:', error);

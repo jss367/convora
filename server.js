@@ -306,7 +306,6 @@ app.get('/api/discussions', async (req, res) => {
     res.status(500).json({ error: 'Server error' });
   }
 });
-
 app.post('/api/duplicate-discussion', async (req, res) => {
   const { originalTopic, newTopic } = req.body;
 
@@ -340,11 +339,11 @@ app.post('/api/duplicate-discussion', async (req, res) => {
 
     // Copy questions from original to new discussion
     await client.query(`
-          INSERT INTO questions (discussion_id, text, type, min_value, max_value, options)
-          SELECT $1, text, type, min_value, max_value, options
-          FROM questions
-          WHERE discussion_id = $2
-      `, [newDiscussionId, originalDiscussionId]);
+      INSERT INTO questions (discussion_id, text, type, min_value, max_value, options)
+      SELECT $1, text, type, min_value, max_value, options
+      FROM questions
+      WHERE discussion_id = $2
+    `, [newDiscussionId, originalDiscussionId]);
 
     await client.query('COMMIT');
 
