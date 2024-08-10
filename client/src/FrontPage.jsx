@@ -4,7 +4,7 @@ import io from 'socket.io-client';
 
 const SOCKET_URL = process.env.REACT_APP_SOCKET_URL || 'https://convora-e40a9ae358dc.herokuapp.com/';
 
-const FrontPage = () => {
+const HomePage = () => {
     const [discussions, setDiscussions] = useState([]);
 
     useEffect(() => {
@@ -34,7 +34,7 @@ const FrontPage = () => {
     }, []);
 
     return (
-        <div className="max-w-4xl mx-auto mt-10 px-4">
+        <div className="max-w-4xl mx-auto mt-10">
             <h1 className="text-4xl font-bold mb-8 text-center text-gray-800">Convora Discussions</h1>
             <div className="grid gap-6">
                 {discussions.map(discussion => (
@@ -52,4 +52,4 @@ const FrontPage = () => {
     );
 };
 
-export default FrontPage;
+export default HomePage;

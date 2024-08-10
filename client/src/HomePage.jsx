@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 const HomePage = () => {
+    console.log("On the home page")
     const [newDiscussion, setNewDiscussion] = useState('');
     const navigate = useNavigate();
 

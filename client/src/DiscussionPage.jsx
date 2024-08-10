@@ -3,7 +3,8 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import io from 'socket.io-client';
 
-const VERSION = '0.1.3';
+const VERSION = '0.1.4';
+console.log('Convora version:', VERSION);
 
 const QuestionTypes = {
     AGREEMENT: 'Agreement',
@@ -33,8 +34,6 @@ console.log('Environment SOCKET_URL:', process.env.REACT_APP_SOCKET_URL);
 
 const SOCKET_URL = process.env.REACT_APP_SOCKET_URL || 'https://convora-e40a9ae358dc.herokuapp.com/';
 // Environmental variables are not being passed, so hard-code it here.
-
-console.log('Socket created with URL:', process.env.SOCKET_URL);
 
 const socket = io(SOCKET_URL);
 
