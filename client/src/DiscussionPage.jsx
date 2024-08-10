@@ -3,7 +3,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import io from 'socket.io-client';
 
-const VERSION = '0.1.4';
+const VERSION = '0.1.5';
 console.log('Convora version:', VERSION);
 
 const QuestionTypes = {
