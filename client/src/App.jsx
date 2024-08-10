@@ -13,7 +13,7 @@ const App = () => {
                 <main className="container mx-auto p-4">
                     <Routes>
                         <Route path="/" element={<HomePage />} />
-                        <Route path="/:topic" element={<DiscussionPage />} />
+                        <Route path="/discussion/:topic" element={<DiscussionPage />} />
                     </Routes>
                 </main>
             </div>
