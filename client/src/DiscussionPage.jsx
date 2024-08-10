@@ -1,6 +1,6 @@
 import PropTypes from 'prop-types';
 import React, { useCallback, useEffect, useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import io from 'socket.io-client';
 
 const VERSION = '0.1.7';
@@ -50,10 +50,44 @@ const DiscussionPage = () => {
     const [userId, setUserId] = useState(null);
     const [optionsText, setOptionsText] = useState('');
     const [error, setError] = useState(null);
+    const { topic } = useParams();
+    const navigate = useNavigate();
+    const [newTopicName, setNewTopicName] = useState('');
+    const [showDuplicateModal, setShowDuplicateModal] = useState(false);
 
     useEffect(() => {
         setUserId(Math.random().toString(36).substr(2, 9));
     }, []);
+
+    const handleDuplicateDiscussion = async () => {
+        if (newTopicName.trim() === '') {
+            setError('New topic name cannot be empty.');
+            return;
+        }
+
+        try {
+            const response = await fetch(`${SOCKET_URL}/api/duplicate-discussion`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ originalTopic: topic, newTopic: newTopicName }),
+            });
+
+            if (response.ok) {
+                const result = await response.json();
+                navigate(`/discussion/${result.newTopic}`);
+            } else {
+                setError('Failed to duplicate discussion. Please try again.');
+            }
+        } catch (error) {
+            console.error('Error duplicating discussion:', error);
+            setError('An error occurred while duplicating the discussion.');
+        }
+
+        setShowDuplicateModal(false);
+        setNewTopicName('');
+    };
 
     const handleQuestionsUpdate = useCallback((updatedQuestions) => {
         console.log('Received updated questions:', updatedQuestions);
@@ -387,7 +421,43 @@ const DiscussionPage = () => {
     return (
         <div className="max-w-4xl mx-auto mt-10 px-4">
             <h1 className="text-4xl font-bold mb-8 text-center text-gray-800">Discussion: {topic}</h1>
-            <div className="text-right mb-4 text-gray-500">Version: {VERSION}</div>
+            {/* Duplicate Discussion Button */}
+            <button
+                onClick={() => setShowDuplicateModal(true)}
+                className="mb-4 bg-blue-500 text-white py-2 px-4 rounded hover:bg-blue-600 transition duration-300"
+            >
+                Duplicate Discussion
+            </button>
+
+            {/* Duplicate Modal */}
+            {showDuplicateModal && (
+                <div className="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full flex items-center justify-center">
+                    <div className="bg-white p-5 rounded-lg shadow-xl">
+                        <h2 className="text-xl font-bold mb-4">Duplicate Discussion</h2>
+                        <input
+                            type="text"
+                            value={newTopicName}
+                            onChange={(e) => setNewTopicName(e.target.value)}
+                            placeholder="Enter new topic name"
+                            className="w-full p-2 border rounded mb-4"
+                        />
+                        <div className="flex justify-end">
+                            <button
+                                onClick={() => setShowDuplicateModal(false)}
+                                className="mr-2 px-4 py-2 bg-gray-300 rounded hover:bg-gray-400"
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                onClick={handleDuplicateDiscussion}
+                                className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600"
+                            >
+                                Duplicate
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
             <div className="bg-white shadow-lg rounded-lg p-6 mb-8">
                 <input
                     type="text"

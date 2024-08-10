@@ -307,6 +307,57 @@ app.get('/api/discussions', async (req, res) => {
   }
 });
 
+app.post('/api/duplicate-discussion', async (req, res) => {
+  const { originalTopic, newTopic } = req.body;
+
+  if (!originalTopic || !newTopic) {
+    return res.status(400).json({ error: 'Original topic and new topic are required' });
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    // Get the original discussion
+    const originalDiscussionResult = await client.query(
+      'SELECT id FROM discussions WHERE topic = $1',
+      [originalTopic]
+    );
+
+    if (originalDiscussionResult.rows.length === 0) {
+      throw new Error('Original discussion not found');
+    }
+
+    const originalDiscussionId = originalDiscussionResult.rows[0].id;
+
+    // Create new discussion
+    const newDiscussionResult = await client.query(
+      'INSERT INTO discussions (topic) VALUES ($1) RETURNING id',
+      [newTopic]
+    );
+
+    const newDiscussionId = newDiscussionResult.rows[0].id;
+
+    // Copy questions from original to new discussion
+    await client.query(`
+          INSERT INTO questions (discussion_id, text, type, min_value, max_value, options)
+          SELECT $1, text, type, min_value, max_value, options
+          FROM questions
+          WHERE discussion_id = $2
+      `, [newDiscussionId, originalDiscussionId]);
+
+    await client.query('COMMIT');
+
+    res.json({ success: true, newTopic });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('Error duplicating discussion:', error);
+    res.status(500).json({ error: 'Failed to duplicate discussion' });
+  } finally {
+    client.release();
+  }
+});
+
 // Catch-all route
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'dist', 'index.html'));
