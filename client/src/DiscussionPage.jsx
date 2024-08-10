@@ -3,7 +3,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import io from 'socket.io-client';
 
-const VERSION = '0.1.7';
+const VERSION = '0.1.8';
 console.log('Convora version:', VERSION);
 
 const QuestionTypes = {
@@ -30,15 +30,14 @@ const SortOptions = {
     MOST_CONTROVERSIAL: 'Most Controversial',
 };
 
-console.log('Environment SOCKET_URL:', process.env.REACT_APP_SOCKET_URL);
-
 const SOCKET_URL = process.env.REACT_APP_SOCKET_URL || 'https://convora-e40a9ae358dc.herokuapp.com/';
-// Environmental variables are not being passed, so hard-code it here.
+console.log('Environment SOCKET_URL:', SOCKET_URL);
 
 const socket = io(SOCKET_URL);
 
 const DiscussionPage = () => {
     const { topic } = useParams();
+    const navigate = useNavigate();
     const [questions, setQuestions] = useState([]);
     const [newQuestion, setNewQuestion] = useState('');
     const [questionType, setQuestionType] = useState(QuestionTypes.AGREEMENT);
@@ -50,8 +49,6 @@ const DiscussionPage = () => {
     const [userId, setUserId] = useState(null);
     const [optionsText, setOptionsText] = useState('');
     const [error, setError] = useState(null);
-    const { topic } = useParams();
-    const navigate = useNavigate();
     const [newTopicName, setNewTopicName] = useState('');
     const [showDuplicateModal, setShowDuplicateModal] = useState(false);
 
@@ -278,8 +275,6 @@ const DiscussionPage = () => {
                         ? parseInt(userVote.value)
                         : defaultValue);
 
-                console.log("Question:", question.id, "Slider value:", sliderValue);
-
                 return (
                     <div className="mt-4">
                         <input
@@ -421,6 +416,7 @@ const DiscussionPage = () => {
     return (
         <div className="max-w-4xl mx-auto mt-10 px-4">
             <h1 className="text-4xl font-bold mb-8 text-center text-gray-800">Discussion: {topic}</h1>
+
             {/* Duplicate Discussion Button */}
             <button
                 onClick={() => setShowDuplicateModal(true)}
