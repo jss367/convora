@@ -62,15 +62,24 @@ const DiscussionPage = () => {
             updatedQuestions.forEach(q => {
                 if (questionMap.has(q.id)) {
                     // Merge the new question data with the existing data,
-                    // ensuring we keep the votes array
+                    // ensuring we keep the votes array and handle numerical values
                     questionMap.set(q.id, {
                         ...questionMap.get(q.id),
                         ...q,
+                        minValue: q.type === QuestionTypes.NUMERICAL ? parseInt(q.minValue) : undefined,
+                        maxValue: q.type === QuestionTypes.NUMERICAL ? parseInt(q.maxValue) : undefined,
                         votes: q.votes || questionMap.get(q.id).votes || []
                     });
                 } else {
-                    questionMap.set(q.id, { ...q, timestamp: Date.now(), votes: q.votes || [] });
+                    questionMap.set(q.id, {
+                        ...q,
+                        timestamp: Date.now(),
+                        votes: q.votes || [],
+                        minValue: q.type === QuestionTypes.NUMERICAL ? parseInt(q.minValue) : undefined,
+                        maxValue: q.type === QuestionTypes.NUMERICAL ? parseInt(q.maxValue) : undefined
+                    });
                 }
+                console.log('Updated question:', questionMap.get(q.id));
             });
             return Array.from(questionMap.values());
         });
@@ -223,15 +232,20 @@ const DiscussionPage = () => {
                     </div>
                 );
             case QuestionTypes.NUMERICAL: {
-                const minValue = parseInt(question.minValue) || 0;
-                const maxValue = parseInt(question.maxValue) || 100;
+                // console.log("Question:", question)
+                const minValue = parseInt(question.minValue || question.min_value) || 0;
+                const maxValue = parseInt(question.maxValue || question.max_value) || 100;
                 const defaultValue = Math.floor((minValue + maxValue) / 2);
-                console.log("Question min:", minValue, "max:", maxValue, "default:", defaultValue);
+                // console.log("Question:", question.id, "min:", minValue, "max:", maxValue, "default:", defaultValue);
+
                 const sliderValue = sliderValues[question.id] !== undefined
                     ? sliderValues[question.id]
                     : (userVote
                         ? parseInt(userVote.value)
                         : defaultValue);
+
+                console.log("Question:", question.id, "Slider value:", sliderValue);
+
                 return (
                     <div className="mt-4">
                         <input
