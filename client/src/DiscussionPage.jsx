@@ -35,6 +35,63 @@ console.log('Environment SOCKET_URL:', SOCKET_URL);
 
 const socket = io(SOCKET_URL);
 
+
+const RankingQuestion = ({ question, userVote, handleVote }) => {
+    const [rankingOrder, setRankingOrder] = useState([]);
+
+    useEffect(() => {
+        if (userVote && Array.isArray(userVote.value)) {
+            setRankingOrder(userVote.value);
+        } else if (Array.isArray(question.options)) {
+            setRankingOrder([...question.options]);
+        }
+    }, [question.options, userVote]);
+
+    const moveItem = (fromIndex, toIndex) => {
+        const newOrder = [...rankingOrder];
+        const [reorderedItem] = newOrder.splice(fromIndex, 1);
+        newOrder.splice(toIndex, 0, reorderedItem);
+        setRankingOrder(newOrder);
+        handleVote(question.id, newOrder);
+    };
+
+    return (
+        <div>
+            {rankingOrder.map((option, index) => (
+                <div key={option} className="flex items-center space-x-2 mb-2">
+                    <span>{index + 1}.</span>
+                    <span>{option}</span>
+                    <button
+                        onClick={() => moveItem(index, Math.max(0, index - 1))}
+                        className="p-1 bg-secondary text-white rounded"
+                        disabled={index === 0}
+                    >
+                        ▲
+                    </button>
+                    <button
+                        onClick={() => moveItem(index, Math.min(rankingOrder.length - 1, index + 1))}
+                        className="p-1 bg-secondary text-white rounded"
+                        disabled={index === rankingOrder.length - 1}
+                    >
+                        ▼
+                    </button>
+                </div>
+            ))}
+        </div>
+    );
+};
+
+RankingQuestion.propTypes = {
+    question: PropTypes.shape({
+        id: PropTypes.string.isRequired,
+        options: PropTypes.arrayOf(PropTypes.string).isRequired,
+    }).isRequired,
+    userVote: PropTypes.shape({
+        value: PropTypes.arrayOf(PropTypes.string),
+    }),
+    handleVote: PropTypes.func.isRequired,
+};
+
 const DiscussionPage = () => {
     const { topic } = useParams();
     const navigate = useNavigate();
@@ -87,6 +144,18 @@ const DiscussionPage = () => {
 
         setShowDuplicateModal(false);
         setNewTopicName('');
+    };
+
+    const parseVoteValue = (value) => {
+        if (typeof value === 'string') {
+            try {
+                return JSON.parse(value);
+            } catch (e) {
+                // If it's not valid JSON, treat it as a single vote
+                return [value];
+            }
+        }
+        return Array.isArray(value) ? value : [value];
     };
 
     const handleQuestionsUpdate = useCallback((updatedQuestions) => {
@@ -278,205 +347,204 @@ const DiscussionPage = () => {
             console.error('Invalid question object:', question);
             return null;
         }
-
-        switch (question.type) {
-            case QuestionTypes.AGREEMENT:
-                return (
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        {Object.values(VoteOptions).map((option) => (
-                            <div key={option} className="flex items-center justify-between bg-gray-100 p-3 rounded-md">
-                                <span className="font-medium">
-                                    {option}: {question.votes ? question.votes.filter(v => v.value === option).length : 0}
-                                </span>
-                                <button
-                                    onClick={() => handleVote(question.id, option)}
-                                    className={`px-4 py-2 rounded-md transition duration-300 ${userVote && userVote.value === option
-                                        ? 'bg-primary text-white hover:bg-opacity-90'
-                                        : 'bg-secondary text-white hover:bg-opacity-90'
-                                        }`}
-                                >
-                                    {userVote && userVote.value === option ? 'Undo Vote' : 'Vote'}
-                                </button>
-                            </div>
-                        ))}
-                    </div>
-                );
-            case QuestionTypes.NUMERICAL: {
-                // console.log("Question:", question)
-                const minValue = parseInt(question.minValue || question.min_value) || 0;
-                const maxValue = parseInt(question.maxValue || question.max_value) || 100;
-                const defaultValue = Math.floor((minValue + maxValue) / 2);
-                // console.log("Question:", question.id, "min:", minValue, "max:", maxValue, "default:", defaultValue);
-
-                const sliderValue = sliderValues[question.id] !== undefined
-                    ? sliderValues[question.id]
-                    : (userVote
-                        ? parseInt(userVote.value)
-                        : defaultValue);
-
-                return (
-                    <div className="mt-4">
-                        <input
-                            type="range"
-                            min={minValue}
-                            max={maxValue}
-                            value={sliderValue}
-                            className="w-full"
-                            onChange={(e) => handleSliderChange(question.id, parseInt(e.target.value))}
-                        />
-                        <div className="flex justify-between mt-2">
-                            <span>{minValue}</span>
-                            <span>{sliderValue}</span>
-                            <span>{maxValue}</span>
+        try {
+            switch (question.type) {
+                case QuestionTypes.AGREEMENT:
+                    return (
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            {Object.values(VoteOptions).map((option) => (
+                                <div key={option} className="flex items-center justify-between bg-gray-100 p-3 rounded-md">
+                                    <span className="font-medium">
+                                        {option}: {question.votes ? question.votes.filter(v => v.value === option).length : 0}
+                                    </span>
+                                    <button
+                                        onClick={() => handleVote(question.id, option)}
+                                        className={`px-4 py-2 rounded-md transition duration-300 ${userVote && userVote.value === option
+                                            ? 'bg-primary text-white hover:bg-opacity-90'
+                                            : 'bg-secondary text-white hover:bg-opacity-90'
+                                            }`}
+                                    >
+                                        {userVote && userVote.value === option ? 'Undo Vote' : 'Vote'}
+                                    </button>
+                                </div>
+                            ))}
                         </div>
-                        <button
-                            onClick={() => handleVote(question.id, sliderValue)}
-                            className={`mt-4 px-4 py-2 rounded-md transition duration-300 ${userVote ? 'bg-primary text-white hover:bg-opacity-90' : 'bg-secondary text-white hover:bg-opacity-90'}`}
-                        >
-                            {userVote ? 'Update Vote' : 'Submit'}
-                        </button>
-                    </div>
-                );
-            }
-            case QuestionTypes.MULTIPLE_CHOICE: {
-                if (!Array.isArray(question.options)) {
-                    console.error('Invalid options for multiple choice question:', question);
-                    return null;
+                    );
+                case QuestionTypes.NUMERICAL: {
+                    // console.log("Question:", question)
+                    const minValue = parseInt(question.minValue || question.min_value) || 0;
+                    const maxValue = parseInt(question.maxValue || question.max_value) || 100;
+                    const defaultValue = Math.floor((minValue + maxValue) / 2);
+                    // console.log("Question:", question.id, "min:", minValue, "max:", maxValue, "default:", defaultValue);
+
+                    const sliderValue = sliderValues[question.id] !== undefined
+                        ? sliderValues[question.id]
+                        : (userVote
+                            ? parseInt(userVote.value)
+                            : defaultValue);
+
+                    return (
+                        <div className="mt-4">
+                            <input
+                                type="range"
+                                min={minValue}
+                                max={maxValue}
+                                value={sliderValue}
+                                className="w-full"
+                                onChange={(e) => handleSliderChange(question.id, parseInt(e.target.value))}
+                            />
+                            <div className="flex justify-between mt-2">
+                                <span>{minValue}</span>
+                                <span>{sliderValue}</span>
+                                <span>{maxValue}</span>
+                            </div>
+                            <button
+                                onClick={() => handleVote(question.id, sliderValue)}
+                                className={`mt-4 px-4 py-2 rounded-md transition duration-300 ${userVote ? 'bg-primary text-white hover:bg-opacity-90' : 'bg-secondary text-white hover:bg-opacity-90'}`}
+                            >
+                                {userVote ? 'Update Vote' : 'Submit'}
+                            </button>
+                        </div>
+                    );
                 }
-
-                // Initialize vote counts for each option
-                const voteCounts = {};
-                question.options.forEach(option => {
-                    voteCounts[option] = 0;
-                });
-
-                // Count votes for each option
-                question.votes.forEach(vote => {
-                    let voteValue;
-                    try {
-                        voteValue = JSON.parse(vote.value);
-                    } catch (e) {
-                        console.error('Error parsing vote value:', vote.value);
-                        return;
+                case QuestionTypes.MULTIPLE_CHOICE: {
+                    if (!Array.isArray(question.options)) {
+                        console.error('Invalid options for multiple choice question:', question);
+                        return null;
                     }
-                    if (Array.isArray(voteValue)) {
+
+                    // Initialize vote counts for each option
+                    const voteCounts = {};
+                    question.options.forEach(option => {
+                        voteCounts[option] = 0;
+                    });
+
+                    // Count votes for each option
+                    question.votes.forEach(vote => {
+                        const voteValue = parseVoteValue(vote.value);
                         voteValue.forEach(v => {
                             if (voteCounts[v] !== undefined) {
                                 voteCounts[v]++;
                             }
                         });
-                    }
-                });
+                    });
 
-                return (
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        {question.options.map((option) => {
-                            const isSelected = userVote &&
-                                Array.isArray(JSON.parse(userVote.value)) &&
-                                JSON.parse(userVote.value).includes(option);
-                            return (
-                                <button
-                                    key={option}
-                                    onClick={() => handleVote(question.id, option, true)}
-                                    className={`p-2 rounded-md transition duration-300 ${isSelected
+                    return (
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            {question.options.map((option) => {
+                                const userVoteValue = userVote ? parseVoteValue(userVote.value) : [];
+                                const isSelected = userVoteValue.includes(option);
+                                return (
+                                    <button
+                                        key={option}
+                                        onClick={() => handleVote(question.id, option, true)}
+                                        className={`p-2 rounded-md transition duration-300 ${isSelected
                                             ? 'bg-primary text-white'
                                             : 'bg-secondary text-white hover:bg-opacity-90'
-                                        }`}
-                                >
-                                    {option} ({voteCounts[option]})
-                                </button>
-                            );
-                        })}
-                    </div>
-                );
-            }
-            case QuestionTypes.CHECKBOX: {
-                if (optionsText.length === 0) {
-                    console.error('Invalid or missing options for checkbox question:', question);
-                    return <p>Error: This question has no options.</p>;
+                                            }`}
+                                    >
+                                        {option} ({voteCounts[option]})
+                                    </button>
+                                );
+                            })}
+                        </div>
+                    );
                 }
-                return (
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        {optionsText.map((option) => (
-                            <label key={option} className="flex items-center space-x-2">
-                                <input
-                                    type="checkbox"
-                                    checked={userVote && Array.isArray(userVote.value) && userVote.value.includes(option)}
-                                    onChange={() => {
-                                        const newValue = userVote && Array.isArray(userVote.value)
-                                            ? userVote.value.includes(option)
-                                                ? userVote.value.filter(v => v !== option)
-                                                : [...userVote.value, option]
-                                            : [option];
-                                        handleVote(question.id, newValue);
-                                    }}
-                                />
-                                <span>{option}</span>
-                            </label>
-                        ))}
-                    </div>
-                );
-            }
-
-            case QuestionTypes.RANKING: {
-                if (!Array.isArray(question.options)) {
-                    console.error('Invalid options for ranking question:', question);
-                    return null;
-                }
-                const [rankingOrder, setRankingOrder] = useState(userVote ? userVote.value : question.options);
-
-                useEffect(() => {
-                    if (userVote && Array.isArray(userVote.value)) {
-                        setRankingOrder(userVote.value);
+                case QuestionTypes.CHECKBOX: {
+                    if (optionsText.length === 0) {
+                        console.error('Invalid or missing options for checkbox question:', question);
+                        return <p>Error: This question has no options.</p>;
                     }
-                }, [userVote]);
+                    return (
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            {optionsText.map((option) => (
+                                <label key={option} className="flex items-center space-x-2">
+                                    <input
+                                        type="checkbox"
+                                        checked={userVote && Array.isArray(userVote.value) && userVote.value.includes(option)}
+                                        onChange={() => {
+                                            const newValue = userVote && Array.isArray(userVote.value)
+                                                ? userVote.value.includes(option)
+                                                    ? userVote.value.filter(v => v !== option)
+                                                    : [...userVote.value, option]
+                                                : [option];
+                                            handleVote(question.id, newValue);
+                                        }}
+                                    />
+                                    <span>{option}</span>
+                                </label>
+                            ))}
+                        </div>
+                    );
+                }
 
-                return (
-                    <div>
-                        {rankingOrder.map((option, index) => (
-                            <div key={option} className="flex items-center space-x-2 mb-2">
-                                <span>{index + 1}.</span>
-                                <span>{option}</span>
-                                <button
-                                    onClick={() => {
-                                        const newOrder = [...rankingOrder];
-                                        if (index > 0) {
-                                            [newOrder[index], newOrder[index - 1]] = [newOrder[index - 1], newOrder[index]];
-                                            setRankingOrder(newOrder);
-                                            handleVote(question.id, newOrder);
-                                        }
-                                    }}
-                                    className="p-1 bg-secondary text-white rounded"
-                                    disabled={index === 0}
-                                >
-                                    ▲
-                                </button>
-                                <button
-                                    onClick={() => {
-                                        const newOrder = [...rankingOrder];
-                                        if (index < rankingOrder.length - 1) {
-                                            [newOrder[index], newOrder[index + 1]] = [newOrder[index + 1], newOrder[index]];
-                                            setRankingOrder(newOrder);
-                                            handleVote(question.id, newOrder);
-                                        }
-                                    }}
-                                    className="p-1 bg-secondary text-white rounded"
-                                    disabled={index === rankingOrder.length - 1}
-                                >
-                                    ▼
-                                </button>
-                            </div>
-                        ))}
-                    </div>
-                );
-            }
-            case QuestionTypes.OPEN_ENDED: {
-                return <OpenEndedQuestion question={question} userVote={userVote} handleVote={handleVote} />;
-            }
+                case QuestionTypes.RANKING: {
+                    if (!Array.isArray(question.options)) {
+                        console.error('Invalid options for ranking question:', question);
+                        return null;
+                    }
+                    const [rankingOrder, setRankingOrder] = useState(userVote ? userVote.value : question.options);
 
-            default:
-                console.warn('Unknown question type:', question.type);
-                return null;
+                    useEffect(() => {
+                        if (userVote && Array.isArray(userVote.value)) {
+                            setRankingOrder(userVote.value);
+                        }
+                    }, [userVote]);
+
+                    return (
+                        <div>
+                            {rankingOrder.map((option, index) => (
+                                <div key={option} className="flex items-center space-x-2 mb-2">
+                                    <span>{index + 1}.</span>
+                                    <span>{option}</span>
+                                    <button
+                                        onClick={() => {
+                                            const newOrder = [...rankingOrder];
+                                            if (index > 0) {
+                                                [newOrder[index], newOrder[index - 1]] = [newOrder[index - 1], newOrder[index]];
+                                                setRankingOrder(newOrder);
+                                                handleVote(question.id, newOrder);
+                                            }
+                                        }}
+                                        className="p-1 bg-secondary text-white rounded"
+                                        disabled={index === 0}
+                                    >
+                                        ▲
+                                    </button>
+                                    <button
+                                        onClick={() => {
+                                            const newOrder = [...rankingOrder];
+                                            if (index < rankingOrder.length - 1) {
+                                                [newOrder[index], newOrder[index + 1]] = [newOrder[index + 1], newOrder[index]];
+                                                setRankingOrder(newOrder);
+                                                handleVote(question.id, newOrder);
+                                            }
+                                        }}
+                                        className="p-1 bg-secondary text-white rounded"
+                                        disabled={index === rankingOrder.length - 1}
+                                    >
+                                        ▼
+                                    </button>
+                                </div>
+                            ))}
+                        </div>
+                    );
+                }
+                case QuestionTypes.OPEN_ENDED: {
+                    return <OpenEndedQuestion
+                        question={question}
+                        userVote={userVote}
+                        handleVote={handleVote}
+                    />;
+                }
+
+                default:
+                    console.warn('Unknown question type:', question.type);
+                    return null;
+            }
+        } catch (error) {
+            console.error('Error rendering question:', error);
+            return <div>Error rendering question.</div>;
         }
     };
 
@@ -617,12 +685,22 @@ const DiscussionPage = () => {
         </div>
     );
 };
+
+
 const OpenEndedQuestion = ({ question, userVote, handleVote }) => {
-    const [response, setResponse] = useState(userVote ? userVote.value : '');
+    const [response, setResponse] = useState('');
 
     useEffect(() => {
-        setResponse(userVote ? userVote.value : '');
+        if (userVote) {
+            setResponse(userVote.value);
+        } else {
+            setResponse('');
+        }
     }, [userVote]);
+
+    const onSubmit = () => {
+        handleVote(question.id, response);
+    };
 
     return (
         <div>
@@ -634,10 +712,7 @@ const OpenEndedQuestion = ({ question, userVote, handleVote }) => {
                 placeholder="Enter your response here"
             />
             <button
-                onClick={() => {
-                    console.log('Submitting open-ended response:', response);
-                    handleVote(question.id, response);
-                }}
+                onClick={onSubmit}
                 className="px-4 py-2 bg-primary text-white rounded hover:bg-opacity-90 transition duration-300 mb-4"
             >
                 {userVote ? 'Update Response' : 'Submit Response'}
