@@ -3,7 +3,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import io from 'socket.io-client';
 
-const VERSION = '0.1.5';
+const VERSION = '0.1.6';
 console.log('Convora version:', VERSION);
 
 const QuestionTypes = {
@@ -49,6 +49,7 @@ const DiscussionPage = () => {
     const [showUnansweredOnly, setShowUnansweredOnly] = useState(false);
     const [userId, setUserId] = useState(null);
     const [optionsText, setOptionsText] = useState('');
+    const [error, setError] = useState(null);
 
     useEffect(() => {
         setUserId(Math.random().toString(36).substr(2, 9));
@@ -86,27 +87,59 @@ const DiscussionPage = () => {
 
     const handleAddQuestion = () => {
         console.log('Inside handleAddQuestion');
-        if (newQuestion.trim() !== '') {
-            console.log('Here is the new question: ', newQuestion);
-            const question = {
-                text: newQuestion,
-                type: questionType,
-                minValue: questionType === QuestionTypes.NUMERICAL ? minValue : null,
-                maxValue: questionType === QuestionTypes.NUMERICAL ? maxValue : null,
-                options: [QuestionTypes.MULTIPLE_CHOICE, QuestionTypes.CHECKBOX, QuestionTypes.RANKING].includes(questionType)
-                    ? optionsText.split('\n').filter(option => option.trim() !== '')
-                    : null,
-                timestamp: Date.now(),
-            };
-            console.log('Adding question:', question);
+
+        // Check if question text is empty
+        if (newQuestion.trim() === '') {
+            console.error('Failed to add question: Question text is empty.');
+            // You might want to set an error state here to display to the user
+            setError('Question text cannot be empty.');
+            return;
+        }
+
+        let question = {
+            text: newQuestion.trim(),
+            type: questionType,
+            timestamp: Date.now(),
+        };
+
+        // Handle numerical questions
+        if (questionType === QuestionTypes.NUMERICAL) {
+            if (minValue >= maxValue) {
+                console.error('Failed to add question: Min value must be less than max value.');
+                setError('Minimum value must be less than maximum value.');
+                return;
+            }
+            question.minValue = minValue;
+            question.maxValue = maxValue;
+        }
+
+        // Handle questions with options
+        if ([QuestionTypes.MULTIPLE_CHOICE, QuestionTypes.CHECKBOX, QuestionTypes.RANKING].includes(questionType)) {
+            const options = optionsText.split('\n').filter(option => option.trim() !== '');
+            if (options.length < 2) {
+                console.error('Failed to add question: Not enough options provided.');
+                setError('Please provide at least two options.');
+                return;
+            }
+            question.options = options;
+        }
+
+        console.log('Adding question:', question);
+
+        try {
             socket.emit('addQuestion', topic, question);
+
+            // Reset form
             setNewQuestion('');
             setQuestionType(QuestionTypes.AGREEMENT);
             setMinValue(0);
             setMaxValue(100);
             setOptionsText('');
-        } else {
-            console.log('Failed to add question.');
+            // Clear any previous errors
+            setError(null);
+        } catch (error) {
+            console.error('Error emitting addQuestion event:', error);
+            setError('Failed to add question. Please try again.');
         }
     };
 
@@ -398,6 +431,7 @@ const DiscussionPage = () => {
                 >
                     Add Question
                 </button>
+                {error && <div className="text-red-500 mt-2">{error}</div>}
             </div>
             {/* Sorting and filtering controls */}
             <div className="mb-6 flex justify-between items-center">
