@@ -55,6 +55,7 @@ const DiscussionPage = () => {
     useEffect(() => {
         setUserId(Math.random().toString(36).substr(2, 9));
     }, []);
+
     const handleDuplicateDiscussion = async () => {
         if (newTopicName.trim() === '') {
             setError('New topic name cannot be empty.');
@@ -62,8 +63,8 @@ const DiscussionPage = () => {
         }
 
         try {
-            // Remove any trailing slash from SOCKET_URL
-            const baseUrl = SOCKET_URL.replace(/\/$/, '');
+            // Remove any trailing slash from SOCKET_URL and ensure a single leading slash
+            const baseUrl = SOCKET_URL.replace(/\/$/, '').replace(/^\/+/, '/');
             const response = await fetch(`${baseUrl}/api/duplicate-discussion`, {
                 method: 'POST',
                 headers: {

@@ -316,7 +316,9 @@ app.get('/api/discussions', async (req, res) => {
     res.status(500).json({ error: 'Server error' });
   }
 });
-app.post('/api/duplicate-discussion', async (req, res) => {
+
+// for some reason I'm getting duplicate forward slashes, so just throwing this hack in to fix it
+app.post(['/api/duplicate-discussion', '//api/duplicate-discussion'], async (req, res) => {
   const { originalTopic, newTopic } = req.body;
   console.log(`Attempting to duplicate discussion. Original: ${originalTopic}, New: ${newTopic}`);
 
@@ -324,6 +326,7 @@ app.post('/api/duplicate-discussion', async (req, res) => {
     console.log('Missing required fields');
     return res.status(400).json({ error: 'Original topic and new topic are required' });
   }
+
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
