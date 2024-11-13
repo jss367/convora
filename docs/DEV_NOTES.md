@@ -88,3 +88,9 @@ const socket = io(SOCKET_URL, {
     withCredentials: true,
 });
 ```
+
+# Shut down
+
+I deleted the PostgreSQL with this: `heroku addons:destroy heroku-postgresql --app convora`
+
+If you want to turn on the app, you'll have to add it back. Before deleting, I downloaded a backup and save it at `/Users/julius/git/convora/latest.dump`.
