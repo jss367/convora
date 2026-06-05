@@ -706,20 +706,34 @@ function emitPresence(topic) {
   io.to(topic).emit('presence', count);
 }
 
-// Read the lock state and whether a moderator has been claimed.
+// Read the lock state, whether a moderator has been claimed, and the
+// discussion-wide brainstorm interaction flags. The flags live on the
+// discussion (not individual questions) so a moderator opens reactions/comments
+// for the whole room at once; this channel drives the moderator's toggle
+// buttons and gates the participant-facing reaction/comment UI.
 async function getDiscussionState(topic) {
   const slug = slugifyTopic(topic);
   const result = await pool.query(
-    'SELECT locked, reaction_keys, admin_token IS NOT NULL AS has_moderator FROM discussions WHERE slug = $1',
+    `SELECT locked, reaction_keys, admin_token IS NOT NULL AS has_moderator,
+            reactions_enabled, reactions_visible, comments_enabled
+       FROM discussions WHERE slug = $1`,
     [slug]
   );
   if (result.rows.length === 0) {
-    return { locked: false, hasModerator: false, reactionKeys: [...DEFAULT_REACTION_KEYS] };
+    return {
+      locked: false, hasModerator: false,
+      reactionsEnabled: false, reactionsVisible: true, commentsEnabled: false,
+      reactionKeys: [...DEFAULT_REACTION_KEYS],
+    };
   }
+  const row = result.rows[0];
   return {
-    locked: result.rows[0].locked === true,
-    hasModerator: result.rows[0].has_moderator === true,
-    reactionKeys: resolveReactionKeys(result.rows[0].reaction_keys),
+    locked: row.locked === true,
+    hasModerator: row.has_moderator === true,
+    reactionsEnabled: row.reactions_enabled === true,
+    reactionsVisible: row.reactions_visible === true,
+    commentsEnabled: row.comments_enabled === true,
+    reactionKeys: resolveReactionKeys(row.reaction_keys),
   };
 }
 
@@ -1185,13 +1199,15 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Moderator-only: flip the per-question interaction flags (allow/disallow
-  // reactions, reveal/hide reactions, allow/disallow comments). Only known
-  // boolean flags are applied.
-  socket.on('setQuestionFlags', async (topic, questionId, flags, token) => {
+  // Moderator-only: flip the discussion-wide interaction flags (allow/disallow
+  // reactions, reveal/hide reactions, allow/disallow comments). These apply to
+  // every brainstorm prompt at once so a moderator can phase the whole room —
+  // read silently first, then open reactions, then open comments — rather than
+  // toggling each question. Only known boolean flags are applied.
+  socket.on('setDiscussionFlags', async (topic, flags, token) => {
     const discussionSlug = slugifyTopic(topic);
     try {
-      const discussionId = await verifyAdmin(topic, token);
+      const discussionId = await verifyAdmin(discussionSlug, token);
       if (!discussionId) {
         socket.emit('error', { message: 'Not authorized to moderate this discussion.' });
         return;
@@ -1206,15 +1222,20 @@ io.on('connection', (socket) => {
         }
       }
       if (sets.length === 0) return;
-      values.push(questionId, discussionId);
+      values.push(discussionId);
       await pool.query(
-        `UPDATE questions SET ${sets.join(', ')} WHERE id = $${values.length - 1} AND discussion_id = $${values.length}`,
+        `UPDATE discussions SET ${sets.join(', ')} WHERE id = $${values.length}`,
         values
       );
+      // Re-broadcast both channels: discussionState drives the moderator's
+      // toggle buttons, while the questions payload changes too (revealing or
+      // hiding reactions/comments changes what attachBrainstormInteractions
+      // includes for everyone).
+      await emitDiscussionState(discussionSlug);
       io.to(discussionSlug).emit('questions', await getQuestions(discussionSlug));
     } catch (error) {
-      console.error('Error setting question flags:', error);
-      socket.emit('error', { message: 'Failed to update question' });
+      console.error('Error setting discussion flags:', error);
+      socket.emit('error', { message: 'Failed to update discussion' });
     }
   });
 
@@ -1447,9 +1468,9 @@ async function getQuestions(topic, { includeUserIds = false } = {}) {
       q.options,
       q.created_at,
       q.pinned,
-      q.reactions_enabled,
-      q.reactions_visible,
-      q.comments_enabled,
+      d.reactions_enabled,
+      d.reactions_visible,
+      d.comments_enabled,
       COALESCE(json_agg(
         json_build_object(
           'id', v.id,
@@ -1465,7 +1486,7 @@ async function getQuestions(topic, { includeUserIds = false } = {}) {
     JOIN discussions d ON q.discussion_id = d.id
     LEFT JOIN votes v ON q.id = v.question_id
     WHERE d.slug = $1
-    GROUP BY q.id
+    GROUP BY q.id, d.id
     ORDER BY q.pinned DESC, q.id
   `;
 
@@ -1877,14 +1898,73 @@ async function migrateResponseVotesTable() {
 
 // Interaction features layered on individual Brainstorm ideas: two-axis ratings
 // (a quality up/down vote and an agreement selection), curated epistemic
-// reactions, and threaded comments. Plus per-question moderator flags: whether
-// reactions/comments are available, and — for reactions — whether they're
-// currently revealed (so a moderator can collect ideas first, then open
-// reactions for an evaluation phase). All idempotent.
+// reactions, and threaded comments. Plus discussion-wide moderator flags:
+// whether reactions/comments are available, and — for reactions — whether
+// they're currently revealed (so a moderator can collect ideas first, then open
+// reactions for an evaluation phase). The flags live on the discussion so a
+// moderator opens them for every brainstorm prompt at once. All idempotent.
 async function migrateBrainstormInteractions() {
+  // Detect whether the discussion-level flags already exist BEFORE creating
+  // them. This distinguishes a first migration (where we must backfill from the
+  // legacy per-question flags) from an already-migrated DB (where the
+  // discussion columns are the live source of truth and must not be touched).
+  const { rows: existing } = await pool.query(`
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'discussions' AND column_name = 'reactions_enabled'
+  `);
+  const discussionFlagsExist = existing.length > 0;
+
+  await pool.query('ALTER TABLE discussions ADD COLUMN IF NOT EXISTS reactions_enabled BOOLEAN NOT NULL DEFAULT FALSE');
+  await pool.query('ALTER TABLE discussions ADD COLUMN IF NOT EXISTS reactions_visible BOOLEAN NOT NULL DEFAULT TRUE');
+  await pool.query('ALTER TABLE discussions ADD COLUMN IF NOT EXISTS comments_enabled BOOLEAN NOT NULL DEFAULT FALSE');
+
+  // Legacy per-question flag columns from when these toggles were per-question
+  // (added 2026-06-05, PR #39). Kept idempotently so older databases and a
+  // rollback still work, but no longer read or written — the discussion-level
+  // columns above are now the source of truth. The ADD COLUMN IF NOT EXISTS
+  // also guarantees the backfill query below is valid even on a fresh DB.
   await pool.query('ALTER TABLE questions ADD COLUMN IF NOT EXISTS reactions_enabled BOOLEAN NOT NULL DEFAULT FALSE');
   await pool.query('ALTER TABLE questions ADD COLUMN IF NOT EXISTS reactions_visible BOOLEAN NOT NULL DEFAULT TRUE');
   await pool.query('ALTER TABLE questions ADD COLUMN IF NOT EXISTS comments_enabled BOOLEAN NOT NULL DEFAULT FALSE');
+
+  // One-time backfill: only on the FIRST migration that creates the discussion
+  // columns. Databases upgrading from PR #39 already carry per-question flags;
+  // without this, every existing discussion would default to
+  // reactions_enabled=false / comments_enabled=false and any live brainstorm
+  // that had interactions open would silently go dark until a moderator
+  // reopened them. BOOL_OR rolls each discussion's questions up to "on if any
+  // question had it on." This is guarded by the existence check so it runs
+  // exactly once — re-running on every boot would clobber later moderator
+  // changes by resurrecting stale per-question values. On a fresh DB it's a
+  // harmless no-op since all values are at their defaults.
+  //
+  // enabled/comments roll up with BOOL_OR ("on if any question had it on").
+  // Visibility CANNOT roll up the same way: reactions_visible defaults TRUE on
+  // every question (including non-brainstorm and reactions-disabled ones), so a
+  // BOOL_OR would almost always yield TRUE and would force-reveal a brainstorm
+  // that was silently collecting reactions (enabled + hidden) just because some
+  // unrelated default-visible question exists. Revealing hidden data is the
+  // worse failure, so visibility errs toward hidden: consider only questions
+  // that actually had reactions enabled, and keep the discussion hidden if ANY
+  // such question was hidden (filtered BOOL_AND, defaulting to visible when no
+  // question had reactions enabled).
+  if (!discussionFlagsExist) {
+    await pool.query(`
+      UPDATE discussions d SET
+        reactions_enabled = sub.re,
+        reactions_visible = sub.rv,
+        comments_enabled  = sub.ce
+      FROM (
+        SELECT discussion_id,
+               BOOL_OR(reactions_enabled) AS re,
+               COALESCE(BOOL_AND(reactions_visible) FILTER (WHERE reactions_enabled), true) AS rv,
+               BOOL_OR(comments_enabled)  AS ce
+        FROM questions
+        GROUP BY discussion_id
+      ) sub
+      WHERE d.id = sub.discussion_id
+    `);
+  }
 
   // Which epistemic reactions are active for this discussion (a subset of
   // REACTION_CATALOG). NULL means "the creator hasn't customized it" → defaults.
@@ -2370,12 +2450,12 @@ async function toggleResponseVote(topic, responseId, userId) {
 }
 
 // Look up a brainstorm response within a topic and return its owner plus the
-// parent question's interaction flags. Returns null when the response doesn't
+// discussion's interaction flags. Returns null when the response doesn't
 // belong to the topic, so callers reject forged/cross-topic response ids.
 async function getResponseContext(topic, responseId) {
   const slug = slugifyTopic(topic);
   const result = await pool.query(
-    `SELECT v.user_id, q.type, q.reactions_enabled, q.reactions_visible, q.comments_enabled, d.locked, d.reaction_keys
+    `SELECT v.user_id, q.type, d.reactions_enabled, d.reactions_visible, d.comments_enabled, d.locked, d.reaction_keys
      FROM votes v
      JOIN questions q ON v.question_id = q.id
      JOIN discussions d ON q.discussion_id = d.id
@@ -2701,9 +2781,11 @@ app.post('/api/duplicate-discussion', async (req, res) => {
   try {
     await client.query('BEGIN');
 
-    // Get the original discussion
+    // Get the original discussion, including its interaction flags so the copy
+    // preserves whether reactions/comments were enabled (and reactions
+    // revealed) rather than silently resetting them to the defaults.
     const originalDiscussionResult = await client.query(
-      'SELECT id FROM discussions WHERE slug = $1',
+      'SELECT id, reactions_enabled, reactions_visible, comments_enabled FROM discussions WHERE slug = $1',
       [slugifyTopic(originalTopic)]
     );
 
@@ -2711,7 +2793,8 @@ app.post('/api/duplicate-discussion', async (req, res) => {
       throw new Error('Original discussion not found');
     }
 
-    const originalDiscussionId = originalDiscussionResult.rows[0].id;
+    const originalDiscussion = originalDiscussionResult.rows[0];
+    const originalDiscussionId = originalDiscussion.id;
 
     // Create new discussion. Duplicating into an existing topic would merge
     // questions into that discussion, so treat the unique conflict as a user
@@ -2736,11 +2819,14 @@ app.post('/api/duplicate-discussion', async (req, res) => {
     for (let suffix = 1; suffix <= 1000; suffix += 1) {
       const newSlug = suffixSlug(baseNewSlug, suffix);
       const newDiscussionResult = await client.query(
-        `INSERT INTO discussions (topic, slug, admin_token)
-         VALUES ($1, $2, $3)
+        `INSERT INTO discussions (topic, slug, admin_token, reactions_enabled, reactions_visible, comments_enabled)
+         VALUES ($1, $2, $3, $4, $5, $6)
          ON CONFLICT (slug) DO NOTHING
          RETURNING id, topic, slug`,
-        [displayNewTopic, newSlug, newAdminToken]
+        [displayNewTopic, newSlug, newAdminToken,
+          originalDiscussion.reactions_enabled,
+          originalDiscussion.reactions_visible,
+          originalDiscussion.comments_enabled]
       );
 
       if (newDiscussionResult.rows.length > 0) {
@@ -2756,13 +2842,11 @@ app.post('/api/duplicate-discussion', async (req, res) => {
 
     const newDiscussionId = newDiscussion.id;
 
-    // Copy questions from original to new discussion. Carry the brainstorm
-    // interaction flags too, so duplicating a discussion preserves whether
-    // reactions/comments were enabled (and reactions revealed) rather than
-    // silently resetting them to the migration defaults.
+    // Copy questions from original to new discussion. The interaction flags now
+    // live on the discussion (copied above), not per question.
     await client.query(`
-      INSERT INTO questions (discussion_id, text, type, min_value, max_value, options, reactions_enabled, reactions_visible, comments_enabled)
-      SELECT $1, text, type, min_value, max_value, options, reactions_enabled, reactions_visible, comments_enabled
+      INSERT INTO questions (discussion_id, text, type, min_value, max_value, options)
+      SELECT $1, text, type, min_value, max_value, options
       FROM questions
       WHERE discussion_id = $2
     `, [newDiscussionId, originalDiscussionId]);

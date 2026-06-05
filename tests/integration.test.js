@@ -681,7 +681,7 @@ test('Brainstorm ratings broadcast as aggregates without exposing who voted', as
       'reactions enabled'
     );
     mod.emit('setResponseRating', topic, responseId, 'quality', 1, 'user-early');
-    mod.emit('setQuestionFlags', topic, question.id, { reactions_enabled: true }, token);
+    mod.emit('setDiscussionFlags', topic, { reactions_enabled: true }, token);
     const afterEnable = (await enabledUpdate)[0].votes[0];
     assert.equal(afterEnable.qualityUp, 0, 'rating before enabling reactions must be rejected');
 
@@ -720,7 +720,7 @@ test('Brainstorm agreement votes accumulate into a distribution', async () => {
     const responseId = (await ideaUpdate)[0].votes[0].id;
 
     const enabledUpdate = waitForQuestions(mod, (qs) => qs[0] && qs[0].reactionsEnabled === true, 'reactions enabled');
-    mod.emit('setQuestionFlags', topic, question.id, { reactions_enabled: true }, token);
+    mod.emit('setDiscussionFlags', topic, { reactions_enabled: true }, token);
     await enabledUpdate;
 
     const agreeUpdate = waitForQuestions(
@@ -759,7 +759,7 @@ test('Brainstorm comments can be added, listed with pseudonyms, and deleted', as
     const rejected = await new Promise((resolve) =>
       participant.emit('addResponseComment', topic, responseId, 'too early', 'user-c', 'Critic', resolve));
     assert.equal(rejected.added, false, 'comment before enabling must be rejected');
-    mod.emit('setQuestionFlags', topic, question.id, { comments_enabled: true }, token);
+    mod.emit('setDiscussionFlags', topic, { comments_enabled: true }, token);
     await enabledUpdate;
 
     const commentUpdate = waitForQuestions(
@@ -862,7 +862,7 @@ test("a moderator can delete any participant's comment (spam control)", async ()
     const responseId = (await ideaUpdate)[0].votes[0].id;
 
     const enabledUpdate = waitForQuestions(mod, (qs) => qs[0] && qs[0].commentsEnabled === true, 'comments enabled');
-    mod.emit('setQuestionFlags', topic, question.id, { comments_enabled: true }, token);
+    mod.emit('setDiscussionFlags', topic, { comments_enabled: true }, token);
     await enabledUpdate;
 
     const commentUpdate = waitForQuestions(
@@ -946,7 +946,7 @@ test('Brainstorm ratings, reactions, and comments are rejected once the discussi
       (qs) => qs[0] && qs[0].reactionsEnabled === true && qs[0].commentsEnabled === true,
       'reactions + comments enabled'
     );
-    mod.emit('setQuestionFlags', topic, question.id, { reactions_enabled: true, comments_enabled: true }, token);
+    mod.emit('setDiscussionFlags', topic, { reactions_enabled: true, comments_enabled: true }, token);
     await enabledUpdate;
 
     // ...then the discussion is locked, which should close all of them.
@@ -987,7 +987,7 @@ test('Renaming updates stored comment pseudonyms, and comment tokens are namespa
     const responseId = (await ideaUpdate)[0].votes[0].id;
 
     const enabledUpdate = waitForQuestions(mod, (qs) => qs[0] && qs[0].commentsEnabled === true, 'comments enabled');
-    mod.emit('setQuestionFlags', topic, question.id, { comments_enabled: true }, token);
+    mod.emit('setDiscussionFlags', topic, { comments_enabled: true }, token);
     await enabledUpdate;
 
     const commentUpdate = waitForQuestions(
@@ -1032,7 +1032,7 @@ test('Brainstorm authors cannot rate or react to their own idea', async () => {
     const responseId = (await ideaUpdate)[0].votes[0].id;
 
     const enabledUpdate = waitForQuestions(mod, (qs) => qs[0] && qs[0].reactionsEnabled === true, 'reactions enabled');
-    mod.emit('setQuestionFlags', topic, question.id, { reactions_enabled: true }, token);
+    mod.emit('setDiscussionFlags', topic, { reactions_enabled: true }, token);
     await enabledUpdate;
 
     // The author tries to rate and react to their own idea.
@@ -1072,7 +1072,7 @@ test('Brainstorm reactions can be narrowed to a creator-chosen set', async () =>
     assert.deepEqual((await narrowed).reactionKeys, ['crux']);
 
     const enabledUpdate = waitForQuestions(mod, (qs) => qs[0] && qs[0].reactionsEnabled === true, 'reactions enabled');
-    mod.emit('setQuestionFlags', topic, question.id, { reactions_enabled: true }, token);
+    mod.emit('setDiscussionFlags', topic, { reactions_enabled: true }, token);
     await enabledUpdate;
 
     // A reaction outside the active set is rejected; one inside is accepted.
@@ -1126,7 +1126,7 @@ test('Brainstorm comment pseudonyms are sanitized before storage', async () => {
     const responseId = (await ideaUpdate)[0].votes[0].id;
 
     const enabledUpdate = waitForQuestions(mod, (qs) => qs[0] && qs[0].commentsEnabled === true, 'comments enabled');
-    mod.emit('setQuestionFlags', topic, question.id, { comments_enabled: true }, token);
+    mod.emit('setDiscussionFlags', topic, { comments_enabled: true }, token);
     await enabledUpdate;
 
     const oversized = 'x'.repeat(120);
@@ -1159,7 +1159,7 @@ test('Duplicating a discussion preserves brainstorm interaction flags', async ()
       (qs) => qs[0] && qs[0].reactionsEnabled === true && qs[0].reactionsVisible === false && qs[0].commentsEnabled === true,
       'flags set'
     );
-    mod.emit('setQuestionFlags', topic, question.id,
+    mod.emit('setDiscussionFlags', topic,
       { reactions_enabled: true, reactions_visible: false, comments_enabled: true }, token);
     await flaggedUpdate;
 

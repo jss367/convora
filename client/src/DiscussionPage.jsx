@@ -131,7 +131,11 @@ const DiscussionPage = () => {
     const [presence, setPresence] = useState(0);
     const [copied, setCopied] = useState(false);
     const [adminToken, setAdminToken] = useState(null);
-    const [discussionState, setDiscussionState] = useState({ locked: false, hasModerator: false, reactionKeys: ALL_REACTION_KEYS });
+    const [discussionState, setDiscussionState] = useState({
+        locked: false, hasModerator: false,
+        reactionsEnabled: false, reactionsVisible: true, commentsEnabled: false,
+        reactionKeys: ALL_REACTION_KEYS,
+    });
     const [similarPrompt, setSimilarPrompt] = useState(null);
     const [adminLinkCopied, setAdminLinkCopied] = useState(false);
     // Id of the question a moderator is currently editing inline (null when none).
@@ -821,8 +825,8 @@ const DiscussionPage = () => {
         socket.emit('moderatorDeleteResponseComment', topic, commentId, adminToken);
     };
 
-    const handleSetQuestionFlags = (questionId, flags) => {
-        socket.emit('setQuestionFlags', topic, questionId, flags, adminToken);
+    const handleSetDiscussionFlags = (flags) => {
+        socket.emit('setDiscussionFlags', topic, flags, adminToken);
     };
 
     // Set the active epistemic reactions for the whole session. The server
@@ -968,8 +972,6 @@ const DiscussionPage = () => {
                     isAdmin={isAdmin}
                     myBrainstorm={myBrainstorm}
                     activeReactionKeys={activeReactionKeys}
-                    onSetFlags={handleSetQuestionFlags}
-                    onSetReactionKeys={handleSetReactionKeys}
                     onSetRating={handleSetRating}
                     onToggleReaction={handleToggleReaction}
                     onAddComment={handleAddComment}
@@ -1265,6 +1267,65 @@ const DiscussionPage = () => {
                         >
                             {showJoinQr ? 'Hide join QR' : 'Show join QR'}
                         </button>
+                        {/* Discussion-wide brainstorm phasing: these apply to
+                            every brainstorm prompt at once (read silently, then
+                            open reactions, then open comments). */}
+                        <span className="w-px self-stretch bg-indigo-200" aria-hidden="true" />
+                        <span className="text-indigo-700">Brainstorms:</span>
+                        <button
+                            onClick={() => handleSetDiscussionFlags({ reactions_enabled: !discussionState.reactionsEnabled })}
+                            className="px-3 py-1 rounded bg-white border border-indigo-300 text-indigo-700 hover:bg-indigo-100"
+                        >
+                            {discussionState.reactionsEnabled ? 'Disable reactions' : 'Enable reactions'}
+                        </button>
+                        {discussionState.reactionsEnabled && (
+                            <button
+                                onClick={() => handleSetDiscussionFlags({ reactions_visible: !discussionState.reactionsVisible })}
+                                className="px-3 py-1 rounded bg-white border border-indigo-300 text-indigo-700 hover:bg-indigo-100"
+                            >
+                                {discussionState.reactionsVisible ? 'Hide reactions' : 'Show reactions'}
+                            </button>
+                        )}
+                        <button
+                            onClick={() => handleSetDiscussionFlags({ comments_enabled: !discussionState.commentsEnabled })}
+                            className="px-3 py-1 rounded bg-white border border-indigo-300 text-indigo-700 hover:bg-indigo-100"
+                        >
+                            {discussionState.commentsEnabled ? 'Disable comments' : 'Enable comments'}
+                        </button>
+                        {/* Creator-configurable reaction set (whole session): which
+                            epistemic reactions participants may use. Discussion-wide,
+                            so it lives here alongside the other brainstorm toggles. */}
+                        {discussionState.reactionsEnabled && (
+                            <div className="w-full flex flex-wrap items-center gap-1 mt-1 border-t border-indigo-200 pt-2 text-xs">
+                                <span className="text-indigo-700">Reaction set (whole session):</span>
+                                {EPISTEMIC_REACTIONS.map(r => {
+                                    const on = activeReactionKeys.includes(r.key);
+                                    return (
+                                        <button
+                                            key={r.key}
+                                            type="button"
+                                            // Toggling rebuilds the active list in catalog order; the
+                                            // last remaining reaction can't be removed (the server
+                                            // ignores an empty set, so guard the UI to match).
+                                            onClick={() => {
+                                                const next = on
+                                                    ? activeReactionKeys.filter(k => k !== r.key)
+                                                    : EPISTEMIC_REACTIONS.map(c => c.key)
+                                                        .filter(k => k === r.key || activeReactionKeys.includes(k));
+                                                if (next.length === 0) return;
+                                                handleSetReactionKeys(next);
+                                            }}
+                                            title={on ? `Hide "${r.label}"` : `Show "${r.label}"`}
+                                            className={`px-2 py-0.5 rounded-full border ${on
+                                                ? 'bg-indigo-100 border-indigo-400 text-indigo-800'
+                                                : 'bg-white border-gray-300 text-gray-400 line-through'}`}
+                                        >
+                                            <span className="mr-1">{r.emoji}</span>{r.label}
+                                        </button>
+                                    );
+                                })}
+                            </div>
+                        )}
                     </div>
                 ) : !discussionState.hasModerator ? (
                     <button
@@ -2054,11 +2115,14 @@ BrainstormIdea.propTypes = {
 // evaluating them.
 const BrainstormQuestion = ({
     question, ownedVoteIds, ownedCommentIds, handleVote, handleDeleteVote, locked, isAdmin, myBrainstorm,
-    activeReactionKeys, onSetFlags, onSetReactionKeys, onSetRating, onToggleReaction, onAddComment, onDeleteComment,
+    activeReactionKeys, onSetRating, onToggleReaction, onAddComment, onDeleteComment,
     onModeratorDeleteVote, onModeratorDeleteComment,
 }) => {
     const [idea, setIdea] = useState('');
     const votes = question.votes || [];
+    // Whether reactions/comments are available is set discussion-wide by the
+    // moderator (see the moderator bar in DiscussionPage); each question carries
+    // the resolved flags via getQuestions.
     const reactionsEnabled = question.reactionsEnabled;
     const reactionsVisible = question.reactionsVisible;
     const commentsEnabled = question.commentsEnabled;
@@ -2073,58 +2137,8 @@ const BrainstormQuestion = ({
         setIdea('');
     };
 
-    const modButton = 'px-2 py-1 rounded bg-white border border-indigo-300 text-indigo-700 hover:bg-indigo-100';
-
     return (
         <div>
-            {isAdmin && (
-                <div className="flex flex-wrap items-center gap-2 mb-4 bg-indigo-50 border border-indigo-100 rounded-md p-2 text-xs">
-                    <span className="font-semibold text-indigo-800">Moderator:</span>
-                    <button onClick={() => onSetFlags(question.id, { reactions_enabled: !reactionsEnabled })} className={modButton}>
-                        {reactionsEnabled ? 'Disable reactions' : 'Enable reactions'}
-                    </button>
-                    {reactionsEnabled && (
-                        <button onClick={() => onSetFlags(question.id, { reactions_visible: !reactionsVisible })} className={modButton}>
-                            {reactionsVisible ? 'Hide reactions' : 'Show reactions'}
-                        </button>
-                    )}
-                    <button onClick={() => onSetFlags(question.id, { comments_enabled: !commentsEnabled })} className={modButton}>
-                        {commentsEnabled ? 'Disable comments' : 'Enable comments'}
-                    </button>
-                    {reactionsEnabled && (
-                        <div className="w-full flex flex-wrap items-center gap-1 mt-1 border-t border-indigo-100 pt-2">
-                            <span className="text-indigo-800">Reaction set (whole session):</span>
-                            {EPISTEMIC_REACTIONS.map(r => {
-                                const on = activeReactionKeys.includes(r.key);
-                                return (
-                                    <button
-                                        key={r.key}
-                                        type="button"
-                                        // Toggling rebuilds the active list in catalog order; the
-                                        // last remaining reaction can't be removed (the server
-                                        // ignores an empty set, so guard the UI to match).
-                                        onClick={() => {
-                                            const next = on
-                                                ? activeReactionKeys.filter(k => k !== r.key)
-                                                : EPISTEMIC_REACTIONS.map(c => c.key)
-                                                    .filter(k => k === r.key || activeReactionKeys.includes(k));
-                                            if (next.length === 0) return;
-                                            onSetReactionKeys(next);
-                                        }}
-                                        title={on ? `Hide "${r.label}"` : `Show "${r.label}"`}
-                                        className={`px-2 py-0.5 rounded-full border ${on
-                                            ? 'bg-indigo-100 border-indigo-400 text-indigo-800'
-                                            : 'bg-white border-gray-300 text-gray-400 line-through'}`}
-                                    >
-                                        <span className="mr-1">{r.emoji}</span>{r.label}
-                                    </button>
-                                );
-                            })}
-                        </div>
-                    )}
-                </div>
-            )}
-
             {!locked && (
                 <>
                     <textarea
@@ -2261,8 +2275,6 @@ BrainstormQuestion.propTypes = {
         reactions: PropTypes.object,
     }).isRequired,
     activeReactionKeys: PropTypes.array.isRequired,
-    onSetFlags: PropTypes.func.isRequired,
-    onSetReactionKeys: PropTypes.func.isRequired,
     onSetRating: PropTypes.func.isRequired,
     onToggleReaction: PropTypes.func.isRequired,
     onAddComment: PropTypes.func.isRequired,
