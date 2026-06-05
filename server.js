@@ -457,30 +457,48 @@ async function verifyAdmin(topic, token) {
 
 // First-come moderator claim: assigns a fresh admin token only if the
 // discussion has none yet. Returns the token, or null if already claimed.
-// (discussions.topic has no unique constraint in this schema, so we avoid
-// ON CONFLICT and use SELECT/INSERT like the rest of the app.)
+// discussions.topic has no unique constraint in this schema (the rest of the
+// app tolerates duplicate-topic rows), so we can't lean on ON CONFLICT. To keep
+// the first-come guarantee even for a brand-new topic — where two concurrent
+// claims could otherwise both see no row and both INSERT, producing duplicate
+// rows each with a valid token — we serialize claims for the same topic with a
+// transaction-scoped advisory lock. hashtext() maps the topic to the bigint the
+// lock API expects; the lock releases automatically on COMMIT/ROLLBACK.
 async function claimModerator(topic) {
   const token = crypto.randomBytes(16).toString('hex');
-  const existing = await pool.query('SELECT admin_token FROM discussions WHERE topic = $1', [topic]);
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [topic]);
 
-  if (existing.rows.length === 0) {
-    const inserted = await pool.query(
-      'INSERT INTO discussions (topic, admin_token) VALUES ($1, $2) RETURNING admin_token',
-      [topic, token]
-    );
-    return inserted.rows[0].admin_token;
+    const existing = await client.query('SELECT admin_token FROM discussions WHERE topic = $1', [topic]);
+
+    let result;
+    if (existing.rows.length === 0) {
+      const inserted = await client.query(
+        'INSERT INTO discussions (topic, admin_token) VALUES ($1, $2) RETURNING admin_token',
+        [topic, token]
+      );
+      result = inserted.rows[0].admin_token;
+    } else if (existing.rows[0].admin_token) {
+      result = null; // already has a moderator
+    } else {
+      // Claim the existing, unclaimed discussion.
+      const updated = await client.query(
+        'UPDATE discussions SET admin_token = $1 WHERE topic = $2 AND admin_token IS NULL RETURNING admin_token',
+        [token, topic]
+      );
+      result = updated.rows.length > 0 ? updated.rows[0].admin_token : null;
+    }
+
+    await client.query('COMMIT');
+    return result;
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    client.release();
   }
-
-  if (existing.rows[0].admin_token) {
-    return null; // already has a moderator
-  }
-
-  // Claim the existing, unclaimed discussion atomically (guards against a race).
-  const updated = await pool.query(
-    'UPDATE discussions SET admin_token = $1 WHERE topic = $2 AND admin_token IS NULL RETURNING admin_token',
-    [token, topic]
-  );
-  return updated.rows.length > 0 ? updated.rows[0].admin_token : null;
 }
 
 // Whether voting is currently closed for a discussion.
