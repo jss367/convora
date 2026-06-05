@@ -92,9 +92,9 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('vote', async (topic, questionId, vote, userId) => {
+  socket.on('vote', async (topic, questionId, vote, userId, pseudonym) => {
     try {
-      await addVote(questionId, vote, userId);
+      await addVote(questionId, vote, userId, pseudonym);
       const questions = await getQuestions(topic);
       io.to(topic).emit('questions', questions);
     } catch (error) {
@@ -160,9 +160,10 @@ async function getQuestions(topic) {
         json_build_object(
           'id', v.id,
           'value', v.value,
-          'userId', v.user_id
+          'userId', v.user_id,
+          'pseudonym', v.pseudonym
         ) ORDER BY v.id
-      ) FILTER (WHERE v.id IS NOT NULL), '[]'::json) as votes 
+      ) FILTER (WHERE v.id IS NOT NULL), '[]'::json) as votes
     FROM questions q
     JOIN discussions d ON q.discussion_id = d.id
     LEFT JOIN votes v ON q.id = v.question_id 
@@ -252,8 +253,20 @@ async function migrateOptionsToJson() {
 migrateOptionsToJson().catch(console.error);
 // might get rid of above
 
-async function addVote(questionId, vote, userId) {
-  console.log('Adding vote:', questionId, vote, userId);
+// Add the pseudonym column to votes if it doesn't already exist. Idempotent so
+// it's safe to run on every boot.
+async function migrateAddPseudonymColumn() {
+  try {
+    await pool.query('ALTER TABLE votes ADD COLUMN IF NOT EXISTS pseudonym TEXT');
+    console.log('Pseudonym column migration completed');
+  } catch (e) {
+    console.error('Error adding pseudonym column:', e);
+  }
+}
+migrateAddPseudonymColumn().catch(console.error);
+
+async function addVote(questionId, vote, userId, pseudonym) {
+  console.log('Adding vote:', questionId, vote, userId, pseudonym);
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -267,11 +280,11 @@ async function addVote(questionId, vote, userId) {
     if (existingVoteResult.rows.length > 0) {
       console.log('User has already voted');
       const existingVote = existingVoteResult.rows[0];
-      // For checkbox, we need to handle multiple values
+      // Arrays (e.g. multi-value responses) are stored as JSON strings
       if (Array.isArray(vote)) {
         await client.query(
-          'UPDATE votes SET value = $1 WHERE id = $2',
-          [JSON.stringify(vote), existingVote.id]
+          'UPDATE votes SET value = $1, pseudonym = $2 WHERE id = $3',
+          [JSON.stringify(vote), pseudonym, existingVote.id]
         );
       } else if (existingVote.value === vote) {
         console.log('Voting for a option they already voted for');
@@ -282,15 +295,15 @@ async function addVote(questionId, vote, userId) {
       } else {
         console.log('Voting for a different option');
         await client.query(
-          'UPDATE votes SET value = $1 WHERE id = $2',
-          [vote, existingVote.id]
+          'UPDATE votes SET value = $1, pseudonym = $2 WHERE id = $3',
+          [vote, pseudonym, existingVote.id]
         );
       }
     } else {
       console.log('User has not voted yet');
       await client.query(
-        'INSERT INTO votes (question_id, user_id, value) VALUES ($1, $2, $3)',
-        [questionId, userId, Array.isArray(vote) ? JSON.stringify(vote) : vote]
+        'INSERT INTO votes (question_id, user_id, value, pseudonym) VALUES ($1, $2, $3, $4)',
+        [questionId, userId, Array.isArray(vote) ? JSON.stringify(vote) : vote, pseudonym]
       );
     }
 
