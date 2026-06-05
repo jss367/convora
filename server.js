@@ -1320,21 +1320,36 @@ async function migrateDiscussionSlugs() {
     await client.query('ALTER TABLE discussions ADD COLUMN IF NOT EXISTS slug TEXT');
 
     const result = await client.query('SELECT id, topic, slug FROM discussions ORDER BY id');
+    const rows = result.rows
+      .map(row => ({
+        ...row,
+        baseSlug: getMigrationBaseSlug(row),
+        priority: isSlugShapedLegacyTitle(row.topic) ? 0 : 1,
+      }))
+      .sort((a, b) => a.priority - b.priority || a.id - b.id);
     const usedSlugs = new Set();
+    const assignments = [];
 
-    for (const row of result.rows) {
-      const baseSlug = row.slug ? slugifyTopic(row.slug) : slugifyTopic(row.topic);
-      let slug = baseSlug;
+    for (const row of rows) {
+      let slug = row.baseSlug;
       let suffix = 2;
       while (usedSlugs.has(slug)) {
-        slug = suffixSlug(baseSlug, suffix);
+        slug = suffixSlug(row.baseSlug, suffix);
         suffix += 1;
       }
 
       usedSlugs.add(slug);
-      if (row.slug !== slug) {
-        await client.query('UPDATE discussions SET slug = $1 WHERE id = $2', [slug, row.id]);
-      }
+      assignments.push({ id: row.id, currentSlug: row.slug, slug });
+    }
+
+    const changedAssignments = assignments.filter(row => row.currentSlug !== row.slug);
+    const tempPrefix = `__convora_slug_migration_${process.pid}_`;
+    for (const row of changedAssignments) {
+      await client.query('UPDATE discussions SET slug = $1 WHERE id = $2', [`${tempPrefix}${row.id}`, row.id]);
+    }
+
+    for (const row of changedAssignments) {
+      await client.query('UPDATE discussions SET slug = $1 WHERE id = $2', [row.slug, row.id]);
     }
 
     await client.query(`
@@ -1353,6 +1368,18 @@ async function migrateDiscussionSlugs() {
   } finally {
     client.release();
   }
+}
+
+function isSlugShapedLegacyTitle(topic) {
+  const title = formatTopicTitle(topic);
+  return title === slugifyTopic(title);
+}
+
+function getMigrationBaseSlug(row) {
+  if (isSlugShapedLegacyTitle(row.topic)) {
+    return slugifyTopic(row.topic);
+  }
+  return row.slug ? slugifyTopic(row.slug) : slugifyTopic(row.topic);
 }
 
 // Table for upvotes on individual open-ended responses. One row per

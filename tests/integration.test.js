@@ -14,31 +14,17 @@ const databaseUrl = process.env.DATABASE_URL || 'postgresql://convora:convora@12
 let serverProcess;
 let serverOutput = '';
 let baseUrl;
+let serverPort;
 let pool;
 
 test.before(async () => {
   assertSafeTestDatabase(databaseUrl);
 
-  const port = await getAvailablePort();
-  baseUrl = `http://127.0.0.1:${port}`;
+  serverPort = await getAvailablePort();
+  baseUrl = `http://127.0.0.1:${serverPort}`;
   pool = new Pool({ connectionString: databaseUrl });
 
-  serverProcess = spawn(process.execPath, ['server.js'], {
-    cwd: rootDir,
-    env: {
-      ...process.env,
-      NODE_ENV: 'test',
-      PORT: String(port),
-      DATABASE_URL: databaseUrl,
-      CLIENT_URL: baseUrl,
-    },
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
-
-  serverProcess.stdout.on('data', collectServerOutput);
-  serverProcess.stderr.on('data', collectServerOutput);
-
-  await waitForServer(baseUrl, serverProcess);
+  await startServer();
 });
 
 test.beforeEach(async () => {
@@ -50,10 +36,7 @@ test.after(async () => {
     await pool.end();
   }
 
-  if (serverProcess && serverProcess.exitCode === null) {
-    serverProcess.kill('SIGTERM');
-    await waitForExit(serverProcess);
-  }
+  await stopServer();
 });
 
 test('server startup creates schema and applies the pseudonym migration', async () => {
@@ -119,6 +102,30 @@ test('HTTP API resolves legacy title routes before falling back to canonical slu
   const resolveSlug = await jsonRequest('GET', '/api/discussions/resolve/c');
   assert.equal(resolveSlug.status, 200);
   assert.equal(resolveSlug.body.topic, 'C++');
+  assert.equal(resolveSlug.body.slug, 'c');
+});
+
+test('slug migration preserves literal slug-shaped legacy titles', async () => {
+  await stopServer();
+  await pool.query('TRUNCATE TABLE votes, questions, discussions RESTART IDENTITY CASCADE');
+  await pool.query(`
+    INSERT INTO discussions (topic, slug)
+    VALUES
+      ('C++', 'c'),
+      ('c', 'c-2')
+  `);
+
+  await startServer();
+
+  const migrated = await pool.query('SELECT topic, slug FROM discussions ORDER BY topic');
+  assert.deepEqual(migrated.rows, [
+    { topic: 'C++', slug: 'c-2' },
+    { topic: 'c', slug: 'c' },
+  ]);
+
+  const resolveSlug = await jsonRequest('GET', '/api/discussions/resolve/c');
+  assert.equal(resolveSlug.status, 200);
+  assert.equal(resolveSlug.body.topic, 'c');
   assert.equal(resolveSlug.body.slug, 'c');
 });
 
@@ -674,6 +681,33 @@ function connectSocket() {
     5000,
     'Timed out connecting Socket.IO client'
   );
+}
+
+async function startServer() {
+  serverOutput = '';
+  serverProcess = spawn(process.execPath, ['server.js'], {
+    cwd: rootDir,
+    env: {
+      ...process.env,
+      NODE_ENV: 'test',
+      PORT: String(serverPort),
+      DATABASE_URL: databaseUrl,
+      CLIENT_URL: baseUrl,
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+
+  serverProcess.stdout.on('data', collectServerOutput);
+  serverProcess.stderr.on('data', collectServerOutput);
+
+  await waitForServer(baseUrl, serverProcess);
+}
+
+async function stopServer() {
+  if (serverProcess && serverProcess.exitCode === null) {
+    serverProcess.kill('SIGTERM');
+    await waitForExit(serverProcess);
+  }
 }
 
 function waitForQuestions(socket, predicate, description) {
