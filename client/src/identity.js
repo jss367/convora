@@ -6,6 +6,9 @@
 // page refresh keeps the same identity and the same votes.
 
 const STORAGE_KEY = 'convora_identity';
+// Pre-pseudonym clients stored just the stable id under this key. We migrate it
+// into the new identity object so existing votes stay attributed after upgrade.
+const LEGACY_USER_ID_KEY = 'convora_user_id';
 
 const ADJECTIVES = [
     'Happy', 'Brave', 'Clever', 'Gentle', 'Swift', 'Mighty', 'Curious', 'Calm',
@@ -65,11 +68,24 @@ function writeStored(identity) {
     }
 }
 
+function readLegacyUserId() {
+    try {
+        const id = localStorage.getItem(LEGACY_USER_ID_KEY);
+        return typeof id === 'string' && id ? id : null;
+    } catch (e) {
+        console.warn('Failed to read legacy user id:', e);
+        return null;
+    }
+}
+
 // Returns the stored identity, creating and persisting one on first use.
 export function getIdentity() {
     const existing = readStored();
     if (existing) return existing;
-    const identity = { userId: generateUserId(), pseudonym: generatePseudonym() };
+    // Reuse the legacy id from pre-pseudonym clients (if any) so a returning
+    // participant's existing votes keep matching; otherwise mint a fresh one.
+    const userId = readLegacyUserId() || generateUserId();
+    const identity = { userId, pseudonym: generatePseudonym() };
     writeStored(identity);
     return identity;
 }

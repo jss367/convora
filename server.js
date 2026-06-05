@@ -103,6 +103,17 @@ io.on('connection', (socket) => {
     }
   });
 
+  socket.on('deleteVote', async (topic, voteId, userId) => {
+    try {
+      await deleteVote(voteId, userId);
+      const questions = await getQuestions(topic);
+      io.to(topic).emit('questions', questions);
+    } catch (error) {
+      console.error('Error deleting vote:', error);
+      socket.emit('error', { message: 'Failed to delete vote' });
+    }
+  });
+
   socket.on('disconnect', () => {
     console.log('Client disconnected');
   });
@@ -242,6 +253,24 @@ async function addVote(questionId, vote, userId, pseudonym) {
   try {
     await client.query('BEGIN');
 
+    // Brainstorm questions allow each user to add many separate ideas, so every
+    // submission is a brand new row rather than an update to a single answer.
+    const typeResult = await client.query(
+      'SELECT type FROM questions WHERE id = $1',
+      [questionId]
+    );
+    const questionType = typeResult.rows[0] && typeResult.rows[0].type;
+
+    if (questionType === 'Brainstorm') {
+      await client.query(
+        'INSERT INTO votes (question_id, user_id, value) VALUES ($1, $2, $3)',
+        [questionId, userId, vote]
+      );
+      await client.query('COMMIT');
+      console.log('Brainstorm idea added successfully');
+      return;
+    }
+
     // Check if the user has already voted on this question
     const existingVoteResult = await client.query(
       'SELECT * FROM votes WHERE question_id = $1 AND user_id = $2',
@@ -287,6 +316,17 @@ async function addVote(questionId, vote, userId, pseudonym) {
   } finally {
     client.release();
   }
+}
+
+// Removes a single vote (used for Brainstorm ideas). The user_id check ensures a
+// participant can only delete their own ideas.
+async function deleteVote(voteId, userId) {
+  console.log('Deleting vote:', voteId, userId);
+  await pool.query(
+    'DELETE FROM votes WHERE id = $1 AND user_id = $2',
+    [voteId, userId]
+  );
+  console.log('Vote deleted successfully');
 }
 
 app.get('/api/discussions', async (req, res) => {
