@@ -93,9 +93,9 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('vote', async (topic, questionId, vote, userId) => {
+  socket.on('vote', async (topic, questionId, vote, userId, pseudonym) => {
     try {
-      await addVote(questionId, vote, userId);
+      await addVote(questionId, vote, userId, pseudonym);
       const questions = await getQuestions(topic);
       io.to(topic).emit('questions', questions);
     } catch (error) {
@@ -172,9 +172,10 @@ async function getQuestions(topic) {
         json_build_object(
           'id', v.id,
           'value', v.value,
-          'userId', v.user_id
+          'userId', v.user_id,
+          'pseudonym', v.pseudonym
         ) ORDER BY v.id
-      ) FILTER (WHERE v.id IS NOT NULL), '[]'::json) as votes 
+      ) FILTER (WHERE v.id IS NOT NULL), '[]'::json) as votes
     FROM questions q
     JOIN discussions d ON q.discussion_id = d.id
     LEFT JOIN votes v ON q.id = v.question_id 
@@ -239,8 +240,16 @@ async function addQuestion(topic, question) {
   }
 }
 
-async function addVote(questionId, vote, userId) {
-  console.log('Adding vote:', questionId, vote, userId);
+// Add the pseudonym column to votes if it doesn't already exist. Idempotent so
+// it's safe to run on every boot. Must complete before the server starts
+// serving questions, since getQuestions() selects v.pseudonym.
+async function migrateAddPseudonymColumn() {
+  await pool.query('ALTER TABLE votes ADD COLUMN IF NOT EXISTS pseudonym TEXT');
+  console.log('Pseudonym column migration completed');
+}
+
+async function addVote(questionId, vote, userId, pseudonym) {
+  console.log('Adding vote:', questionId, vote, userId, pseudonym);
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -272,11 +281,11 @@ async function addVote(questionId, vote, userId) {
     if (existingVoteResult.rows.length > 0) {
       console.log('User has already voted');
       const existingVote = existingVoteResult.rows[0];
-      // For checkbox, we need to handle multiple values
+      // Arrays (e.g. multi-value responses) are stored as JSON strings
       if (Array.isArray(vote)) {
         await client.query(
-          'UPDATE votes SET value = $1 WHERE id = $2',
-          [JSON.stringify(vote), existingVote.id]
+          'UPDATE votes SET value = $1, pseudonym = $2 WHERE id = $3',
+          [JSON.stringify(vote), pseudonym, existingVote.id]
         );
       } else if (existingVote.value === vote) {
         console.log('Voting for a option they already voted for');
@@ -287,15 +296,15 @@ async function addVote(questionId, vote, userId) {
       } else {
         console.log('Voting for a different option');
         await client.query(
-          'UPDATE votes SET value = $1 WHERE id = $2',
-          [vote, existingVote.id]
+          'UPDATE votes SET value = $1, pseudonym = $2 WHERE id = $3',
+          [vote, pseudonym, existingVote.id]
         );
       }
     } else {
       console.log('User has not voted yet');
       await client.query(
-        'INSERT INTO votes (question_id, user_id, value) VALUES ($1, $2, $3)',
-        [questionId, userId, Array.isArray(vote) ? JSON.stringify(vote) : vote]
+        'INSERT INTO votes (question_id, user_id, value, pseudonym) VALUES ($1, $2, $3, $4)',
+        [questionId, userId, Array.isArray(vote) ? JSON.stringify(vote) : vote, pseudonym]
       );
     }
 
@@ -401,11 +410,17 @@ async function initSchema() {
 }
 
 const PORT = process.env.PORT || 3001;
+
+// Create the schema on a fresh deploy, then run required migrations before
+// accepting connections so that no client can query a column that doesn't
+// exist yet (e.g. votes.pseudonym). Order matters: create tables first, then
+// migrate the existing/just-created schema, then start listening.
 initSchema()
+  .then(() => migrateAddPseudonymColumn())
   .then(() => {
     server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
   })
   .catch((err) => {
-    console.error('Failed to initialize database schema:', err);
+    console.error('Failed to initialize database, exiting:', err);
     process.exit(1);
   });

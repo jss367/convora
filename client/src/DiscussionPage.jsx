@@ -2,6 +2,7 @@ import PropTypes from 'prop-types';
 import React, { useCallback, useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import io from 'socket.io-client';
+import { getIdentity, regeneratePseudonym } from './identity';
 
 const VERSION = '0.1.8';
 console.log('Convora version:', VERSION);
@@ -36,6 +37,16 @@ const SortOptions = {
     MOST_CONTROVERSIAL: 'Most Controversial',
 };
 
+// Display order for the agreement divergence bar: disagreement (left, red) to
+// agreement (right, green). Full literal class names so Tailwind keeps them.
+const AGREEMENT_SCALE = [
+    { key: VoteOptions.STRONGLY_DISAGREE, label: 'Strongly Disagree', bar: 'bg-red-600', dot: 'bg-red-600' },
+    { key: VoteOptions.DISAGREE, label: 'Disagree', bar: 'bg-red-400', dot: 'bg-red-400' },
+    { key: VoteOptions.UNSURE, label: 'Unsure', bar: 'bg-gray-400', dot: 'bg-gray-400' },
+    { key: VoteOptions.AGREE, label: 'Agree', bar: 'bg-green-400', dot: 'bg-green-400' },
+    { key: VoteOptions.STRONGLY_AGREE, label: 'Strongly Agree', bar: 'bg-green-600', dot: 'bg-green-600' },
+];
+
 // In production the client is served by the same server it talks to, so we
 // default to a same-origin connection. Set REACT_APP_SOCKET_URL only when the
 // client runs on a different origin than the API (e.g. `vite` dev server).
@@ -55,20 +66,23 @@ const DiscussionPage = () => {
     const [sortOption, setSortOption] = useState(SortOptions.MOST_RECENT);
     const [showUnansweredOnly, setShowUnansweredOnly] = useState(false);
     const [userId, setUserId] = useState(null);
+    const [pseudonym, setPseudonym] = useState('');
     const [error, setError] = useState(null);
     const [newTopicName, setNewTopicName] = useState('');
     const [showDuplicateModal, setShowDuplicateModal] = useState(false);
 
     useEffect(() => {
-        // Persist a stable per-browser id so a user is recognized across reloads
-        // (otherwise vote de-duplication breaks on every refresh).
-        let id = localStorage.getItem('convora_user_id');
-        if (!id) {
-            id = crypto.randomUUID();
-            localStorage.setItem('convora_user_id', id);
-        }
-        setUserId(id);
+        // getIdentity() persists a stable userId (so vote de-duplication survives
+        // reloads) together with a friendly pseudonym, both in localStorage.
+        const identity = getIdentity();
+        setUserId(identity.userId);
+        setPseudonym(identity.pseudonym);
     }, []);
+
+    const handleRegeneratePseudonym = () => {
+        const updated = regeneratePseudonym();
+        setPseudonym(updated.pseudonym);
+    };
 
     const handleDuplicateDiscussion = async () => {
         if (newTopicName.trim() === '') {
@@ -189,7 +203,7 @@ const DiscussionPage = () => {
 
     const handleVote = (questionId, value) => {
         console.log('Voting:', questionId, value);
-        socket.emit('vote', topic, questionId, value, userId);
+        socket.emit('vote', topic, questionId, value, userId, pseudonym);
         setSliderValues(prev => ({ ...prev, [questionId]: undefined }));
     };
 
@@ -253,23 +267,26 @@ const DiscussionPage = () => {
         switch (question.type) {
             case QuestionTypes.AGREEMENT:
                 return (
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        {Object.values(VoteOptions).map((option) => (
-                            <div key={option} className="flex items-center justify-between bg-gray-100 p-3 rounded-md">
-                                <span className="font-medium">
-                                    {option}: {question.votes ? question.votes.filter(v => v.value === option).length : 0}
-                                </span>
-                                <button
-                                    onClick={() => handleVote(question.id, option)}
-                                    className={`px-4 py-2 rounded-md transition duration-300 ${userVote && userVote.value === option
-                                        ? 'bg-primary text-white hover:bg-opacity-90'
-                                        : 'bg-secondary text-white hover:bg-opacity-90'
-                                        }`}
-                                >
-                                    {userVote && userVote.value === option ? 'Undo Vote' : 'Vote'}
-                                </button>
-                            </div>
-                        ))}
+                    <div>
+                        <AgreementResults question={question} />
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            {Object.values(VoteOptions).map((option) => (
+                                <div key={option} className="flex items-center justify-between bg-gray-100 p-3 rounded-md">
+                                    <span className="font-medium">
+                                        {option}: {question.votes ? question.votes.filter(v => v.value === option).length : 0}
+                                    </span>
+                                    <button
+                                        onClick={() => handleVote(question.id, option)}
+                                        className={`px-4 py-2 rounded-md transition duration-300 ${userVote && userVote.value === option
+                                            ? 'bg-primary text-white hover:bg-opacity-90'
+                                            : 'bg-secondary text-white hover:bg-opacity-90'
+                                            }`}
+                                    >
+                                        {userVote && userVote.value === option ? 'Undo Vote' : 'Vote'}
+                                    </button>
+                                </div>
+                            ))}
+                        </div>
                     </div>
                 );
             case QuestionTypes.NUMERICAL: {
@@ -287,6 +304,7 @@ const DiscussionPage = () => {
 
                 return (
                     <div className="mt-4">
+                        <NumericalResults question={question} minValue={minValue} maxValue={maxValue} />
                         <input
                             type="range"
                             min={minValue}
@@ -326,7 +344,19 @@ const DiscussionPage = () => {
 
     return (
         <div className="max-w-4xl mx-auto mt-10 px-4">
-            <h1 className="text-4xl font-bold mb-8 text-center text-gray-800">Discussion: {topic}</h1>
+            <h1 className="text-4xl font-bold mb-2 text-center text-gray-800">Discussion: {topic}</h1>
+
+            {/* Participant identity */}
+            <div className="mb-8 text-center text-sm text-gray-600">
+                You are <span className="font-semibold text-gray-800">{pseudonym || '…'}</span>
+                <button
+                    onClick={handleRegeneratePseudonym}
+                    className="ml-2 text-primary hover:underline"
+                    title="Get a new pseudonym"
+                >
+                    (change)
+                </button>
+            </div>
 
             {/* Duplicate Discussion Button */}
             <button
@@ -480,13 +510,19 @@ const OpenEndedQuestion = ({ question, userVote, handleVote }) => {
             {question.votes && question.votes.length > 0 && (
                 <div className="mt-4">
                     <h3 className="font-semibold mb-2">All Responses:</h3>
-                    <ul className="list-disc pl-5">
-                        {question.votes.map((vote, index) => (
-                            <li key={index} className="mb-2">
-                                {vote.value}
-                                {vote.userId === userVote?.userId && " (Your response)"}
-                            </li>
-                        ))}
+                    <ul className="space-y-2">
+                        {question.votes.map((vote, index) => {
+                            const isYou = vote.userId === userVote?.userId;
+                            return (
+                                <li key={index} className="bg-gray-50 rounded-md p-3">
+                                    <div className="text-xs font-semibold text-gray-500 mb-1">
+                                        {vote.pseudonym || 'Anonymous'}
+                                        {isYou && ' (you)'}
+                                    </div>
+                                    <div className="text-gray-800 whitespace-pre-wrap">{vote.value}</div>
+                                </li>
+                            );
+                        })}
                     </ul>
                 </div>
             )}
@@ -499,7 +535,8 @@ OpenEndedQuestion.propTypes = {
         id: PropTypes.string.isRequired,
         votes: PropTypes.arrayOf(PropTypes.shape({
             userId: PropTypes.string.isRequired,
-            value: PropTypes.string.isRequired
+            value: PropTypes.string.isRequired,
+            pseudonym: PropTypes.string
         }))
     }).isRequired,
     userVote: PropTypes.shape({
@@ -507,6 +544,77 @@ OpenEndedQuestion.propTypes = {
         value: PropTypes.string
     }),
     handleVote: PropTypes.func.isRequired
+};
+
+// Stacked divergence bar + summary for an Agreement question. Shows at a glance
+// how opinion splits, and labels the statement as consensus or divisive.
+const AgreementResults = ({ question }) => {
+    const votes = question.votes || [];
+    const total = votes.length;
+
+    const counts = AGREEMENT_SCALE.map(seg => ({
+        ...seg,
+        count: votes.filter(v => v.value === seg.key).length,
+    }));
+
+    if (total === 0) {
+        return <p className="text-sm text-gray-500 mb-4">No votes yet — be the first to weigh in.</p>;
+    }
+
+    const agreeCount = counts.filter(c => c.key === VoteOptions.AGREE || c.key === VoteOptions.STRONGLY_AGREE)
+        .reduce((sum, c) => sum + c.count, 0);
+    const disagreeCount = counts.filter(c => c.key === VoteOptions.DISAGREE || c.key === VoteOptions.STRONGLY_DISAGREE)
+        .reduce((sum, c) => sum + c.count, 0);
+    const agreePct = Math.round((agreeCount / total) * 100);
+    const disagreePct = Math.round((disagreeCount / total) * 100);
+
+    // Divisive when the room is split roughly evenly between agree and disagree;
+    // consensus when one side clearly dominates.
+    const decided = agreeCount + disagreeCount;
+    let badge = null;
+    if (decided >= 2) {
+        const split = Math.min(agreeCount, disagreeCount) / decided; // 0..0.5
+        if (split >= 0.4) {
+            badge = <span className="px-2 py-0.5 text-xs font-semibold rounded-full bg-amber-100 text-amber-800">Divisive</span>;
+        } else if (split <= 0.15) {
+            badge = <span className="px-2 py-0.5 text-xs font-semibold rounded-full bg-emerald-100 text-emerald-800">Consensus</span>;
+        }
+    }
+
+    return (
+        <div className="mb-4">
+            <div className="flex items-center justify-between mb-2">
+                <span className="text-sm text-gray-600">
+                    {total} {total === 1 ? 'vote' : 'votes'} · {agreePct}% agree · {disagreePct}% disagree
+                </span>
+                {badge}
+            </div>
+            <div className="flex w-full h-4 rounded-full overflow-hidden bg-gray-200">
+                {counts.map(seg => seg.count > 0 && (
+                    <div
+                        key={seg.key}
+                        className={seg.bar}
+                        style={{ width: `${(seg.count / total) * 100}%` }}
+                        title={`${seg.label}: ${seg.count}`}
+                    />
+                ))}
+            </div>
+            <div className="flex flex-wrap gap-x-4 gap-y-1 mt-2">
+                {counts.map(seg => (
+                    <span key={seg.key} className="flex items-center text-xs text-gray-600">
+                        <span className={`inline-block w-2.5 h-2.5 rounded-full mr-1 ${seg.dot}`} />
+                        {seg.label}: {seg.count}
+                    </span>
+                ))}
+            </div>
+        </div>
+    );
+};
+
+AgreementResults.propTypes = {
+    question: PropTypes.shape({
+        votes: PropTypes.array,
+    }).isRequired,
 };
 
 // Unlike Open Ended (one editable response per person), Brainstorm lets each
@@ -566,6 +674,58 @@ const BrainstormQuestion = ({ question, userId, handleVote, handleDeleteVote }) 
             )}
         </div>
     );
+};
+
+// Summary stats + histogram for a Numerical question.
+const NumericalResults = ({ question, minValue, maxValue }) => {
+    const values = (question.votes || [])
+        .map(v => parseInt(v.value))
+        .filter(n => !Number.isNaN(n));
+    const total = values.length;
+
+    if (total === 0) {
+        return <p className="text-sm text-gray-500 mb-2">No responses yet — drag the slider to add yours.</p>;
+    }
+
+    const average = values.reduce((sum, n) => sum + n, 0) / total;
+    const range = Math.max(maxValue - minValue, 1);
+
+    // Bucket values into up to 10 bins across the [min, max] range.
+    const binCount = Math.min(10, range + 1);
+    const bins = new Array(binCount).fill(0);
+    values.forEach(n => {
+        const clamped = Math.min(Math.max(n, minValue), maxValue);
+        let idx = Math.floor(((clamped - minValue) / range) * binCount);
+        if (idx >= binCount) idx = binCount - 1; // include the max edge
+        bins[idx] += 1;
+    });
+    const tallestBin = Math.max(...bins);
+
+    return (
+        <div className="mb-2">
+            <div className="text-sm text-gray-600 mb-2">
+                {total} {total === 1 ? 'response' : 'responses'} · average <span className="font-semibold">{average.toFixed(1)}</span>
+            </div>
+            <div className="flex items-end gap-1 h-16">
+                {bins.map((count, i) => (
+                    <div
+                        key={i}
+                        className="flex-1 bg-primary rounded-t"
+                        style={{ height: tallestBin > 0 ? `${(count / tallestBin) * 100}%` : '0%' }}
+                        title={`${count} ${count === 1 ? 'response' : 'responses'}`}
+                    />
+                ))}
+            </div>
+        </div>
+    );
+};
+
+NumericalResults.propTypes = {
+    question: PropTypes.shape({
+        votes: PropTypes.array,
+    }).isRequired,
+    minValue: PropTypes.number.isRequired,
+    maxValue: PropTypes.number.isRequired,
 };
 
 BrainstormQuestion.propTypes = {
