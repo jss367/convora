@@ -6,7 +6,6 @@ const { Pool } = require('pg');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const bodyParser = require('body-parser');
 const cors = require('cors');
 
 const app = express();
@@ -323,7 +322,7 @@ async function getDiscussionByTopic(topic) {
   return result.rows[0] || null;
 }
 
-app.use(bodyParser.json());
+app.use(express.json());
 app.use(express.static(path.join(__dirname, 'dist')));
 
 // Emit the number of clients currently in a discussion room to everyone there.
@@ -1207,7 +1206,7 @@ app.post('/api/duplicate-discussion', async (req, res) => {
 });
 
 // Catch-all route
-app.get('*', (req, res) => {
+app.get(/.*/, (req, res) => {
   res.sendFile(path.join(__dirname, 'dist', 'index.html'));
 });
 
