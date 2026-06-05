@@ -709,6 +709,21 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Associate this socket with the client's persistent userId so the server can
+  // route per-user messages (moderator grants) to it. Sent right after joining.
+  // If this user was already promoted to moderator for the topic, re-deliver
+  // their token now so promotion survives reconnects / being offline when promoted.
+  socket.on('identify', async (topic, userId) => {
+    if (!userId) return;
+    socket.data.userId = userId;
+    try {
+      const token = await getModeratorToken(topic, userId);
+      if (token) socket.emit('moderatorGranted', { token });
+    } catch (error) {
+      console.error('Error checking moderator grant on identify:', error);
+    }
+  });
+
   socket.on('leaveDiscussion', (topic) => {
     // The client unmounted its discussion page; drop it from the room and
     // recompute presence so the counter doesn't over-report lingering viewers.
@@ -799,6 +814,52 @@ io.on('connection', (socket) => {
       }
     } catch (error) {
       console.error('Error claiming moderator:', error);
+      if (typeof cb === 'function') cb({ success: false, error: 'server_error' });
+    }
+  });
+
+  // Moderator-only: list the discussion's participants (opaque handle +
+  // pseudonym + whether they already moderate) so a moderator can pick someone
+  // to promote. Raw user_ids are never sent to the client.
+  socket.on('listParticipants', async (topic, token, cb) => {
+    if (typeof cb !== 'function') return;
+    try {
+      const discussionId = await verifyAdmin(topic, token);
+      if (!discussionId) {
+        cb({ success: false, error: 'not_authorized' });
+        return;
+      }
+      cb({ success: true, participants: await listParticipants(topic) });
+    } catch (error) {
+      console.error('Error listing participants:', error);
+      cb({ success: false, error: 'server_error' });
+    }
+  });
+
+  // Moderator-only: promote a participant (named by their opaque handle) to
+  // moderator. Mints them a personal token, delivers it live to their connected
+  // sockets, and returns the refreshed participant list.
+  socket.on('promoteModerator', async (topic, token, participantId, cb) => {
+    try {
+      const discussionId = await verifyAdmin(topic, token);
+      if (!discussionId) {
+        if (typeof cb === 'function') cb({ success: false, error: 'not_authorized' });
+        return;
+      }
+      const target = await resolveParticipant(topic, participantId);
+      if (!target) {
+        // The handle no longer maps to a participant (e.g. the list shifted).
+        if (typeof cb === 'function') cb({ success: false, error: 'unknown_participant' });
+        return;
+      }
+      const grantedToken = await promoteModerator(discussionId, target.userId);
+      deliverModeratorToken(topic, target.userId, grantedToken);
+      await emitDiscussionState(topic);
+      if (typeof cb === 'function') {
+        cb({ success: true, participants: await listParticipants(topic) });
+      }
+    } catch (error) {
+      console.error('Error promoting moderator:', error);
       if (typeof cb === 'function') cb({ success: false, error: 'server_error' });
     }
   });
@@ -1132,12 +1193,40 @@ async function migrateModerationAndDedup() {
   console.log('Moderation + dedup migration completed');
 }
 
-// Verify that the supplied token is the discussion's admin token. Returns the
+// Per-user moderator grants: when a moderator promotes a participant, that user
+// gets their own token here (one row per user per discussion). verifyAdmin
+// accepts these tokens alongside the creator's admin_token. Idempotent.
+async function migrateModeratorsTable() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS discussion_moderators (
+      id SERIAL PRIMARY KEY,
+      discussion_id INTEGER NOT NULL REFERENCES discussions(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL,
+      token TEXT NOT NULL,
+      created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE (discussion_id, user_id)
+    )
+  `);
+  console.log('discussion_moderators table migration completed');
+}
+
+// Verify that the supplied token grants moderation of this discussion. A token
+// is valid if it's the discussion's creator admin_token OR a per-user token
+// granted to a promoted moderator (discussion_moderators). Returns the
 // discussion id when valid, or null otherwise.
 async function verifyAdmin(topic, token) {
   if (!token) return null;
   const result = await pool.query(
-    'SELECT id FROM discussions WHERE topic = $1 AND admin_token = $2',
+    `SELECT d.id
+       FROM discussions d
+      WHERE d.topic = $1
+        AND (
+          d.admin_token = $2
+          OR EXISTS (
+            SELECT 1 FROM discussion_moderators m
+             WHERE m.discussion_id = d.id AND m.token = $2
+          )
+        )`,
     [topic, token]
   );
   return result.rows.length > 0 ? result.rows[0].id : null;
@@ -1208,6 +1297,94 @@ async function claimModerator(topic) {
     throw e;
   } finally {
     client.release();
+  }
+}
+
+// The discussion's participants: everyone who has cast a vote or written a
+// response (the only users the server can identify, since there are no
+// accounts and presence is anonymous). Ordered deterministically by first
+// activity so a given `participant-N` handle maps to the same user every time
+// it's recomputed — this lets the moderator UI refer to users without ever
+// receiving raw user_ids (which double as the vote-ownership secret).
+// Returns rows of { userId, pseudonym, isModerator } including the opaque id.
+async function getParticipants(topic) {
+  const result = await pool.query(
+    `SELECT v.user_id,
+            MIN(v.created_at) AS first_seen,
+            (ARRAY_AGG(v.pseudonym ORDER BY v.id DESC))[1] AS pseudonym,
+            BOOL_OR(m.user_id IS NOT NULL) AS is_moderator
+       FROM votes v
+       JOIN questions q ON v.question_id = q.id
+       JOIN discussions d ON q.discussion_id = d.id
+       LEFT JOIN discussion_moderators m
+              ON m.discussion_id = d.id AND m.user_id = v.user_id
+      WHERE d.topic = $1 AND v.user_id IS NOT NULL
+      GROUP BY v.user_id
+      ORDER BY MIN(v.created_at), v.user_id`,
+    [topic]
+  );
+  return result.rows.map((row, index) => ({
+    id: `participant-${index + 1}`,
+    userId: row.user_id,
+    pseudonym: row.pseudonym || 'Anonymous',
+    isModerator: row.is_moderator === true,
+  }));
+}
+
+// The moderator-facing view of getParticipants: opaque handle, display name,
+// and whether they already moderate — never the raw user_id.
+async function listParticipants(topic) {
+  const participants = await getParticipants(topic);
+  return participants.map(({ id, pseudonym, isModerator }) => ({ id, pseudonym, isModerator }));
+}
+
+// Resolve an opaque participant handle (participant-N) back to its user_id by
+// recomputing the same deterministic ordering getParticipants uses. Returns
+// null if the handle doesn't match a current participant (e.g. a stale list).
+async function resolveParticipant(topic, participantId) {
+  const participants = await getParticipants(topic);
+  return participants.find(p => p.id === participantId) || null;
+}
+
+// Promote a user to moderator by minting them a personal token (idempotent: a
+// user already promoted keeps their existing token). Returns the token so it
+// can be delivered to that user's connected sockets.
+async function promoteModerator(discussionId, userId) {
+  const token = crypto.randomBytes(16).toString('hex');
+  const result = await pool.query(
+    `INSERT INTO discussion_moderators (discussion_id, user_id, token)
+     VALUES ($1, $2, $3)
+     ON CONFLICT (discussion_id, user_id) DO UPDATE SET user_id = EXCLUDED.user_id
+     RETURNING token`,
+    [discussionId, userId, token]
+  );
+  return result.rows[0].token;
+}
+
+// The moderator token previously granted to this user for this discussion, or
+// null. Used to re-deliver moderation to a promoted user when they (re)connect.
+async function getModeratorToken(topic, userId) {
+  if (!userId) return null;
+  const result = await pool.query(
+    `SELECT m.token
+       FROM discussion_moderators m
+       JOIN discussions d ON m.discussion_id = d.id
+      WHERE d.topic = $1 AND m.user_id = $2`,
+    [topic, userId]
+  );
+  return result.rows.length > 0 ? result.rows[0].token : null;
+}
+
+// Push a freshly granted moderator token to every connected socket belonging to
+// the given user in the discussion's room, so promotion takes effect live.
+function deliverModeratorToken(topic, userId, token) {
+  const room = io.sockets.adapter.rooms.get(topic);
+  if (!room) return;
+  for (const socketId of room) {
+    const target = io.sockets.sockets.get(socketId);
+    if (target && target.data.userId === userId) {
+      target.emit('moderatorGranted', { token });
+    }
   }
 }
 
@@ -1638,7 +1815,7 @@ const PORT = process.env.PORT || 3001;
 initSchema()
   .then(() => migrateModerationAndDedup())
   .then(() => migrateUniqueDiscussionTopics())
-  .then(() => Promise.all([migrateAddPseudonymColumn(), migrateResponseVotesTable()]))
+  .then(() => Promise.all([migrateAddPseudonymColumn(), migrateResponseVotesTable(), migrateModeratorsTable()]))
   .then(() => {
     server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
   })

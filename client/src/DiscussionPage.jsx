@@ -81,6 +81,8 @@ const DiscussionPage = () => {
     const [discussionState, setDiscussionState] = useState({ locked: false, hasModerator: false });
     const [similarPrompt, setSimilarPrompt] = useState(null);
     const [adminLinkCopied, setAdminLinkCopied] = useState(false);
+    const [participants, setParticipants] = useState([]);
+    const [showParticipants, setShowParticipants] = useState(false);
 
     const isAdmin = !!adminToken;
     const { locked } = discussionState;
@@ -174,6 +176,37 @@ const DiscussionPage = () => {
         }
     };
 
+    // Pull the participant list (moderator-only). The server returns opaque
+    // handles + pseudonyms, never raw user ids.
+    const refreshParticipants = useCallback(() => {
+        if (!adminToken) return;
+        socket.emit('listParticipants', topic, adminToken, (resp) => {
+            if (resp && resp.success) {
+                setParticipants(resp.participants);
+            } else if (resp && resp.error === 'not_authorized') {
+                setError('You are no longer a moderator of this discussion.');
+            }
+        });
+    }, [topic, adminToken]);
+
+    const handleToggleParticipants = () => {
+        const next = !showParticipants;
+        setShowParticipants(next);
+        if (next) refreshParticipants();
+    };
+
+    // Promote a participant to moderator. The server delivers them their own
+    // token live and returns the refreshed list.
+    const handlePromoteParticipant = (participantId) => {
+        socket.emit('promoteModerator', topic, adminToken, participantId, (resp) => {
+            if (resp && resp.success) {
+                setParticipants(resp.participants);
+            } else {
+                setError('Could not promote that participant. Try refreshing the list.');
+            }
+        });
+    };
+
     const handleDuplicateDiscussion = async () => {
         if (newTopicName.trim() === '') {
             setError('New topic name cannot be empty.');
@@ -242,6 +275,20 @@ const DiscussionPage = () => {
         });
     }, []);
 
+    // Adopt a moderator token the server pushes to us — either because another
+    // moderator just promoted this user, or because a previously promoted user
+    // (re)connected. Persist it under the same per-topic key the create/share
+    // flows use so the controls light up immediately and survive reloads.
+    const handleModeratorGranted = useCallback(({ token }) => {
+        if (!token) return;
+        try {
+            localStorage.setItem(`convora_admin_${topic}`, token);
+        } catch (e) {
+            console.warn('Failed to store admin token:', e);
+        }
+        setAdminToken(token);
+    }, [topic]);
+
     useEffect(() => {
         console.log('Current topic:', topic);
         socket.emit('joinDiscussion', topic);
@@ -249,6 +296,7 @@ const DiscussionPage = () => {
         socket.on('presence', setPresence);
         socket.on('discussionState', setDiscussionState);
         socket.on('similarQuestion', setSimilarPrompt);
+        socket.on('moderatorGranted', handleModeratorGranted);
         return () => {
             // Leave the room so the server stops counting this client toward the
             // discussion's presence once the page unmounts (e.g. navigating home).
@@ -257,8 +305,20 @@ const DiscussionPage = () => {
             socket.off('presence', setPresence);
             socket.off('discussionState', setDiscussionState);
             socket.off('similarQuestion', setSimilarPrompt);
+            socket.off('moderatorGranted', handleModeratorGranted);
         };
-    }, [topic, handleQuestionsUpdate]);
+    }, [topic, handleQuestionsUpdate, handleModeratorGranted]);
+
+    // Tell the server which persistent user this socket is, so it can route
+    // moderator grants to us. Re-sent after any reconnect so a promoted user
+    // doesn't silently lose their controls on a network blip.
+    useEffect(() => {
+        if (!userId) return;
+        const identify = () => socket.emit('identify', topic, userId);
+        identify();
+        socket.on('connect', identify);
+        return () => socket.off('connect', identify);
+    }, [topic, userId]);
 
     const handleAddQuestion = () => {
         console.log('Inside handleAddQuestion');
@@ -626,6 +686,12 @@ const DiscussionPage = () => {
                         >
                             {adminLinkCopied ? 'Link copied!' : 'Copy moderator link'}
                         </button>
+                        <button
+                            onClick={handleToggleParticipants}
+                            className="px-3 py-1 rounded bg-white border border-indigo-300 text-indigo-700 hover:bg-indigo-100"
+                        >
+                            {showParticipants ? 'Hide participants' : 'Manage participants'}
+                        </button>
                     </div>
                 ) : !discussionState.hasModerator ? (
                     <button
@@ -636,6 +702,48 @@ const DiscussionPage = () => {
                     </button>
                 ) : null}
             </div>
+
+            {/* Participant management (moderator-only): promote a participant to
+                moderator. Only people who have voted or responded appear here —
+                the server can't name silent viewers. */}
+            {isAdmin && showParticipants && (
+                <div className="mb-6 bg-white border border-indigo-100 rounded-md p-4 text-sm">
+                    <div className="flex items-center justify-between mb-3">
+                        <span className="font-semibold text-gray-700">Participants</span>
+                        <button
+                            onClick={refreshParticipants}
+                            className="text-xs text-indigo-600 underline hover:text-indigo-800"
+                        >
+                            Refresh
+                        </button>
+                    </div>
+                    {participants.length === 0 ? (
+                        <p className="text-gray-500">
+                            No participants yet. People show up here once they vote or post a response.
+                        </p>
+                    ) : (
+                        <ul className="divide-y divide-gray-100">
+                            {participants.map((participant) => (
+                                <li key={participant.id} className="flex items-center justify-between py-2">
+                                    <span className="text-gray-800">{participant.pseudonym}</span>
+                                    {participant.isModerator ? (
+                                        <span className="text-xs font-medium text-indigo-700 bg-indigo-50 px-2 py-1 rounded">
+                                            Moderator
+                                        </span>
+                                    ) : (
+                                        <button
+                                            onClick={() => handlePromoteParticipant(participant.id)}
+                                            className="text-xs px-2 py-1 rounded bg-indigo-600 text-white hover:bg-indigo-700"
+                                        >
+                                            Make moderator
+                                        </button>
+                                    )}
+                                </li>
+                            ))}
+                        </ul>
+                    )}
+                </div>
+            )}
 
             {/* Locked banner */}
             {locked && (
