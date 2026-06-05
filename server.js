@@ -978,6 +978,80 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Moderator-only: edit a question's wording/type, allowed ONLY while it has no
+  // responses yet. Once anyone has answered, the wording is a contract their
+  // responses were made against, so editing is refused (delete + re-ask instead).
+  socket.on('editQuestion', async (topic, questionId, updates, token, ack) => {
+    const discussionSlug = slugifyTopic(topic);
+    const reply = (result) => { if (typeof ack === 'function') ack(result); };
+    try {
+      const discussionId = await verifyAdmin(discussionSlug, token);
+      if (!discussionId) {
+        socket.emit('error', { message: 'Not authorized to moderate this discussion.' });
+        reply({ updated: false, reason: 'not_authorized' });
+        return;
+      }
+
+      // Scope existence through discussion_id so a moderator of one discussion
+      // can't probe or edit another's questions by passing a foreign id.
+      const existing = await pool.query(
+        'SELECT id FROM questions WHERE id = $1 AND discussion_id = $2',
+        [questionId, discussionId]
+      );
+      if (existing.rows.length === 0) {
+        reply({ updated: false, reason: 'not_found' });
+        return;
+      }
+
+      const responses = await pool.query('SELECT 1 FROM votes WHERE question_id = $1 LIMIT 1', [questionId]);
+      if (responses.rows.length > 0) {
+        socket.emit('error', { message: 'This question already has responses and can no longer be edited.' });
+        reply({ updated: false, reason: 'has_responses' });
+        return;
+      }
+
+      // Validate the same way creation does: non-empty text, a known type, and
+      // (for Numerical) a valid min < max range.
+      const text = String(updates && updates.text != null ? updates.text : '').trim();
+      const type = updates && updates.type;
+      if (!text || !VALID_QUESTION_TYPES.has(type)) {
+        reply({ updated: false, reason: 'invalid' });
+        return;
+      }
+      let minValue = null;
+      let maxValue = null;
+      if (type === 'Numerical') {
+        minValue = parseInt(updates.minValue, 10);
+        maxValue = parseInt(updates.maxValue, 10);
+        if (!Number.isInteger(minValue) || !Number.isInteger(maxValue) || minValue >= maxValue) {
+          reply({ updated: false, reason: 'invalid' });
+          return;
+        }
+      }
+
+      // The NOT EXISTS guard closes the race between the response check above and
+      // this write: if a vote landed in between, no row is updated and we report
+      // it as having responses rather than silently editing an answered question.
+      const result = await pool.query(
+        `UPDATE questions SET text = $1, type = $2, min_value = $3, max_value = $4
+         WHERE id = $5 AND discussion_id = $6
+           AND NOT EXISTS (SELECT 1 FROM votes WHERE question_id = $5)`,
+        [text, type, minValue, maxValue, questionId, discussionId]
+      );
+      if (result.rowCount === 0) {
+        socket.emit('error', { message: 'This question already has responses and can no longer be edited.' });
+        reply({ updated: false, reason: 'has_responses' });
+        return;
+      }
+      io.to(discussionSlug).emit('questions', await getQuestions(discussionSlug));
+      reply({ updated: true });
+    } catch (error) {
+      console.error('Error editing question:', error);
+      socket.emit('error', { message: 'Failed to edit question' });
+      reply({ updated: false, reason: 'error' });
+    }
+  });
+
   socket.on('toggleResponseVote', async (topic, responseId, userId) => {
     const discussionSlug = slugifyTopic(topic);
     try {
@@ -1409,6 +1483,10 @@ const EPISTEMIC_REACTIONS = new Set([
   'citation-needed',
   'key-insight',
 ]);
+
+// The question types a discussion supports. Mirrors QuestionTypes in
+// client/src/DiscussionPage.jsx — used to validate edits server-side.
+const VALID_QUESTION_TYPES = new Set(['Agreement', 'Numerical', 'Open Ended', 'Brainstorm']);
 
 // Enrich Brainstorm responses in place with aggregated interaction data:
 // quality up/down tallies, the agreement distribution, reaction counts, and
