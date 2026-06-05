@@ -175,12 +175,22 @@ const DiscussionPage = () => {
         }
     }, [topic]);
 
+    // Push a changed broadcast name to the server so it retroactively renames
+    // this browser's already-submitted responses (otherwise prior responses keep
+    // the old name; switching to anonymous wouldn't actually hide them).
+    const applyIdentity = (updatedIdentity) => {
+        setIdentity(updatedIdentity);
+        if (updatedIdentity?.userId) {
+            socket.emit('updateDisplayName', topic, updatedIdentity.userId, getDisplayName(updatedIdentity));
+        }
+    };
+
     const handleRegeneratePseudonym = () => {
-        setIdentity(regeneratePseudonym());
+        applyIdentity(regeneratePseudonym());
     };
 
     const handleSelectNameMode = (mode) => {
-        setIdentity(setNameMode(mode));
+        applyIdentity(setNameMode(mode));
     };
 
     const handleCustomNameChange = (name) => {
@@ -188,7 +198,7 @@ const DiscussionPage = () => {
         // preview reflects what they're entering. setCustomName persists the
         // text first; setNameMode then reads it back and flips the mode.
         setCustomName(name);
-        setIdentity(setNameMode(NameModes.CUSTOM));
+        applyIdentity(setNameMode(NameModes.CUSTOM));
     };
 
     const handleClaimModerator = () => {

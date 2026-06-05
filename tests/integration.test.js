@@ -265,6 +265,120 @@ test('Socket.IO ownership tokens hide stable ids and differ per question', async
   }
 });
 
+test('Summary counts anonymous participants distinctly and never leaks raw user ids', async () => {
+  const topic = uniqueTopic('summary-anon');
+  const author = await connectSocket();
+  const voterA = await connectSocket();
+  const voterB = await connectSocket();
+
+  try {
+    author.emit('joinDiscussion', topic);
+    voterA.emit('joinDiscussion', topic);
+    voterB.emit('joinDiscussion', topic);
+
+    const questionUpdate = waitForQuestions(author, (qs) => qs.length === 1, 'question broadcast');
+    author.emit('addQuestion', topic, {
+      text: 'What do you think?',
+      type: 'Open Ended',
+      minValue: null,
+      maxValue: null,
+      options: [],
+    });
+    const question = (await questionUpdate)[0];
+
+    // Two distinct browsers (different stable user ids) both submit anonymously,
+    // so both broadcast pseudonyms collapse to "Anonymous". They must still be
+    // counted as TWO participants in the summary (which reads the real user_id
+    // internally), not merged into one.
+    const firstVote = waitForQuestions(
+      author,
+      (qs) => qs[0] && qs[0].votes.some((v) => v.value === 'first anon answer'),
+      'first anon vote'
+    );
+    voterA.emit('vote', topic, question.id, 'first anon answer', 'browser-aaaaaaaa1', '   ');
+    await firstVote;
+
+    const secondVote = waitForQuestions(
+      author,
+      (qs) => qs[0] && qs[0].votes.some((v) => v.value === 'second anon answer'),
+      'second anon vote'
+    );
+    voterB.emit('vote', topic, question.id, 'second anon answer', 'browser-bbbbbbbb2', '   ');
+    await secondVote;
+
+    const summaryResponse = await jsonRequest('GET', `/api/discussions/${topic}/summary`);
+    assert.equal(summaryResponse.status, 200);
+    assert.equal(summaryResponse.body.counts.participants, 2);
+
+    // The client-facing summary must not echo any raw 16-char user id. The real
+    // ids used here are 'browser-aaaaaaaa1' / 'browser-bbbbbbbb2'; assert neither
+    // appears, and that no participant entry carries a raw id field.
+    const serialized = JSON.stringify(summaryResponse.body);
+    assert.equal(serialized.includes('browser-aaaaaaaa1'), false);
+    assert.equal(serialized.includes('browser-bbbbbbbb2'), false);
+    for (const participant of summaryResponse.body.facilitatorDashboard.participantStats) {
+      assert.match(participant.id, /^participant-\d+$/);
+    }
+  } finally {
+    author.disconnect();
+    voterA.disconnect();
+    voterB.disconnect();
+  }
+});
+
+test('updateDisplayName retroactively renames a participant\'s prior responses', async () => {
+  const topic = uniqueTopic('rename');
+  const author = await connectSocket();
+  const voter = await connectSocket();
+
+  try {
+    author.emit('joinDiscussion', topic);
+    voter.emit('joinDiscussion', topic);
+
+    const questionUpdate = waitForQuestions(author, (qs) => qs.length === 1, 'question broadcast');
+    author.emit('addQuestion', topic, {
+      text: 'Share a thought',
+      type: 'Open Ended',
+      minValue: null,
+      maxValue: null,
+      options: [],
+    });
+    const question = (await questionUpdate)[0];
+
+    const voteUpdate = waitForQuestions(
+      author,
+      (qs) => qs[0] && qs[0].votes.length === 1,
+      'initial vote'
+    );
+    voter.emit('vote', topic, question.id, 'my response', 'rename-user', 'Original Name');
+    const initial = (await voteUpdate)[0].votes[0];
+    assert.equal(initial.pseudonym, 'Original Name');
+
+    // Switching to a new display name must rewrite the existing response.
+    const renamed = waitForQuestions(
+      author,
+      (qs) => qs[0] && qs[0].votes[0] && qs[0].votes[0].pseudonym === 'Renamed Person',
+      'renamed broadcast'
+    );
+    voter.emit('updateDisplayName', topic, 'rename-user', 'Renamed Person');
+    const after = (await renamed)[0].votes[0];
+    assert.equal(after.pseudonym, 'Renamed Person');
+
+    // Switching to anonymous (blank name) clears the stored pseudonym to null.
+    const anonymized = waitForQuestions(
+      author,
+      (qs) => qs[0] && qs[0].votes[0] && qs[0].votes[0].pseudonym === null,
+      'anonymized broadcast'
+    );
+    voter.emit('updateDisplayName', topic, 'rename-user', '   ');
+    const anon = (await anonymized)[0].votes[0];
+    assert.equal(anon.pseudonym, null);
+  } finally {
+    author.disconnect();
+    voter.disconnect();
+  }
+});
+
 async function jsonRequest(method, urlPath, body) {
   const response = await fetch(`${baseUrl}${urlPath}`, {
     method,
