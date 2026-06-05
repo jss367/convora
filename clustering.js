@@ -373,12 +373,22 @@ function analyzeClusters(questions) {
   const rng = makeRng(0x9e3779b9);
   const maxK = Math.min(MAX_CLUSTERS, participants.length - 1);
   let best = null;
+  let suppressedSplit = false;
   for (let k = 2; k <= maxK; k += 1) {
     const { assignments } = kmeans(matrix, k, rng);
     const sizes = new Array(k).fill(0);
     assignments.forEach(a => { sizes[a] += 1; });
-    // Skip splits that collapsed (an empty cluster) or produced a singleton —
-    // both would either misreport k or expose an individual's votes.
+    const distinctGroups = sizes.filter(sz => sz > 0).length;
+    const hasSingleton = sizes.some(sz => sz > 0 && sz < MIN_GROUP_SIZE);
+    // A genuine k-way split (no empty clusters) where a group is too small to
+    // anonymize: a distinct minority exists but can't be shown. Remember this
+    // so we don't later mislabel it as consensus.
+    if (distinctGroups === k && hasSingleton) {
+      suppressedSplit = true;
+      continue;
+    }
+    // Otherwise skip splits that collapsed into fewer real groups (an empty
+    // cluster), which are not a true k-way division.
     if (sizes.some(sz => sz < MIN_GROUP_SIZE)) {
       continue;
     }
@@ -389,10 +399,20 @@ function analyzeClusters(questions) {
   }
 
   if (!best) {
-    // No candidate k >= 2 produced distinct groups: every participant votes
-    // essentially alike. Report a single consensus group rather than
-    // fabricating a second, empty one (which would leave the UI claiming "2
-    // opinion groups" with an empty Group B).
+    if (suppressedSplit) {
+      // A distinct camp existed but the smaller group was a singleton, so we
+      // can't show groups without identifying that person. Report a suppressed
+      // state rather than implying broad consensus.
+      return {
+        eligible: false,
+        suppressed: true,
+        reason: 'A distinct minority view is present, but the smaller group is too small to show without identifying individuals, so opinion groups are hidden for this discussion.',
+        participantCount: participants.length,
+        statementCount: statements.length,
+      };
+    }
+    // No distinct groups at all: every participant votes essentially alike.
+    // Report a single consensus group rather than fabricating an empty second.
     return buildClusterReport(
       statements,
       participants,
