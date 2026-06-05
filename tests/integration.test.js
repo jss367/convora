@@ -88,6 +88,40 @@ test('HTTP API creates and fetches discussions', async () => {
   assert.equal(fetchResponse.body.topic, topic);
 });
 
+test('creating a discussion makes the creator its moderator', async () => {
+  const topic = uniqueTopic('creator-mod');
+
+  const createResponse = await jsonRequest('POST', '/api/discussions', { topic });
+  assert.equal(createResponse.status, 200);
+  // The creator gets a moderator token back on the request that establishes it.
+  assert.match(createResponse.body.adminToken, /^[a-f0-9]{32}$/);
+
+  // The returned token is the discussion's stored admin token — i.e. it really
+  // grants moderation (verifyAdmin matches on this exact value).
+  const stored = await pool.query('SELECT admin_token FROM discussions WHERE topic = $1', [topic]);
+  assert.equal(stored.rows[0].admin_token, createResponse.body.adminToken);
+});
+
+test('re-creating an already-moderated discussion does not hand over moderation', async () => {
+  const topic = uniqueTopic('creator-mod-repeat');
+
+  const first = await jsonRequest('POST', '/api/discussions', { topic });
+  const firstToken = first.body.adminToken;
+  assert.match(firstToken, /^[a-f0-9]{32}$/);
+
+  // A second create for the same topic must NOT mint or disclose a token —
+  // otherwise anyone could seize moderation by re-submitting an existing topic.
+  const second = await jsonRequest('POST', '/api/discussions', { topic });
+  assert.equal(second.status, 200);
+  assert.equal(second.body.success, true);
+  assert.equal(second.body.id, first.body.id);
+  assert.equal(second.body.adminToken, null);
+
+  // The original moderator's token is untouched.
+  const stored = await pool.query('SELECT admin_token FROM discussions WHERE topic = $1', [topic]);
+  assert.equal(stored.rows[0].admin_token, firstToken);
+});
+
 test('Socket.IO adds questions and broadcasts votes with pseudonyms', async () => {
   const topic = uniqueTopic('socket');
   const author = await connectSocket();
@@ -139,6 +173,131 @@ test('Socket.IO adds questions and broadcasts votes with pseudonyms', async () =
   }
 });
 
+test('a moderator can promote a participant, granting them working controls', async () => {
+  const topic = uniqueTopic('promote');
+  const creator = await jsonRequest('POST', '/api/discussions', { topic });
+  const adminToken = creator.body.adminToken;
+
+  const mod = await connectSocket();
+  const guest = await connectSocket();
+  const guestUserId = 'guest-user-1';
+
+  try {
+    mod.emit('joinDiscussion', topic);
+    guest.emit('joinDiscussion', topic);
+    // The guest identifies so the server can route a moderator grant to them.
+    guest.emit('identify', topic, guestUserId);
+
+    // Add a question and have the guest vote, so they become a known participant.
+    const questionAdded = waitForQuestions(mod, (questions) => questions.length === 1, 'question added');
+    mod.emit('addQuestion', topic, {
+      text: 'Promote me?',
+      type: 'Agreement',
+      minValue: null,
+      maxValue: null,
+      options: [],
+    });
+    const questionId = (await questionAdded)[0].id;
+
+    const voteRecorded = waitForQuestions(guest, (questions) => questions[0] && questions[0].votes.length === 1, 'guest vote');
+    guest.emit('vote', topic, questionId, 'Agree', guestUserId, 'Guest Otter');
+    await voteRecorded;
+
+    // The moderator sees the guest via an opaque, stable handle — never a raw
+    // user id, and not a positional index.
+    const list = await emitWithAck(mod, 'listParticipants', topic, adminToken);
+    assert.equal(list.success, true);
+    assert.equal(list.participants.length, 1);
+    assert.match(list.participants[0].id, /^participant-[a-f0-9]{16}$/);
+    assert.equal(list.participants[0].pseudonym, 'Guest Otter');
+    assert.equal(list.participants[0].isModerator, false);
+    assert.equal(list.participants[0].userId, undefined);
+    const guestHandle = list.participants[0].id;
+
+    // Promotion delivers a token to the guest live and flips their flag.
+    const granted = waitForEvent(guest, 'moderatorGranted');
+    const promote = await emitWithAck(mod, 'promoteModerator', topic, adminToken, guestHandle);
+    assert.equal(promote.success, true);
+    assert.equal(promote.participants[0].isModerator, true);
+
+    const grant = await granted;
+    assert.match(grant.token, /^[a-f0-9]{32}$/);
+
+    // The granted token really moderates: the guest can now lock the discussion.
+    guest.emit('setLocked', topic, true, grant.token);
+    const locked = await waitForEvent(mod, 'discussionState', (state) => state.locked === true);
+    assert.equal(locked.locked, true);
+  } finally {
+    mod.disconnect();
+    guest.disconnect();
+  }
+});
+
+test('a non-moderator cannot list or promote participants', async () => {
+  const topic = uniqueTopic('promote-deny');
+  await jsonRequest('POST', '/api/discussions', { topic });
+
+  const stranger = await connectSocket();
+  try {
+    stranger.emit('joinDiscussion', topic);
+
+    const list = await emitWithAck(stranger, 'listParticipants', topic, 'bogus-token');
+    assert.equal(list.success, false);
+    assert.equal(list.error, 'not_authorized');
+
+    const promote = await emitWithAck(stranger, 'promoteModerator', topic, 'bogus-token', 'participant-1');
+    assert.equal(promote.success, false);
+    assert.equal(promote.error, 'not_authorized');
+  } finally {
+    stranger.disconnect();
+  }
+});
+
+test('promoting an offline participant fails and does not leave a dangling grant', async () => {
+  const topic = uniqueTopic('promote-offline');
+  const creator = await jsonRequest('POST', '/api/discussions', { topic });
+  const adminToken = creator.body.adminToken;
+
+  const mod = await connectSocket();
+  const guest = await connectSocket();
+  const guestUserId = 'offline-guest-1';
+
+  try {
+    mod.emit('joinDiscussion', topic);
+    guest.emit('joinDiscussion', topic);
+    guest.emit('identify', topic, guestUserId);
+
+    const questionAdded = waitForQuestions(mod, (questions) => questions.length === 1, 'question added');
+    mod.emit('addQuestion', topic, { text: 'Offline?', type: 'Agreement', minValue: null, maxValue: null, options: [] });
+    const questionId = (await questionAdded)[0].id;
+
+    const voteRecorded = waitForQuestions(guest, (questions) => questions[0] && questions[0].votes.length === 1, 'guest vote');
+    guest.emit('vote', topic, questionId, 'Agree', guestUserId, 'Absent Owl');
+    await voteRecorded;
+
+    const list = await emitWithAck(mod, 'listParticipants', topic, adminToken);
+    const guestHandle = list.participants[0].id;
+
+    // Guest leaves before being promoted. Wait until the server has processed
+    // the disconnect (presence drops to just the moderator) so the promote can't
+    // find a socket to deliver to.
+    const presenceDropped = waitForEvent(mod, 'presence', (count) => count === 1);
+    guest.disconnect();
+    await presenceDropped;
+
+    const promote = await emitWithAck(mod, 'promoteModerator', topic, adminToken, guestHandle);
+    assert.equal(promote.success, false);
+    assert.equal(promote.error, 'participant_offline');
+
+    // The grant was rolled back — the participant is not left marked a moderator.
+    const after = await emitWithAck(mod, 'listParticipants', topic, adminToken);
+    assert.equal(after.participants[0].isModerator, false);
+  } finally {
+    mod.disconnect();
+    guest.disconnect();
+  }
+});
+
 async function jsonRequest(method, urlPath, body) {
   const response = await fetch(`${baseUrl}${urlPath}`, {
     method,
@@ -183,6 +342,36 @@ function waitForQuestions(socket, predicate, description) {
     }),
     5000,
     `Timed out waiting for ${description}`
+  );
+}
+
+// Emit an event whose last argument is an ack callback, and resolve with the
+// server's ack payload.
+function emitWithAck(socket, event, ...args) {
+  return withTimeout(
+    new Promise((resolve) => {
+      socket.emit(event, ...args, resolve);
+    }),
+    5000,
+    `Timed out waiting for ack of ${event}`
+  );
+}
+
+// Resolve with the first occurrence of an event (optionally matching predicate).
+function waitForEvent(socket, event, predicate) {
+  return withTimeout(
+    new Promise((resolve) => {
+      const handler = (payload) => {
+        if (!predicate || predicate(payload)) {
+          socket.off(event, handler);
+          resolve(payload);
+        }
+      };
+
+      socket.on(event, handler);
+    }),
+    5000,
+    `Timed out waiting for ${event}`
   );
 }
 

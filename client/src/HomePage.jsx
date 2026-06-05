@@ -55,6 +55,18 @@ const HomePage = () => {
                 if (!response.ok) {
                     throw new Error('Failed to create discussion');
                 }
+                // The creator is the moderator: the server hands back an admin
+                // token when this request established the discussion. Persist it
+                // under the per-topic key DiscussionPage reads on mount so the
+                // creator arrives already holding moderator controls.
+                const data = await response.json();
+                if (data && data.adminToken) {
+                    try {
+                        localStorage.setItem(`convora_admin_${topic}`, data.adminToken);
+                    } catch (e) {
+                        console.warn('Failed to store admin token:', e);
+                    }
+                }
                 // Navigate using the same topic the server stored (and that the
                 // existing-discussions links use), so the creator lands in the
                 // discussion they just created rather than a separate slugified one.
