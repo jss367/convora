@@ -112,7 +112,10 @@ const DiscussionPage = () => {
     const [presence, setPresence] = useState(0);
     const [copied, setCopied] = useState(false);
     const [adminToken, setAdminToken] = useState(null);
-    const [discussionState, setDiscussionState] = useState({ locked: false, hasModerator: false });
+    const [discussionState, setDiscussionState] = useState({
+        locked: false, hasModerator: false,
+        reactionsEnabled: false, reactionsVisible: true, commentsEnabled: false,
+    });
     const [similarPrompt, setSimilarPrompt] = useState(null);
     const [adminLinkCopied, setAdminLinkCopied] = useState(false);
     // Experimental "opinion groups" view, hidden behind a ?clusters=1 flag so it
@@ -675,8 +678,8 @@ const DiscussionPage = () => {
         socket.emit('deleteResponseComment', topic, commentId, userId);
     };
 
-    const handleSetQuestionFlags = (questionId, flags) => {
-        socket.emit('setQuestionFlags', topic, questionId, flags, adminToken);
+    const handleSetDiscussionFlags = (flags) => {
+        socket.emit('setDiscussionFlags', topic, flags, adminToken);
     };
 
     const sortQuestions = (questions) => {
@@ -813,9 +816,7 @@ const DiscussionPage = () => {
                     handleVote={handleVote}
                     handleDeleteVote={handleDeleteVote}
                     locked={locked}
-                    isAdmin={isAdmin}
                     myBrainstorm={myBrainstorm}
-                    onSetFlags={handleSetQuestionFlags}
                     onSetRating={handleSetRating}
                     onToggleReaction={handleToggleReaction}
                     onAddComment={handleAddComment}
@@ -1108,6 +1109,31 @@ const DiscussionPage = () => {
                             className="px-3 py-1 rounded bg-white border border-indigo-300 text-indigo-700 hover:bg-indigo-100"
                         >
                             {showJoinQr ? 'Hide join QR' : 'Show join QR'}
+                        </button>
+                        {/* Discussion-wide brainstorm phasing: these apply to
+                            every brainstorm prompt at once (read silently, then
+                            open reactions, then open comments). */}
+                        <span className="w-px self-stretch bg-indigo-200" aria-hidden="true" />
+                        <span className="text-indigo-700">Brainstorms:</span>
+                        <button
+                            onClick={() => handleSetDiscussionFlags({ reactions_enabled: !discussionState.reactionsEnabled })}
+                            className="px-3 py-1 rounded bg-white border border-indigo-300 text-indigo-700 hover:bg-indigo-100"
+                        >
+                            {discussionState.reactionsEnabled ? 'Disable reactions' : 'Enable reactions'}
+                        </button>
+                        {discussionState.reactionsEnabled && (
+                            <button
+                                onClick={() => handleSetDiscussionFlags({ reactions_visible: !discussionState.reactionsVisible })}
+                                className="px-3 py-1 rounded bg-white border border-indigo-300 text-indigo-700 hover:bg-indigo-100"
+                            >
+                                {discussionState.reactionsVisible ? 'Hide reactions' : 'Show reactions'}
+                            </button>
+                        )}
+                        <button
+                            onClick={() => handleSetDiscussionFlags({ comments_enabled: !discussionState.commentsEnabled })}
+                            className="px-3 py-1 rounded bg-white border border-indigo-300 text-indigo-700 hover:bg-indigo-100"
+                        >
+                            {discussionState.commentsEnabled ? 'Disable comments' : 'Enable comments'}
                         </button>
                     </div>
                 ) : !discussionState.hasModerator ? (
@@ -1712,11 +1738,14 @@ BrainstormIdea.propTypes = {
 // comments on top, revealing them when the room shifts from generating ideas to
 // evaluating them.
 const BrainstormQuestion = ({
-    question, ownedVoteIds, ownedCommentIds, handleVote, handleDeleteVote, locked, isAdmin, myBrainstorm,
-    onSetFlags, onSetRating, onToggleReaction, onAddComment, onDeleteComment,
+    question, ownedVoteIds, ownedCommentIds, handleVote, handleDeleteVote, locked, myBrainstorm,
+    onSetRating, onToggleReaction, onAddComment, onDeleteComment,
 }) => {
     const [idea, setIdea] = useState('');
     const votes = question.votes || [];
+    // Whether reactions/comments are available is set discussion-wide by the
+    // moderator (see the moderator bar in DiscussionPage); each question carries
+    // the resolved flags via getQuestions.
     const reactionsEnabled = question.reactionsEnabled;
     const reactionsVisible = question.reactionsVisible;
     const commentsEnabled = question.commentsEnabled;
@@ -1731,27 +1760,8 @@ const BrainstormQuestion = ({
         setIdea('');
     };
 
-    const modButton = 'px-2 py-1 rounded bg-white border border-indigo-300 text-indigo-700 hover:bg-indigo-100';
-
     return (
         <div>
-            {isAdmin && (
-                <div className="flex flex-wrap items-center gap-2 mb-4 bg-indigo-50 border border-indigo-100 rounded-md p-2 text-xs">
-                    <span className="font-semibold text-indigo-800">Moderator:</span>
-                    <button onClick={() => onSetFlags(question.id, { reactions_enabled: !reactionsEnabled })} className={modButton}>
-                        {reactionsEnabled ? 'Disable reactions' : 'Enable reactions'}
-                    </button>
-                    {reactionsEnabled && (
-                        <button onClick={() => onSetFlags(question.id, { reactions_visible: !reactionsVisible })} className={modButton}>
-                            {reactionsVisible ? 'Hide reactions' : 'Show reactions'}
-                        </button>
-                    )}
-                    <button onClick={() => onSetFlags(question.id, { comments_enabled: !commentsEnabled })} className={modButton}>
-                        {commentsEnabled ? 'Disable comments' : 'Enable comments'}
-                    </button>
-                </div>
-            )}
-
             {!locked && (
                 <>
                     <textarea
@@ -1878,12 +1888,10 @@ BrainstormQuestion.propTypes = {
     handleVote: PropTypes.func.isRequired,
     handleDeleteVote: PropTypes.func.isRequired,
     locked: PropTypes.bool,
-    isAdmin: PropTypes.bool,
     myBrainstorm: PropTypes.shape({
         ratings: PropTypes.object,
         reactions: PropTypes.object,
     }).isRequired,
-    onSetFlags: PropTypes.func.isRequired,
     onSetRating: PropTypes.func.isRequired,
     onToggleReaction: PropTypes.func.isRequired,
     onAddComment: PropTypes.func.isRequired,

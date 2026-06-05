@@ -706,15 +706,33 @@ function emitPresence(topic) {
   io.to(topic).emit('presence', count);
 }
 
-// Read the lock state and whether a moderator has been claimed.
+// Read the lock state, whether a moderator has been claimed, and the
+// discussion-wide brainstorm interaction flags. The flags live on the
+// discussion (not individual questions) so a moderator opens reactions/comments
+// for the whole room at once; this channel drives the moderator's toggle
+// buttons and gates the participant-facing reaction/comment UI.
 async function getDiscussionState(topic) {
   const slug = slugifyTopic(topic);
   const result = await pool.query(
-    'SELECT locked, admin_token IS NOT NULL AS has_moderator FROM discussions WHERE slug = $1',
+    `SELECT locked, admin_token IS NOT NULL AS has_moderator,
+            reactions_enabled, reactions_visible, comments_enabled
+       FROM discussions WHERE slug = $1`,
     [slug]
   );
-  if (result.rows.length === 0) return { locked: false, hasModerator: false };
-  return { locked: result.rows[0].locked === true, hasModerator: result.rows[0].has_moderator === true };
+  if (result.rows.length === 0) {
+    return {
+      locked: false, hasModerator: false,
+      reactionsEnabled: false, reactionsVisible: true, commentsEnabled: false,
+    };
+  }
+  const row = result.rows[0];
+  return {
+    locked: row.locked === true,
+    hasModerator: row.has_moderator === true,
+    reactionsEnabled: row.reactions_enabled === true,
+    reactionsVisible: row.reactions_visible === true,
+    commentsEnabled: row.comments_enabled === true,
+  };
 }
 
 async function emitDiscussionState(topic) {
@@ -1078,13 +1096,15 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Moderator-only: flip the per-question interaction flags (allow/disallow
-  // reactions, reveal/hide reactions, allow/disallow comments). Only known
-  // boolean flags are applied.
-  socket.on('setQuestionFlags', async (topic, questionId, flags, token) => {
+  // Moderator-only: flip the discussion-wide interaction flags (allow/disallow
+  // reactions, reveal/hide reactions, allow/disallow comments). These apply to
+  // every brainstorm prompt at once so a moderator can phase the whole room —
+  // read silently first, then open reactions, then open comments — rather than
+  // toggling each question. Only known boolean flags are applied.
+  socket.on('setDiscussionFlags', async (topic, flags, token) => {
     const discussionSlug = slugifyTopic(topic);
     try {
-      const discussionId = await verifyAdmin(topic, token);
+      const discussionId = await verifyAdmin(discussionSlug, token);
       if (!discussionId) {
         socket.emit('error', { message: 'Not authorized to moderate this discussion.' });
         return;
@@ -1099,15 +1119,20 @@ io.on('connection', (socket) => {
         }
       }
       if (sets.length === 0) return;
-      values.push(questionId, discussionId);
+      values.push(discussionId);
       await pool.query(
-        `UPDATE questions SET ${sets.join(', ')} WHERE id = $${values.length - 1} AND discussion_id = $${values.length}`,
+        `UPDATE discussions SET ${sets.join(', ')} WHERE id = $${values.length}`,
         values
       );
+      // Re-broadcast both channels: discussionState drives the moderator's
+      // toggle buttons, while the questions payload changes too (revealing or
+      // hiding reactions/comments changes what attachBrainstormInteractions
+      // includes for everyone).
+      await emitDiscussionState(discussionSlug);
       io.to(discussionSlug).emit('questions', await getQuestions(discussionSlug));
     } catch (error) {
-      console.error('Error setting question flags:', error);
-      socket.emit('error', { message: 'Failed to update question' });
+      console.error('Error setting discussion flags:', error);
+      socket.emit('error', { message: 'Failed to update discussion' });
     }
   });
 
@@ -1276,9 +1301,9 @@ async function getQuestions(topic, { includeUserIds = false } = {}) {
       q.options,
       q.created_at,
       q.pinned,
-      q.reactions_enabled,
-      q.reactions_visible,
-      q.comments_enabled,
+      d.reactions_enabled,
+      d.reactions_visible,
+      d.comments_enabled,
       COALESCE(json_agg(
         json_build_object(
           'id', v.id,
@@ -1294,7 +1319,7 @@ async function getQuestions(topic, { includeUserIds = false } = {}) {
     JOIN discussions d ON q.discussion_id = d.id
     LEFT JOIN votes v ON q.id = v.question_id
     WHERE d.slug = $1
-    GROUP BY q.id
+    GROUP BY q.id, d.id
     ORDER BY q.pinned DESC, q.id
   `;
 
@@ -1686,11 +1711,20 @@ async function migrateResponseVotesTable() {
 
 // Interaction features layered on individual Brainstorm ideas: two-axis ratings
 // (a quality up/down vote and an agreement selection), curated epistemic
-// reactions, and threaded comments. Plus per-question moderator flags: whether
-// reactions/comments are available, and — for reactions — whether they're
-// currently revealed (so a moderator can collect ideas first, then open
-// reactions for an evaluation phase). All idempotent.
+// reactions, and threaded comments. Plus discussion-wide moderator flags:
+// whether reactions/comments are available, and — for reactions — whether
+// they're currently revealed (so a moderator can collect ideas first, then open
+// reactions for an evaluation phase). The flags live on the discussion so a
+// moderator opens them for every brainstorm prompt at once. All idempotent.
 async function migrateBrainstormInteractions() {
+  await pool.query('ALTER TABLE discussions ADD COLUMN IF NOT EXISTS reactions_enabled BOOLEAN NOT NULL DEFAULT FALSE');
+  await pool.query('ALTER TABLE discussions ADD COLUMN IF NOT EXISTS reactions_visible BOOLEAN NOT NULL DEFAULT TRUE');
+  await pool.query('ALTER TABLE discussions ADD COLUMN IF NOT EXISTS comments_enabled BOOLEAN NOT NULL DEFAULT FALSE');
+
+  // Legacy per-question flag columns from when these toggles were per-question
+  // (added 2026-06-05, PR #39). Kept idempotently so older databases and a
+  // rollback still work, but no longer read or written — the discussion-level
+  // columns above are now the source of truth.
   await pool.query('ALTER TABLE questions ADD COLUMN IF NOT EXISTS reactions_enabled BOOLEAN NOT NULL DEFAULT FALSE');
   await pool.query('ALTER TABLE questions ADD COLUMN IF NOT EXISTS reactions_visible BOOLEAN NOT NULL DEFAULT TRUE');
   await pool.query('ALTER TABLE questions ADD COLUMN IF NOT EXISTS comments_enabled BOOLEAN NOT NULL DEFAULT FALSE');
@@ -2169,12 +2203,12 @@ async function toggleResponseVote(topic, responseId, userId) {
 }
 
 // Look up a brainstorm response within a topic and return its owner plus the
-// parent question's interaction flags. Returns null when the response doesn't
+// discussion's interaction flags. Returns null when the response doesn't
 // belong to the topic, so callers reject forged/cross-topic response ids.
 async function getResponseContext(topic, responseId) {
   const slug = slugifyTopic(topic);
   const result = await pool.query(
-    `SELECT v.user_id, q.type, q.reactions_enabled, q.reactions_visible, q.comments_enabled, d.locked
+    `SELECT v.user_id, q.type, d.reactions_enabled, d.reactions_visible, d.comments_enabled, d.locked
      FROM votes v
      JOIN questions q ON v.question_id = q.id
      JOIN discussions d ON q.discussion_id = d.id
@@ -2499,9 +2533,11 @@ app.post('/api/duplicate-discussion', async (req, res) => {
   try {
     await client.query('BEGIN');
 
-    // Get the original discussion
+    // Get the original discussion, including its interaction flags so the copy
+    // preserves whether reactions/comments were enabled (and reactions
+    // revealed) rather than silently resetting them to the defaults.
     const originalDiscussionResult = await client.query(
-      'SELECT id FROM discussions WHERE slug = $1',
+      'SELECT id, reactions_enabled, reactions_visible, comments_enabled FROM discussions WHERE slug = $1',
       [slugifyTopic(originalTopic)]
     );
 
@@ -2509,7 +2545,8 @@ app.post('/api/duplicate-discussion', async (req, res) => {
       throw new Error('Original discussion not found');
     }
 
-    const originalDiscussionId = originalDiscussionResult.rows[0].id;
+    const originalDiscussion = originalDiscussionResult.rows[0];
+    const originalDiscussionId = originalDiscussion.id;
 
     // Create new discussion. Duplicating into an existing topic would merge
     // questions into that discussion, so treat the unique conflict as a user
@@ -2534,11 +2571,14 @@ app.post('/api/duplicate-discussion', async (req, res) => {
     for (let suffix = 1; suffix <= 1000; suffix += 1) {
       const newSlug = suffixSlug(baseNewSlug, suffix);
       const newDiscussionResult = await client.query(
-        `INSERT INTO discussions (topic, slug, admin_token)
-         VALUES ($1, $2, $3)
+        `INSERT INTO discussions (topic, slug, admin_token, reactions_enabled, reactions_visible, comments_enabled)
+         VALUES ($1, $2, $3, $4, $5, $6)
          ON CONFLICT (slug) DO NOTHING
          RETURNING id, topic, slug`,
-        [displayNewTopic, newSlug, newAdminToken]
+        [displayNewTopic, newSlug, newAdminToken,
+          originalDiscussion.reactions_enabled,
+          originalDiscussion.reactions_visible,
+          originalDiscussion.comments_enabled]
       );
 
       if (newDiscussionResult.rows.length > 0) {
@@ -2554,13 +2594,11 @@ app.post('/api/duplicate-discussion', async (req, res) => {
 
     const newDiscussionId = newDiscussion.id;
 
-    // Copy questions from original to new discussion. Carry the brainstorm
-    // interaction flags too, so duplicating a discussion preserves whether
-    // reactions/comments were enabled (and reactions revealed) rather than
-    // silently resetting them to the migration defaults.
+    // Copy questions from original to new discussion. The interaction flags now
+    // live on the discussion (copied above), not per question.
     await client.query(`
-      INSERT INTO questions (discussion_id, text, type, min_value, max_value, options, reactions_enabled, reactions_visible, comments_enabled)
-      SELECT $1, text, type, min_value, max_value, options, reactions_enabled, reactions_visible, comments_enabled
+      INSERT INTO questions (discussion_id, text, type, min_value, max_value, options)
+      SELECT $1, text, type, min_value, max_value, options
       FROM questions
       WHERE discussion_id = $2
     `, [newDiscussionId, originalDiscussionId]);
