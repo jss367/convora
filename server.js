@@ -714,7 +714,7 @@ function emitPresence(topic) {
 async function getDiscussionState(topic) {
   const slug = slugifyTopic(topic);
   const result = await pool.query(
-    `SELECT locked, admin_token IS NOT NULL AS has_moderator,
+    `SELECT locked, reaction_keys, admin_token IS NOT NULL AS has_moderator,
             reactions_enabled, reactions_visible, comments_enabled
        FROM discussions WHERE slug = $1`,
     [slug]
@@ -723,6 +723,7 @@ async function getDiscussionState(topic) {
     return {
       locked: false, hasModerator: false,
       reactionsEnabled: false, reactionsVisible: true, commentsEnabled: false,
+      reactionKeys: [...DEFAULT_REACTION_KEYS],
     };
   }
   const row = result.rows[0];
@@ -732,6 +733,7 @@ async function getDiscussionState(topic) {
     reactionsEnabled: row.reactions_enabled === true,
     reactionsVisible: row.reactions_visible === true,
     commentsEnabled: row.comments_enabled === true,
+    reactionKeys: resolveReactionKeys(row.reaction_keys),
   };
 }
 
@@ -1107,9 +1109,10 @@ io.on('connection', (socket) => {
   socket.on('toggleResponseReaction', async (topic, responseId, reaction, userId) => {
     const discussionSlug = slugifyTopic(topic);
     try {
-      if (!EPISTEMIC_REACTIONS.has(reaction)) return;
       const ctx = await getResponseContext(topic, responseId);
       if (!ctx || ctx.locked || ctx.type !== 'Brainstorm' || !ctx.reactionsEnabled || !ctx.reactionsVisible) return;
+      // Reject anything outside the set the creator has active for this session.
+      if (!ctx.reactionKeys.includes(reaction)) return;
       // No self-reactions on your own idea, same rationale as ratings.
       if (ctx.ownerId === userId) return;
       await toggleResponseReaction(responseId, userId, reaction);
@@ -1233,6 +1236,32 @@ io.on('connection', (socket) => {
     } catch (error) {
       console.error('Error setting discussion flags:', error);
       socket.emit('error', { message: 'Failed to update discussion' });
+    }
+  });
+
+  // Moderator-only: choose which epistemic reactions are active for the whole
+  // discussion. The selection is stored as a subset of REACTION_CATALOG (keys
+  // outside it are dropped); an all-empty selection is ignored so a session is
+  // never left with reactions enabled but nothing to place. Broadcast via
+  // discussionState so every connected client re-renders the set live.
+  socket.on('setReactionKeys', async (topic, keys, token) => {
+    const discussionSlug = slugifyTopic(topic);
+    try {
+      const discussionId = await verifyAdmin(discussionSlug, token);
+      if (!discussionId) {
+        socket.emit('error', { message: 'Not authorized to moderate this discussion.' });
+        return;
+      }
+      const filtered = Array.isArray(keys) ? REACTION_CATALOG.filter(k => keys.includes(k)) : [];
+      if (filtered.length === 0) return;
+      await pool.query(
+        'UPDATE discussions SET reaction_keys = $1 WHERE id = $2',
+        [JSON.stringify(filtered), discussionId]
+      );
+      await emitDiscussionState(discussionSlug);
+    } catch (error) {
+      console.error('Error setting reaction keys:', error);
+      socket.emit('error', { message: 'Failed to update reactions' });
     }
   });
 
@@ -1497,17 +1526,33 @@ async function getQuestions(topic, { includeUserIds = false } = {}) {
   return questions;
 }
 
-// Curated set of epistemic reactions a participant can place on a brainstorm
-// idea. The keys are stable; the client owns their display labels. The server
-// keeps its own copy purely to reject anything outside the set.
-const EPISTEMIC_REACTIONS = new Set([
+// Curated catalog of epistemic reactions the system knows how to render. The
+// keys are stable and the client owns their display labels; the server keeps
+// this list purely as the validation allowlist (a key outside it is never
+// accepted). A discussion's creator may narrow which of these are active for
+// their session — see reaction_keys / resolveReactionKeys.
+const REACTION_CATALOG = [
   'changed-mind',
   'crux',
-  'locally-valid',
-  'locally-invalid',
+  'follows',
   'citation-needed',
   'key-insight',
-]);
+];
+
+// Reactions a discussion starts with before its creator customizes the set
+// (reaction_keys IS NULL) — currently the whole catalog.
+const DEFAULT_REACTION_KEYS = REACTION_CATALOG;
+
+// Resolve a discussion's stored reaction_keys (raw JSONB, possibly null) into an
+// ordered, validated list of active reaction keys. Null/empty/all-invalid falls
+// back to the defaults; otherwise the stored selection is filtered to the
+// catalog and re-ordered to match it, so every client renders the same order.
+function resolveReactionKeys(raw) {
+  if (!Array.isArray(raw)) return [...DEFAULT_REACTION_KEYS];
+  const selected = new Set(raw);
+  const resolved = REACTION_CATALOG.filter(k => selected.has(k));
+  return resolved.length > 0 ? resolved : [...DEFAULT_REACTION_KEYS];
+}
 
 // The question types a discussion supports. Mirrors QuestionTypes in
 // client/src/DiscussionPage.jsx — used to validate edits server-side.
@@ -1921,6 +1966,10 @@ async function migrateBrainstormInteractions() {
     `);
   }
 
+  // Which epistemic reactions are active for this discussion (a subset of
+  // REACTION_CATALOG). NULL means "the creator hasn't customized it" → defaults.
+  await pool.query('ALTER TABLE discussions ADD COLUMN IF NOT EXISTS reaction_keys JSONB');
+
   // One row per (response, user): that user's quality vote (-1/+1) and/or
   // agreement selection. Either axis may be null when only the other is set.
   // Always aggregated before broadcast, so individual votes stay unattributable.
@@ -1946,6 +1995,12 @@ async function migrateBrainstormInteractions() {
       UNIQUE (response_id, user_id, reaction)
     )
   `);
+
+  // Carry existing reactions across the locally-valid → follows rename, and drop
+  // the removed locally-invalid rows, so reactions placed before this change
+  // don't strand under keys the catalog no longer renders. Idempotent.
+  await pool.query("UPDATE response_reactions SET reaction = 'follows' WHERE reaction = 'locally-valid'");
+  await pool.query("DELETE FROM response_reactions WHERE reaction = 'locally-invalid'");
 
   // Comments on a brainstorm idea. Unlike ratings/reactions these carry their
   // author's pseudonym, since they're conversation rather than an anonymous vote.
@@ -2400,7 +2455,7 @@ async function toggleResponseVote(topic, responseId, userId) {
 async function getResponseContext(topic, responseId) {
   const slug = slugifyTopic(topic);
   const result = await pool.query(
-    `SELECT v.user_id, q.type, d.reactions_enabled, d.reactions_visible, d.comments_enabled, d.locked
+    `SELECT v.user_id, q.type, d.reactions_enabled, d.reactions_visible, d.comments_enabled, d.locked, d.reaction_keys
      FROM votes v
      JOIN questions q ON v.question_id = q.id
      JOIN discussions d ON q.discussion_id = d.id
@@ -2416,6 +2471,7 @@ async function getResponseContext(topic, responseId) {
     reactionsVisible: row.reactions_visible === true,
     commentsEnabled: row.comments_enabled === true,
     locked: row.locked === true,
+    reactionKeys: resolveReactionKeys(row.reaction_keys),
   };
 }
 
@@ -2794,6 +2850,14 @@ app.post('/api/duplicate-discussion', async (req, res) => {
       FROM questions
       WHERE discussion_id = $2
     `, [newDiscussionId, originalDiscussionId]);
+
+    // Carry the session-level reaction set (see reaction_keys) for the same
+    // reason as the per-question flags above: a duplicate should preserve the
+    // creator's chosen reactions, not silently reset to the defaults.
+    await client.query(
+      'UPDATE discussions SET reaction_keys = (SELECT reaction_keys FROM discussions WHERE id = $2) WHERE id = $1',
+      [newDiscussionId, originalDiscussionId]
+    );
 
     await client.query('COMMIT');
 
