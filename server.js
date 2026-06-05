@@ -4,6 +4,7 @@ const http = require('http');
 const socketIo = require('socket.io');
 const { Pool } = require('pg');
 const path = require('path');
+const crypto = require('crypto');
 const bodyParser = require('body-parser');
 const cors = require('cors');
 
@@ -67,6 +68,20 @@ function emitPresence(topic) {
   io.to(topic).emit('presence', count);
 }
 
+// Read the lock state and whether a moderator has been claimed.
+async function getDiscussionState(topic) {
+  const result = await pool.query(
+    'SELECT locked, admin_token IS NOT NULL AS has_moderator FROM discussions WHERE topic = $1',
+    [topic]
+  );
+  if (result.rows.length === 0) return { locked: false, hasModerator: false };
+  return { locked: result.rows[0].locked === true, hasModerator: result.rows[0].has_moderator === true };
+}
+
+async function emitDiscussionState(topic) {
+  io.to(topic).emit('discussionState', await getDiscussionState(topic));
+}
+
 // WebSocket handlers
 io.on('connection', (socket) => {
   console.log('New client connected');
@@ -87,18 +102,34 @@ io.on('connection', (socket) => {
     try {
       const questions = await getQuestions(topic);
       socket.emit('questions', questions);
+      socket.emit('discussionState', await getDiscussionState(topic));
     } catch (error) {
       console.error('Error getting questions:', error);
       socket.emit('error', { message: 'Failed to get questions' });
     }
   });
 
-  socket.on('addQuestion', async (topic, question) => {
+  socket.on('addQuestion', async (topic, question, force) => {
     console.log('Received addQuestion event');
     console.log('topic:', topic);
     console.log('question:', question);
 
     try {
+      if (await isDiscussionLocked(topic)) {
+        socket.emit('error', { message: 'This discussion is locked.' });
+        return;
+      }
+
+      // Surface a near-duplicate so the submitter can vote on the existing
+      // statement instead — unless they explicitly chose to post anyway.
+      if (!force) {
+        const similar = await findSimilarQuestion(topic, question.text);
+        if (similar) {
+          socket.emit('similarQuestion', { candidate: similar, question });
+          return;
+        }
+      }
+
       await addQuestion(topic, question);
       console.log('Question added successfully');
       const updatedQuestions = await getQuestions(topic);
@@ -112,12 +143,79 @@ io.on('connection', (socket) => {
 
   socket.on('vote', async (topic, questionId, vote, userId, pseudonym) => {
     try {
+      if (await isDiscussionLocked(topic)) {
+        socket.emit('error', { message: 'Voting is closed for this discussion.' });
+        return;
+      }
       await addVote(questionId, vote, userId, pseudonym);
       const questions = await getQuestions(topic);
       io.to(topic).emit('questions', questions);
     } catch (error) {
       console.error('Error handling vote:', error);
       socket.emit('error', { message: 'Failed to handle vote' });
+    }
+  });
+
+  // First-come moderator claim. Replies via ack callback with the admin token.
+  socket.on('claimModerator', async (topic, cb) => {
+    try {
+      const token = await claimModerator(topic);
+      if (token) {
+        if (typeof cb === 'function') cb({ success: true, token });
+        await emitDiscussionState(topic);
+      } else if (typeof cb === 'function') {
+        cb({ success: false, error: 'already_claimed' });
+      }
+    } catch (error) {
+      console.error('Error claiming moderator:', error);
+      if (typeof cb === 'function') cb({ success: false, error: 'server_error' });
+    }
+  });
+
+  socket.on('deleteQuestion', async (topic, questionId, token) => {
+    try {
+      const discussionId = await verifyAdmin(topic, token);
+      if (!discussionId) {
+        socket.emit('error', { message: 'Not authorized to moderate this discussion.' });
+        return;
+      }
+      // Remove votes first (response_votes cascade) to satisfy FK constraints.
+      await pool.query('DELETE FROM votes WHERE question_id = $1', [questionId]);
+      await pool.query('DELETE FROM questions WHERE id = $1 AND discussion_id = $2', [questionId, discussionId]);
+      io.to(topic).emit('questions', await getQuestions(topic));
+    } catch (error) {
+      console.error('Error deleting question:', error);
+      socket.emit('error', { message: 'Failed to delete question' });
+    }
+  });
+
+  socket.on('setLocked', async (topic, locked, token) => {
+    try {
+      const discussionId = await verifyAdmin(topic, token);
+      if (!discussionId) {
+        socket.emit('error', { message: 'Not authorized to moderate this discussion.' });
+        return;
+      }
+      await pool.query('UPDATE discussions SET locked = $1 WHERE id = $2', [!!locked, discussionId]);
+      await emitDiscussionState(topic);
+    } catch (error) {
+      console.error('Error setting lock state:', error);
+      socket.emit('error', { message: 'Failed to update discussion' });
+    }
+  });
+
+  socket.on('setPinned', async (topic, questionId, pinned, token) => {
+    try {
+      const discussionId = await verifyAdmin(topic, token);
+      if (!discussionId) {
+        socket.emit('error', { message: 'Not authorized to moderate this discussion.' });
+        return;
+      }
+      await pool.query('UPDATE questions SET pinned = $1 WHERE id = $2 AND discussion_id = $3', [!!pinned, questionId, discussionId]);
+      io.to(topic).emit('questions', await getQuestions(topic));
+    } catch (error) {
+      console.error('Error setting pin state:', error);
+      socket.emit('error', { message: 'Failed to update question' });
     }
   });
 
@@ -185,9 +283,10 @@ async function getQuestions(topic) {
       q.id, 
       q.text, 
       q.type, 
-      q.min_value, 
-      q.max_value, 
+      q.min_value,
+      q.max_value,
       q.options,
+      q.pinned,
       COALESCE(json_agg(
         json_build_object(
           'id', v.id,
@@ -200,10 +299,10 @@ async function getQuestions(topic) {
       ) FILTER (WHERE v.id IS NOT NULL), '[]'::json) as votes
     FROM questions q
     JOIN discussions d ON q.discussion_id = d.id
-    LEFT JOIN votes v ON q.id = v.question_id 
+    LEFT JOIN votes v ON q.id = v.question_id
     WHERE d.topic = $1
-    GROUP BY q.id 
-    ORDER BY q.id
+    GROUP BY q.id
+    ORDER BY q.pinned DESC, q.id
   `;
 
   const result = await pool.query(query, [topic]);
@@ -317,6 +416,90 @@ async function migrateResponseVotesTable() {
   }
 }
 migrateResponseVotesTable().catch(console.error);
+
+// Moderation columns: a per-discussion admin token, a discussion lock, and a
+// per-question pin flag. Plus the pg_trgm extension for near-duplicate
+// statement detection. All idempotent.
+async function migrateModerationAndDedup() {
+  try {
+    await pool.query('ALTER TABLE discussions ADD COLUMN IF NOT EXISTS admin_token TEXT');
+    await pool.query('ALTER TABLE discussions ADD COLUMN IF NOT EXISTS locked BOOLEAN NOT NULL DEFAULT FALSE');
+    await pool.query('ALTER TABLE questions ADD COLUMN IF NOT EXISTS pinned BOOLEAN NOT NULL DEFAULT FALSE');
+    await pool.query('CREATE EXTENSION IF NOT EXISTS pg_trgm');
+    console.log('Moderation + dedup migration completed');
+  } catch (e) {
+    console.error('Error in moderation/dedup migration:', e);
+  }
+}
+migrateModerationAndDedup().catch(console.error);
+
+// Verify that the supplied token is the discussion's admin token. Returns the
+// discussion id when valid, or null otherwise.
+async function verifyAdmin(topic, token) {
+  if (!token) return null;
+  const result = await pool.query(
+    'SELECT id FROM discussions WHERE topic = $1 AND admin_token = $2',
+    [topic, token]
+  );
+  return result.rows.length > 0 ? result.rows[0].id : null;
+}
+
+// First-come moderator claim: assigns a fresh admin token only if the
+// discussion has none yet. Returns the token, or null if already claimed.
+// (discussions.topic has no unique constraint in this schema, so we avoid
+// ON CONFLICT and use SELECT/INSERT like the rest of the app.)
+async function claimModerator(topic) {
+  const token = crypto.randomBytes(16).toString('hex');
+  const existing = await pool.query('SELECT admin_token FROM discussions WHERE topic = $1', [topic]);
+
+  if (existing.rows.length === 0) {
+    const inserted = await pool.query(
+      'INSERT INTO discussions (topic, admin_token) VALUES ($1, $2) RETURNING admin_token',
+      [topic, token]
+    );
+    return inserted.rows[0].admin_token;
+  }
+
+  if (existing.rows[0].admin_token) {
+    return null; // already has a moderator
+  }
+
+  // Claim the existing, unclaimed discussion atomically (guards against a race).
+  const updated = await pool.query(
+    'UPDATE discussions SET admin_token = $1 WHERE topic = $2 AND admin_token IS NULL RETURNING admin_token',
+    [token, topic]
+  );
+  return updated.rows.length > 0 ? updated.rows[0].admin_token : null;
+}
+
+// Whether voting is currently closed for a discussion.
+async function isDiscussionLocked(topic) {
+  const result = await pool.query('SELECT locked FROM discussions WHERE topic = $1', [topic]);
+  return result.rows.length > 0 ? result.rows[0].locked === true : false;
+}
+
+// Return the text of the most similar existing statement in the discussion if
+// it crosses the trigram-similarity threshold, otherwise null.
+const SIMILARITY_THRESHOLD = 0.5;
+async function findSimilarQuestion(topic, text) {
+  if (!text) return null;
+  try {
+    const result = await pool.query(
+      `SELECT q.text, similarity(q.text, $2) AS sim
+       FROM questions q
+       JOIN discussions d ON q.discussion_id = d.id
+       WHERE d.topic = $1 AND similarity(q.text, $2) > $3
+       ORDER BY sim DESC
+       LIMIT 1`,
+      [topic, text, SIMILARITY_THRESHOLD]
+    );
+    return result.rows.length > 0 ? result.rows[0].text : null;
+  } catch (e) {
+    // If pg_trgm isn't available, skip dedup rather than blocking submission.
+    console.error('Similarity check failed (skipping dedup):', e.message);
+    return null;
+  }
+}
 
 async function addVote(questionId, vote, userId, pseudonym) {
   console.log('Adding vote:', questionId, vote, userId, pseudonym);
