@@ -185,11 +185,26 @@ function summarizePrompt(question) {
 
 function buildFacilitatorDashboard(questionSummaries, participantStats) {
   const participants = participantStats
-    .map(({ answeredQuestionIds, ...participant }) => ({
-      ...participant,
+    .map(({
+      answeredQuestionIds,
+      pseudonym,
+      responseCount,
+      agreementResponseCount,
+      numericalResponseCount,
+      writtenResponseCount,
+    }) => ({
+      pseudonym,
+      responseCount,
+      agreementResponseCount,
+      numericalResponseCount,
+      writtenResponseCount,
       answeredQuestionCount: answeredQuestionIds.size,
     }))
-    .sort((a, b) => b.responseCount - a.responseCount || a.pseudonym.localeCompare(b.pseudonym));
+    .sort((a, b) => b.responseCount - a.responseCount || a.pseudonym.localeCompare(b.pseudonym))
+    .map((participant, index) => ({
+      ...participant,
+      id: `participant-${index + 1}`,
+    }));
 
   const participantCount = participants.length;
   const totalResponses = participants.reduce((sum, participant) => sum + participant.responseCount, 0);
