@@ -78,6 +78,10 @@ const DiscussionPage = () => {
     const [discussionState, setDiscussionState] = useState({ locked: false, hasModerator: false });
     const [similarPrompt, setSimilarPrompt] = useState(null);
     const [adminLinkCopied, setAdminLinkCopied] = useState(false);
+    // Experimental "opinion groups" view, hidden behind a ?clusters=1 flag so it
+    // can be evaluated on a real discussion without exposing it to everyone. Once
+    // enabled it's remembered per browser so the link survives navigation.
+    const [showClusters, setShowClusters] = useState(false);
 
     const isAdmin = !!adminToken;
     const { locked } = discussionState;
@@ -125,6 +129,21 @@ const DiscussionPage = () => {
             setAdminToken(localStorage.getItem(storageKey));
         } catch (e) {
             console.warn('Failed to read admin token:', e);
+        }
+    }, [topic]);
+
+    useEffect(() => {
+        const key = 'convora_show_clusters';
+        try {
+            const params = new URLSearchParams(window.location.search);
+            if (params.get('clusters') === '1') {
+                localStorage.setItem(key, '1');
+                setShowClusters(true);
+                return;
+            }
+            setShowClusters(localStorage.getItem(key) === '1');
+        } catch (e) {
+            console.warn('Failed to read clusters flag:', e);
         }
     }, [topic]);
 
@@ -522,6 +541,14 @@ const DiscussionPage = () => {
                 >
                     View Summary
                 </Link>
+                {showClusters && (
+                    <Link
+                        to={`/discussion/${topic}/clusters`}
+                        className="bg-amber-600 text-white py-2 px-4 rounded hover:bg-amber-700 transition duration-300"
+                    >
+                        Opinion Groups
+                    </Link>
+                )}
                 <a
                     href={`/api/discussions/${encodeURIComponent(topic)}/export.csv`}
                     className="bg-primary text-white py-2 px-4 rounded hover:bg-opacity-90 transition duration-300"

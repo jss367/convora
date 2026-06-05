@@ -8,6 +8,7 @@ const path = require('path');
 const crypto = require('crypto');
 const bodyParser = require('body-parser');
 const cors = require('cors');
+const { analyzeClusters } = require('./clustering');
 
 const app = express();
 const server = http.createServer(app);
@@ -1058,6 +1059,33 @@ app.get('/api/discussions/:topic/summary', async (req, res) => {
     }
 
     res.json(summary);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Read-only opinion clustering ("opinion groups"). Computes participant groups
+// from existing Agreement votes on the fly; writes nothing. Kept separate from
+// the summary so the experimental clusters view can be removed cleanly.
+app.get('/api/discussions/:topic/clusters', async (req, res) => {
+  try {
+    const discussion = await getDiscussionByTopic(req.params.topic);
+    if (!discussion) {
+      return res.status(404).json({ error: 'Discussion not found' });
+    }
+
+    const questions = await getQuestions(req.params.topic);
+    const analysis = analyzeClusters(questions);
+
+    res.json({
+      discussion: {
+        id: discussion.id,
+        topic: discussion.topic,
+        createdAt: discussion.created_at,
+      },
+      ...analysis,
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Server error' });
