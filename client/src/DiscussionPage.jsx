@@ -5,7 +5,6 @@ import io from 'socket.io-client';
 import { QRCodeSVG } from 'qrcode.react';
 import {
     getIdentity,
-    regeneratePseudonym,
     setNameMode,
     setCustomName,
     getDisplayName,
@@ -103,6 +102,10 @@ const DiscussionPage = () => {
     const [sortOption, setSortOption] = useState(SortOptions.MOST_RECENT);
     const [showUnansweredOnly, setShowUnansweredOnly] = useState(false);
     const [identity, setIdentity] = useState(null);
+    // The handle the server reserved for THIS discussion (unique within it). Null
+    // until the server responds, before which we show the local pseudonym as a
+    // preview. May differ from identity.pseudonym when the local pick collided.
+    const [assignedPseudonym, setAssignedPseudonym] = useState(null);
     const [editingIdentity, setEditingIdentity] = useState(false);
     const [error, setError] = useState(null);
     const [newTopicName, setNewTopicName] = useState('');
@@ -192,7 +195,10 @@ const DiscussionPage = () => {
     // The stable id used for vote ownership, and the name shown to everyone else
     // (derived from the chosen mode: pseudonym, anonymous, or a typed-in name).
     const userId = identity?.userId || null;
-    const displayName = identity ? getDisplayName(identity) : '';
+    // The pseudonym actually shown/sent in this discussion: the server-reserved
+    // one once we have it, otherwise the local pick as a preview.
+    const effectivePseudonym = assignedPseudonym || identity?.pseudonym || '';
+    const displayName = identity ? getDisplayName(identity, assignedPseudonym) : '';
 
     // The server no longer broadcasts raw user ids — each vote carries a
     // per-response ownership token (sha256(voteId + ':' + userId)) instead, so
@@ -337,12 +343,22 @@ const DiscussionPage = () => {
     const applyIdentity = (updatedIdentity) => {
         setIdentity(updatedIdentity);
         if (updatedIdentity?.userId) {
-            socket.emit('updateDisplayName', discussionSlug, updatedIdentity.userId, getDisplayName(updatedIdentity));
+            socket.emit('updateDisplayName', discussionSlug, updatedIdentity.userId, getDisplayName(updatedIdentity, assignedPseudonym));
         }
     };
 
+    // Shuffle goes through the server so the new handle is still unique within
+    // this discussion. The server reserves it; we adopt it and rename this
+    // browser's existing responses (only meaningful in pseudonym mode).
     const handleRegeneratePseudonym = () => {
-        applyIdentity(regeneratePseudonym());
+        if (!userId) return;
+        socket.emit('regeneratePseudonym', discussionSlug, userId, (resp) => {
+            if (!resp?.pseudonym) return;
+            setAssignedPseudonym(resp.pseudonym);
+            if (identity?.mode === NameModes.PSEUDONYM) {
+                socket.emit('updateDisplayName', discussionSlug, userId, resp.pseudonym);
+            }
+        });
     };
 
     const handleSelectNameMode = (mode) => {
@@ -550,6 +566,33 @@ const DiscussionPage = () => {
         socket.on('connect', identify);
         return () => socket.off('connect', identify);
     }, [topic, discussionSlug, userId]);
+
+    // A reserved handle belongs to one discussion, so drop it when navigating to
+    // another one (the route param changes without remounting) — the effect
+    // below then re-reserves a name in the new discussion.
+    useEffect(() => {
+        setAssignedPseudonym(null);
+    }, [discussionSlug]);
+
+    // Ask the server for a handle that's unique within this discussion. We wait
+    // until the discussion exists (so there's a row to reserve against) and our
+    // identity has loaded (so we can propose our local pick). If the server hands
+    // back a different handle because ours was already taken, push it to any
+    // responses we've already submitted so they stop showing the colliding name.
+    useEffect(() => {
+        if (!identity || !userId || topic !== discussionSlug || !discussion?.id) return undefined;
+        if (assignedPseudonym) return undefined; // already reserved for this discussion
+        let cancelled = false;
+        const preferred = identity.pseudonym || '';
+        socket.emit('requestPseudonym', discussionSlug, userId, preferred, (resp) => {
+            if (cancelled || !resp?.pseudonym) return;
+            setAssignedPseudonym(resp.pseudonym);
+            if (identity.mode === NameModes.PSEUDONYM && resp.pseudonym !== preferred) {
+                socket.emit('updateDisplayName', discussionSlug, userId, resp.pseudonym);
+            }
+        });
+        return () => { cancelled = true; };
+    }, [identity, userId, topic, discussionSlug, discussion?.id, assignedPseudonym]);
 
     // Restore this user's own brainstorm ratings/reactions on join/reload. The
     // server only ever returns the requesting user's own selections.
@@ -871,7 +914,7 @@ const DiscussionPage = () => {
                             />
                             <span>
                                 Pseudonym:{' '}
-                                <span className="font-semibold text-gray-800">{identity.pseudonym}</span>
+                                <span className="font-semibold text-gray-800">{effectivePseudonym}</span>
                             </span>
                             <button
                                 type="button"

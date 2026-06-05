@@ -985,6 +985,91 @@ test('Duplicating a discussion preserves brainstorm interaction flags', async ()
   }
 });
 
+// Create a discussion row (assignPseudonym only reserves once one exists) by
+// seeding it with a question, the way the first contributor would.
+async function seedDiscussion(topic) {
+  const seed = await connectSocket();
+  try {
+    seed.emit('joinDiscussion', topic);
+    await addBrainstormQuestion(seed, topic, 'Seed');
+  } finally {
+    seed.disconnect();
+  }
+}
+
+test('Two participants proposing the same handle get distinct ones — no numbered duplicate', async () => {
+  const topic = uniqueTopic('pseudonym-unique');
+  await seedDiscussion(topic);
+
+  const a = await connectSocket();
+  const b = await connectSocket();
+  try {
+    const ra = await emitWithAck(a, 'requestPseudonym', topic, 'user-a', 'Tidy Newt');
+    const rb = await emitWithAck(b, 'requestPseudonym', topic, 'user-b', 'Tidy Newt');
+
+    // First claimant keeps the proposed name; the second is handed a different
+    // adjective-animal combination, never "Tidy Newt 2".
+    assert.equal(ra.pseudonym, 'Tidy Newt');
+    assert.ok(rb.pseudonym, 'second participant should receive a handle');
+    assert.notEqual(rb.pseudonym, 'Tidy Newt');
+    assert.ok(!/\d/.test(rb.pseudonym), `deconflicted handle should have no number suffix: ${rb.pseudonym}`);
+  } finally {
+    a.disconnect();
+    b.disconnect();
+  }
+});
+
+test('A handle is stable for a returning user and reusable across discussions', async () => {
+  const topicA = uniqueTopic('pseudonym-stable-a');
+  const topicB = uniqueTopic('pseudonym-stable-b');
+  await seedDiscussion(topicA);
+  await seedDiscussion(topicB);
+
+  const socket = await connectSocket();
+  try {
+    const first = await emitWithAck(socket, 'requestPseudonym', topicA, 'user-x', 'Tidy Newt');
+    assert.equal(first.pseudonym, 'Tidy Newt');
+
+    // Re-requesting (e.g. after a reload) returns the same reservation, even if a
+    // different name is proposed.
+    const again = await emitWithAck(socket, 'requestPseudonym', topicA, 'user-x', 'Brave Fox');
+    assert.equal(again.pseudonym, 'Tidy Newt');
+
+    // The same handle is free in a separate discussion, so the user can hold it
+    // there too — uniqueness is only enforced within a discussion.
+    const other = await emitWithAck(socket, 'requestPseudonym', topicB, 'user-x', 'Tidy Newt');
+    assert.equal(other.pseudonym, 'Tidy Newt');
+  } finally {
+    socket.disconnect();
+  }
+});
+
+test('Regenerating yields a different handle that stays unique', async () => {
+  const topic = uniqueTopic('pseudonym-regen');
+  await seedDiscussion(topic);
+
+  const a = await connectSocket();
+  const b = await connectSocket();
+  try {
+    const original = await emitWithAck(a, 'requestPseudonym', topic, 'user-a', 'Tidy Newt');
+    assert.equal(original.pseudonym, 'Tidy Newt');
+    // Someone else holds "Brave Fox" so a shuffle can't land on it.
+    await emitWithAck(b, 'requestPseudonym', topic, 'user-b', 'Brave Fox');
+
+    const shuffled = await emitWithAck(a, 'regeneratePseudonym', topic, 'user-a');
+    assert.ok(shuffled.pseudonym, 'shuffle should return a handle');
+    assert.notEqual(shuffled.pseudonym, 'Tidy Newt'); // must change
+    assert.notEqual(shuffled.pseudonym, 'Brave Fox');  // must stay unique
+
+    // The new handle is now the stable one for this user.
+    const after = await emitWithAck(a, 'requestPseudonym', topic, 'user-a', 'Tidy Newt');
+    assert.equal(after.pseudonym, shuffled.pseudonym);
+  } finally {
+    a.disconnect();
+    b.disconnect();
+  }
+});
+
 function claimModerator(socket, topic) {
   return withTimeout(
     new Promise((resolve, reject) => {
