@@ -11,7 +11,16 @@ console.log('Convora version:', VERSION);
 const QuestionTypes = {
     AGREEMENT: 'Agreement',
     NUMERICAL: 'Numerical',
-    OPEN_ENDED: 'Open Ended'
+    OPEN_ENDED: 'Open Ended',
+    BRAINSTORM: 'Brainstorm'
+};
+
+// Shown under the type picker so creators understand what each type does.
+const QuestionTypeDescriptions = {
+    [QuestionTypes.AGREEMENT]: 'Each participant picks one option from Strongly Agree to Strongly Disagree.',
+    [QuestionTypes.NUMERICAL]: 'Each participant submits a single number on a slider between your min and max.',
+    [QuestionTypes.OPEN_ENDED]: 'Each participant gives one free-text response, which they can edit later. One answer per person.',
+    [QuestionTypes.BRAINSTORM]: 'Each participant can add as many separate ideas as they want, and remove their own. Many answers per person.'
 };
 
 const VoteOptions = {
@@ -39,8 +48,10 @@ const AGREEMENT_SCALE = [
     { key: VoteOptions.STRONGLY_AGREE, label: 'Strongly Agree', bar: 'bg-green-600', dot: 'bg-green-600' },
 ];
 
-const SOCKET_URL = process.env.REACT_APP_SOCKET_URL || 'https://convora-e40a9ae358dc.herokuapp.com/';
-console.log('Environment SOCKET_URL:', SOCKET_URL);
+// In production the client is served by the same server it talks to, so we
+// default to a same-origin connection. Set REACT_APP_SOCKET_URL only when the
+// client runs on a different origin than the API (e.g. `vite` dev server).
+const SOCKET_URL = process.env.REACT_APP_SOCKET_URL || undefined;
 
 const socket = io(SOCKET_URL);
 
@@ -78,6 +89,8 @@ const DiscussionPage = () => {
     };
 
     useEffect(() => {
+        // getIdentity() persists a stable per-browser userId (so vote
+        // de-duplication survives reloads) along with a friendly pseudonym.
         const identity = getIdentity();
         setUserId(identity.userId);
         setPseudonym(identity.pseudonym);
@@ -95,9 +108,7 @@ const DiscussionPage = () => {
         }
 
         try {
-            // Remove any trailing slash from SOCKET_URL and ensure a single leading slash
-            const baseUrl = SOCKET_URL.replace(/\/$/, '').replace(/^\/+/, '/');
-            const response = await fetch(`${baseUrl}/api/duplicate-discussion`, {
+            const response = await fetch('/api/duplicate-discussion', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -216,6 +227,13 @@ const DiscussionPage = () => {
         console.log('Voting:', questionId, value);
         socket.emit('vote', topic, questionId, value, userId, pseudonym);
         setSliderValues(prev => ({ ...prev, [questionId]: undefined }));
+    };
+
+    // Brainstorm answers are individual rows, so they're removed by vote id
+    // (a participant can only delete their own).
+    const handleDeleteVote = (questionId, voteId) => {
+        console.log('Deleting vote:', questionId, voteId);
+        socket.emit('deleteVote', topic, voteId, userId);
     };
 
     const handleSliderChange = (questionId, value) => {
@@ -337,6 +355,9 @@ const DiscussionPage = () => {
             }
             case QuestionTypes.OPEN_ENDED: {
                 return <OpenEndedQuestion question={question} userVote={userVote} handleVote={handleVote} userId={userId} handleResponseVote={handleResponseVote} />;
+            }
+            case QuestionTypes.BRAINSTORM: {
+                return <BrainstormQuestion question={question} userId={userId} handleVote={handleVote} handleDeleteVote={handleDeleteVote} />;
             }
 
             default:
@@ -469,6 +490,9 @@ const DiscussionPage = () => {
                             <option key={type} value={type}>{type}</option>
                         ))}
                     </select>
+                    {QuestionTypeDescriptions[questionType] && (
+                        <p className="mt-2 text-sm text-gray-500">{QuestionTypeDescriptions[questionType]}</p>
+                    )}
                 </div>
                 {questionType === QuestionTypes.NUMERICAL && (
                     <div className="mb-4 flex space-x-4">
@@ -689,6 +713,65 @@ const AgreementResults = ({ question }) => {
     );
 };
 
+// Unlike Open Ended (one editable response per person), Brainstorm lets each
+// participant add any number of separate ideas and delete their own.
+const BrainstormQuestion = ({ question, userId, handleVote, handleDeleteVote }) => {
+    const [idea, setIdea] = useState('');
+    const votes = question.votes || [];
+
+    const submitIdea = () => {
+        if (idea.trim() === '') {
+            return;
+        }
+        console.log('Submitting brainstorm idea:', idea);
+        handleVote(question.id, idea.trim());
+        setIdea('');
+    };
+
+    return (
+        <div>
+            <textarea
+                value={idea}
+                onChange={(e) => setIdea(e.target.value)}
+                className="w-full p-2 border rounded mb-2"
+                rows="3"
+                placeholder="Add an idea (you can add as many as you like)"
+            />
+            <button
+                onClick={submitIdea}
+                disabled={idea.trim() === ''}
+                className="px-4 py-2 bg-primary text-white rounded hover:bg-opacity-90 transition duration-300 mb-4 disabled:opacity-50"
+            >
+                Add Idea
+            </button>
+
+            {votes.length > 0 && (
+                <div className="mt-4">
+                    <h3 className="font-semibold mb-2">All Ideas ({votes.length}):</h3>
+                    <ul className="list-disc pl-5">
+                        {votes.map((vote) => (
+                            <li key={vote.id} className="mb-2 flex items-start justify-between">
+                                <span>
+                                    {vote.value}
+                                    {vote.userId === userId && " (You)"}
+                                </span>
+                                {vote.userId === userId && (
+                                    <button
+                                        onClick={() => handleDeleteVote(question.id, vote.id)}
+                                        className="ml-4 text-sm text-red-500 hover:text-red-700"
+                                    >
+                                        Delete
+                                    </button>
+                                )}
+                            </li>
+                        ))}
+                    </ul>
+                </div>
+            )}
+        </div>
+    );
+};
+
 AgreementResults.propTypes = {
     question: PropTypes.shape({
         votes: PropTypes.array,
@@ -745,6 +828,20 @@ NumericalResults.propTypes = {
     }).isRequired,
     minValue: PropTypes.number.isRequired,
     maxValue: PropTypes.number.isRequired,
+};
+
+BrainstormQuestion.propTypes = {
+    question: PropTypes.shape({
+        id: PropTypes.string.isRequired,
+        votes: PropTypes.arrayOf(PropTypes.shape({
+            id: PropTypes.oneOfType([PropTypes.string, PropTypes.number]).isRequired,
+            userId: PropTypes.string.isRequired,
+            value: PropTypes.string.isRequired
+        }))
+    }).isRequired,
+    userId: PropTypes.string,
+    handleVote: PropTypes.func.isRequired,
+    handleDeleteVote: PropTypes.func.isRequired
 };
 
 export default DiscussionPage;
