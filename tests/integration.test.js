@@ -944,6 +944,47 @@ test('Brainstorm comment pseudonyms are sanitized before storage', async () => {
   }
 });
 
+test('Duplicating a discussion preserves brainstorm interaction flags', async () => {
+  const topic = uniqueTopic('brainstorm-dup');
+  const mod = await connectSocket();
+
+  try {
+    mod.emit('joinDiscussion', topic);
+    const token = await claimModerator(mod, topic);
+    const question = await addBrainstormQuestion(mod, topic, 'Carry flags');
+
+    // Enable reactions but hide them, and enable comments — all non-default.
+    const flaggedUpdate = waitForQuestions(
+      mod,
+      (qs) => qs[0] && qs[0].reactionsEnabled === true && qs[0].reactionsVisible === false && qs[0].commentsEnabled === true,
+      'flags set'
+    );
+    mod.emit('setQuestionFlags', topic, question.id,
+      { reactions_enabled: true, reactions_visible: false, comments_enabled: true }, token);
+    await flaggedUpdate;
+
+    const newTopic = uniqueTopic('brainstorm-dup-copy');
+    const dup = await jsonRequest('POST', '/api/duplicate-discussion', { originalTopic: topic, newTopic });
+    assert.equal(dup.status, 200);
+
+    // The duplicate must keep the same flags, not reset to defaults.
+    const copy = await connectSocket();
+    try {
+      const copyQuestions = waitForQuestions(
+        copy, (qs) => qs.length === 1 && qs[0].type === 'Brainstorm', 'copy questions');
+      copy.emit('joinDiscussion', dup.body.newTopic);
+      const q = (await copyQuestions)[0];
+      assert.equal(q.reactionsEnabled, true);
+      assert.equal(q.reactionsVisible, false);
+      assert.equal(q.commentsEnabled, true);
+    } finally {
+      copy.disconnect();
+    }
+  } finally {
+    mod.disconnect();
+  }
+});
+
 function claimModerator(socket, topic) {
   return withTimeout(
     new Promise((resolve, reject) => {

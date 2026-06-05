@@ -2523,10 +2523,13 @@ app.post('/api/duplicate-discussion', async (req, res) => {
 
     const newDiscussionId = newDiscussion.id;
 
-    // Copy questions from original to new discussion
+    // Copy questions from original to new discussion. Carry the brainstorm
+    // interaction flags too, so duplicating a discussion preserves whether
+    // reactions/comments were enabled (and reactions revealed) rather than
+    // silently resetting them to the migration defaults.
     await client.query(`
-      INSERT INTO questions (discussion_id, text, type, min_value, max_value, options)
-      SELECT $1, text, type, min_value, max_value, options
+      INSERT INTO questions (discussion_id, text, type, min_value, max_value, options, reactions_enabled, reactions_visible, comments_enabled)
+      SELECT $1, text, type, min_value, max_value, options, reactions_enabled, reactions_visible, comments_enabled
       FROM questions
       WHERE discussion_id = $2
     `, [newDiscussionId, originalDiscussionId]);
