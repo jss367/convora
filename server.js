@@ -3,6 +3,7 @@ const express = require('express');
 const http = require('http');
 const socketIo = require('socket.io');
 const { Pool } = require('pg');
+const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const bodyParser = require('body-parser');
@@ -107,6 +108,18 @@ io.on('connection', (socket) => {
       console.error('Error getting questions:', error);
       socket.emit('error', { message: 'Failed to get questions' });
     }
+  });
+
+  socket.on('leaveDiscussion', (topic) => {
+    // The client unmounted its discussion page; drop it from the room and
+    // recompute presence so the counter doesn't over-report lingering viewers.
+    const roomToLeave = topic || socket.data.topic;
+    if (!roomToLeave) return;
+    socket.leave(roomToLeave);
+    if (socket.data.topic === roomToLeave) {
+      socket.data.topic = null;
+    }
+    emitPresence(roomToLeave);
   });
 
   socket.on('addQuestion', async (topic, question, force) => {
@@ -221,12 +234,23 @@ io.on('connection', (socket) => {
 
   socket.on('toggleResponseVote', async (topic, responseId, userId) => {
     try {
-      await toggleResponseVote(responseId, userId);
+      await toggleResponseVote(topic, responseId, userId);
       const questions = await getQuestions(topic);
       io.to(topic).emit('questions', questions);
     } catch (error) {
       console.error('Error toggling response vote:', error);
       socket.emit('error', { message: 'Failed to upvote response' });
+    }
+  });
+
+  socket.on('deleteVote', async (topic, voteId, userId) => {
+    try {
+      await deleteVote(voteId, userId);
+      const questions = await getQuestions(topic);
+      io.to(topic).emit('questions', questions);
+    } catch (error) {
+      console.error('Error deleting vote:', error);
+      socket.emit('error', { message: 'Failed to delete vote' });
     }
   });
 
@@ -361,42 +385,13 @@ async function addQuestion(topic, question) {
   }
 }
 
-// might get rid of this
-async function migrateOptionsToJson() {
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-
-    const result = await client.query('SELECT id, options FROM questions WHERE options IS NOT NULL');
-
-    for (const row of result.rows) {
-      const parsedOptions = parseOptions(row.options);
-      await client.query('UPDATE questions SET options = $1 WHERE id = $2', [JSON.stringify(parsedOptions), row.id]);
-    }
-
-    await client.query('COMMIT');
-    console.log('Migration completed successfully');
-  } catch (e) {
-    await client.query('ROLLBACK');
-    console.error('Error during migration:', e);
-  } finally {
-    client.release();
-  }
-}
-migrateOptionsToJson().catch(console.error);
-// might get rid of above
-
 // Add the pseudonym column to votes if it doesn't already exist. Idempotent so
-// it's safe to run on every boot.
+// it's safe to run on every boot. Must complete before the server starts
+// serving questions, since getQuestions() selects v.pseudonym.
 async function migrateAddPseudonymColumn() {
-  try {
-    await pool.query('ALTER TABLE votes ADD COLUMN IF NOT EXISTS pseudonym TEXT');
-    console.log('Pseudonym column migration completed');
-  } catch (e) {
-    console.error('Error adding pseudonym column:', e);
-  }
+  await pool.query('ALTER TABLE votes ADD COLUMN IF NOT EXISTS pseudonym TEXT');
+  console.log('Pseudonym column migration completed');
 }
-migrateAddPseudonymColumn().catch(console.error);
 
 // Table for upvotes on individual open-ended responses. One row per
 // (response, user); a response is identified by its votes.id. Idempotent.
@@ -413,9 +408,9 @@ async function migrateResponseVotesTable() {
     console.log('response_votes table migration completed');
   } catch (e) {
     console.error('Error creating response_votes table:', e);
+    throw e;
   }
 }
-migrateResponseVotesTable().catch(console.error);
 
 // Moderation columns: a per-discussion admin token, a discussion lock, and a
 // per-question pin flag. Plus the pg_trgm extension for near-duplicate
@@ -507,6 +502,24 @@ async function addVote(questionId, vote, userId, pseudonym) {
   try {
     await client.query('BEGIN');
 
+    // Brainstorm questions allow each user to add many separate ideas, so every
+    // submission is a brand new row rather than an update to a single answer.
+    const typeResult = await client.query(
+      'SELECT type FROM questions WHERE id = $1',
+      [questionId]
+    );
+    const questionType = typeResult.rows[0] && typeResult.rows[0].type;
+
+    if (questionType === 'Brainstorm') {
+      await client.query(
+        'INSERT INTO votes (question_id, user_id, value) VALUES ($1, $2, $3)',
+        [questionId, userId, vote]
+      );
+      await client.query('COMMIT');
+      console.log('Brainstorm idea added successfully');
+      return;
+    }
+
     // Check if the user has already voted on this question
     const existingVoteResult = await client.query(
       'SELECT * FROM votes WHERE question_id = $1 AND user_id = $2',
@@ -556,7 +569,28 @@ async function addVote(questionId, vote, userId, pseudonym) {
 
 // Toggle a user's upvote on an open-ended response. Adds the upvote if absent,
 // removes it if already present.
-async function toggleResponseVote(responseId, userId) {
+async function toggleResponseVote(topic, responseId, userId) {
+  // Confirm the response belongs to the room's discussion before mutating it.
+  // Without the topic join a client in one room could toggle a vote on a
+  // response id that lives in another discussion. Also fetch the owner so we
+  // can reject self-upvotes below.
+  const ownerResult = await pool.query(
+    `SELECT v.user_id
+     FROM votes v
+     JOIN questions q ON v.question_id = q.id
+     JOIN discussions d ON q.discussion_id = d.id
+     WHERE v.id = $1 AND d.topic = $2`,
+    [responseId, topic]
+  );
+  if (ownerResult.rows.length === 0) {
+    return;
+  }
+  // Reject self-upvotes: the UI disables the button for your own response, but
+  // the event can still be emitted from the console, so enforce it server-side.
+  if (ownerResult.rows[0].user_id === userId) {
+    console.log('Ignoring self-upvote on response', responseId);
+    return;
+  }
   const deleteResult = await pool.query(
     'DELETE FROM response_votes WHERE response_id = $1 AND user_id = $2',
     [responseId, userId]
@@ -567,6 +601,17 @@ async function toggleResponseVote(responseId, userId) {
       [responseId, userId]
     );
   }
+}
+
+// Removes a single vote (used for Brainstorm ideas). The user_id check ensures a
+// participant can only delete their own ideas.
+async function deleteVote(voteId, userId) {
+  console.log('Deleting vote:', voteId, userId);
+  await pool.query(
+    'DELETE FROM votes WHERE id = $1 AND user_id = $2',
+    [voteId, userId]
+  );
+  console.log('Vote deleted successfully');
 }
 
 app.get('/api/discussions', async (req, res) => {
@@ -581,8 +626,7 @@ app.get('/api/discussions', async (req, res) => {
   }
 });
 
-// for some reason I'm getting duplicate forward slashes, so just throwing this hack in to fix it
-app.post(['/api/duplicate-discussion', '//api/duplicate-discussion'], async (req, res) => {
+app.post('/api/duplicate-discussion', async (req, res) => {
   const { originalTopic, newTopic } = req.body;
   console.log(`Attempting to duplicate discussion. Original: ${originalTopic}, New: ${newTopic}`);
 
@@ -640,5 +684,29 @@ app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'dist', 'index.html'));
 });
 
+// Ensure the database schema exists before serving requests. schema.sql is
+// idempotent (CREATE TABLE IF NOT EXISTS), so this is a no-op on a database
+// that's already populated (e.g. restored from latest.dump) and creates the
+// tables on a fresh, empty database.
+async function initSchema() {
+  const schema = fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf8');
+  await pool.query(schema);
+}
+
 const PORT = process.env.PORT || 3001;
-server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+
+// Create the schema on a fresh deploy, then run required migrations before
+// accepting connections so that no client can query a column or table that
+// doesn't exist yet (e.g. votes.pseudonym, or the response_votes table that
+// getQuestions selects from on the first join). Order matters: create tables
+// first, then run all migrations against the existing/just-created schema, then
+// start listening.
+initSchema()
+  .then(() => Promise.all([migrateAddPseudonymColumn(), migrateResponseVotesTable()]))
+  .then(() => {
+    server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+  })
+  .catch((err) => {
+    console.error('Failed to initialize database, exiting:', err);
+    process.exit(1);
+  });
