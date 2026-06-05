@@ -1,5 +1,6 @@
 import React from 'react';
 import { Link, Route, BrowserRouter as Router, Routes } from 'react-router-dom';
+import ClusterPage from './ClusterPage';
 import DiscussionPage from './DiscussionPage';
 import HomePage from './HomePage';
 import SummaryPage from './SummaryPage';
@@ -18,6 +19,7 @@ const App = () => {
                         <Route path="/" element={<HomePage />} />
                         <Route path="/discussion/:topic" element={<DiscussionPage />} />
                         <Route path="/discussion/:topic/summary" element={<SummaryPage />} />
+                        <Route path="/discussion/:topic/clusters" element={<ClusterPage />} />
                     </Routes>
                 </main>
             </div>
