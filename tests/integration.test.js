@@ -82,10 +82,24 @@ test('HTTP API creates and fetches discussions', async () => {
   assert.equal(createResponse.status, 200);
   assert.equal(createResponse.body.success, true);
   assert.equal(createResponse.body.id, 1);
+  assert.match(createResponse.body.slug, /^http-/);
 
   const fetchResponse = await jsonRequest('GET', `/api/discussions/${createResponse.body.id}`);
   assert.equal(fetchResponse.status, 200);
   assert.equal(fetchResponse.body.topic, topic);
+});
+
+test('HTTP API creates distinct discussions for colliding slugs', async () => {
+  const firstResponse = await jsonRequest('POST', '/api/discussions', { topic: 'C++' });
+  const secondResponse = await jsonRequest('POST', '/api/discussions', { topic: 'C#' });
+
+  assert.equal(firstResponse.status, 200);
+  assert.equal(secondResponse.status, 200);
+  assert.equal(firstResponse.body.topic, 'C++');
+  assert.equal(secondResponse.body.topic, 'C#');
+  assert.equal(firstResponse.body.slug, 'c');
+  assert.equal(secondResponse.body.slug, 'c-2');
+  assert.notEqual(firstResponse.body.id, secondResponse.body.id);
 });
 
 test('Socket.IO adds questions and broadcasts votes with pseudonyms', async () => {

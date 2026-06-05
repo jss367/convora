@@ -100,6 +100,14 @@ function titleFromSlug(slug) {
     .join(' ') || 'Discussion';
 }
 
+function suffixSlug(baseSlug, suffix) {
+  if (suffix <= 1) {
+    return baseSlug;
+  }
+  const suffixText = `-${suffix}`;
+  return `${baseSlug.slice(0, 80 - suffixText.length)}${suffixText}`;
+}
+
 function escapeCsv(value) {
   if (value === null || value === undefined) {
     return '';
@@ -968,15 +976,23 @@ app.get('/api/discussions/:id', async (req, res) => {
 // Database functions
 async function getOrCreateDiscussion(db, topic) {
   const displayTopic = formatTopicTitle(topic);
-  const slug = slugifyTopic(displayTopic);
-  const result = await db.query(
-    `INSERT INTO discussions (topic, slug)
-     VALUES ($1, $2)
-     ON CONFLICT (slug) DO UPDATE SET slug = EXCLUDED.slug
-     RETURNING id, topic, slug`,
-    [displayTopic, slug]
-  );
-  return result.rows[0];
+  const baseSlug = slugifyTopic(displayTopic);
+
+  for (let suffix = 1; suffix <= 1000; suffix += 1) {
+    const slug = suffixSlug(baseSlug, suffix);
+    const result = await db.query(
+      `INSERT INTO discussions (topic, slug)
+       VALUES ($1, $2)
+       ON CONFLICT (slug) DO NOTHING
+       RETURNING id, topic, slug`,
+      [displayTopic, slug]
+    );
+    if (result.rows.length > 0) {
+      return result.rows[0];
+    }
+  }
+
+  throw new Error(`Could not create a unique slug for discussion topic: ${displayTopic}`);
 }
 
 async function getOrCreateDiscussionForSlug(db, slug) {
@@ -1165,8 +1181,7 @@ async function migrateDiscussionSlugs() {
       let slug = baseSlug;
       let suffix = 2;
       while (usedSlugs.has(slug)) {
-        const suffixText = `-${suffix}`;
-        slug = `${baseSlug.slice(0, 80 - suffixText.length)}${suffixText}`;
+        slug = suffixSlug(baseSlug, suffix);
         suffix += 1;
       }
 
