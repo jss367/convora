@@ -3,7 +3,15 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import io from 'socket.io-client';
 import { QRCodeSVG } from 'qrcode.react';
-import { getIdentity, regeneratePseudonym } from './identity';
+import {
+    getIdentity,
+    regeneratePseudonym,
+    setNameMode,
+    setCustomName,
+    getDisplayName,
+    NameModes,
+    MAX_CUSTOM_NAME_LENGTH,
+} from './identity';
 
 const VERSION = '0.1.8';
 console.log('Convora version:', VERSION);
@@ -69,8 +77,8 @@ const DiscussionPage = () => {
     const [sliderValues, setSliderValues] = useState({});
     const [sortOption, setSortOption] = useState(SortOptions.MOST_RECENT);
     const [showUnansweredOnly, setShowUnansweredOnly] = useState(false);
-    const [userId, setUserId] = useState(null);
-    const [pseudonym, setPseudonym] = useState('');
+    const [identity, setIdentity] = useState(null);
+    const [editingIdentity, setEditingIdentity] = useState(false);
     const [error, setError] = useState(null);
     const [newTopicName, setNewTopicName] = useState('');
     const [showDuplicateModal, setShowDuplicateModal] = useState(false);
@@ -103,11 +111,14 @@ const DiscussionPage = () => {
 
     useEffect(() => {
         // getIdentity() persists a stable userId (so vote de-duplication survives
-        // reloads) together with a friendly pseudonym, both in localStorage.
-        const identity = getIdentity();
-        setUserId(identity.userId);
-        setPseudonym(identity.pseudonym);
+        // reloads) together with the chosen display name, both in localStorage.
+        setIdentity(getIdentity());
     }, []);
+
+    // The stable id used for vote ownership, and the name shown to everyone else
+    // (derived from the chosen mode: pseudonym, anonymous, or a typed-in name).
+    const userId = identity?.userId || null;
+    const displayName = identity ? getDisplayName(identity) : '';
 
     // Adopt the moderator token for this topic: an ?admin=<token> URL param
     // (shared admin link) takes precedence and is then persisted and stripped
@@ -132,8 +143,19 @@ const DiscussionPage = () => {
     }, [topic]);
 
     const handleRegeneratePseudonym = () => {
-        const updated = regeneratePseudonym();
-        setPseudonym(updated.pseudonym);
+        setIdentity(regeneratePseudonym());
+    };
+
+    const handleSelectNameMode = (mode) => {
+        setIdentity(setNameMode(mode));
+    };
+
+    const handleCustomNameChange = (name) => {
+        // Switch into custom mode as soon as the participant types so the live
+        // preview reflects what they're entering. setCustomName persists the
+        // text first; setNameMode then reads it back and flips the mode.
+        setCustomName(name);
+        setIdentity(setNameMode(NameModes.CUSTOM));
     };
 
     const handleClaimModerator = () => {
@@ -324,7 +346,7 @@ const DiscussionPage = () => {
 
     const handleVote = (questionId, value) => {
         console.log('Voting:', questionId, value);
-        socket.emit('vote', topic, questionId, value, userId, pseudonym);
+        socket.emit('vote', topic, questionId, value, userId, displayName);
         setSliderValues(prev => ({ ...prev, [questionId]: undefined }));
     };
 
@@ -492,19 +514,86 @@ const DiscussionPage = () => {
 
             {/* Participant identity + live presence */}
             <div className="mb-8 text-center text-sm text-gray-600">
-                You are <span className="font-semibold text-gray-800">{pseudonym || '…'}</span>
-                <button
-                    onClick={handleRegeneratePseudonym}
-                    className="ml-2 text-primary hover:underline"
-                    title="Get a new pseudonym"
-                >
-                    (change)
-                </button>
-                <span className="mx-2 text-gray-300">·</span>
-                <span className="inline-flex items-center">
-                    <span className="inline-block w-2 h-2 rounded-full bg-green-500 mr-1.5" />
-                    {presence} {presence === 1 ? 'person' : 'people'} here now
-                </span>
+                <div>
+                    You are <span className="font-semibold text-gray-800">{displayName || '…'}</span>
+                    <button
+                        onClick={() => setEditingIdentity(v => !v)}
+                        className="ml-2 text-primary hover:underline"
+                        title="Choose how you appear to others"
+                    >
+                        (change)
+                    </button>
+                    <span className="mx-2 text-gray-300">·</span>
+                    <span className="inline-flex items-center">
+                        <span className="inline-block w-2 h-2 rounded-full bg-green-500 mr-1.5" />
+                        {presence} {presence === 1 ? 'person' : 'people'} here now
+                    </span>
+                </div>
+
+                {editingIdentity && identity && (
+                    <div className="mt-3 inline-block text-left bg-gray-50 border border-gray-200 rounded-lg p-4 space-y-2">
+                        <p className="text-xs text-gray-500 mb-1">How would you like to appear?</p>
+
+                        <label className="flex items-center gap-2 cursor-pointer">
+                            <input
+                                type="radio"
+                                name="nameMode"
+                                checked={identity.mode === NameModes.PSEUDONYM}
+                                onChange={() => handleSelectNameMode(NameModes.PSEUDONYM)}
+                            />
+                            <span>
+                                Pseudonym:{' '}
+                                <span className="font-semibold text-gray-800">{identity.pseudonym}</span>
+                            </span>
+                            <button
+                                type="button"
+                                onClick={handleRegeneratePseudonym}
+                                className="text-primary hover:underline"
+                                title="Get a new pseudonym"
+                            >
+                                (shuffle)
+                            </button>
+                        </label>
+
+                        <label className="flex items-center gap-2 cursor-pointer">
+                            <input
+                                type="radio"
+                                name="nameMode"
+                                checked={identity.mode === NameModes.ANONYMOUS}
+                                onChange={() => handleSelectNameMode(NameModes.ANONYMOUS)}
+                            />
+                            <span>Completely anonymous</span>
+                        </label>
+
+                        <label className="flex items-center gap-2 cursor-pointer">
+                            <input
+                                type="radio"
+                                name="nameMode"
+                                checked={identity.mode === NameModes.CUSTOM}
+                                onChange={() => handleSelectNameMode(NameModes.CUSTOM)}
+                            />
+                            <span>Enter your own name:</span>
+                            <input
+                                type="text"
+                                value={identity.customName}
+                                maxLength={MAX_CUSTOM_NAME_LENGTH}
+                                placeholder="Your name"
+                                onChange={(e) => handleCustomNameChange(e.target.value)}
+                                className="border border-gray-300 rounded px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+                            />
+                        </label>
+
+                        <div className="pt-1">
+                            <button
+                                type="button"
+                                onClick={() => setEditingIdentity(false)}
+                                className="text-primary hover:underline"
+                            >
+                                Done
+                            </button>
+                        </div>
+                    </div>
+                )}
             </div>
 
             {/* Discussion actions */}

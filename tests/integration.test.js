@@ -139,6 +139,56 @@ test('Socket.IO adds questions and broadcasts votes with pseudonyms', async () =
   }
 });
 
+test('Socket.IO sanitizes display names: anonymous stores null, long names are clamped', async () => {
+  const topic = uniqueTopic('names');
+  const author = await connectSocket();
+  const voter = await connectSocket();
+
+  try {
+    author.emit('joinDiscussion', topic);
+    voter.emit('joinDiscussion', topic);
+
+    const questionUpdate = waitForQuestions(
+      author,
+      (questions) => questions.length === 1,
+      'question broadcast'
+    );
+    author.emit('addQuestion', topic, {
+      text: 'Pick a name mode',
+      type: 'Brainstorm',
+      minValue: null,
+      maxValue: null,
+      options: [],
+    });
+    const question = (await questionUpdate)[0];
+
+    // Anonymous mode sends a blank name; the server stores null so the display
+    // layer falls back to "Anonymous".
+    const anonUpdate = waitForQuestions(
+      author,
+      (qs) => qs[0] && qs[0].votes.some((v) => v.value === 'idea-anon'),
+      'anonymous vote'
+    );
+    voter.emit('vote', topic, question.id, 'idea-anon', 'anon-user', '   ');
+    const anonVote = (await anonUpdate)[0].votes.find((v) => v.value === 'idea-anon');
+    assert.equal(anonVote.pseudonym, null);
+
+    // A typed-in name longer than the cap is clamped to 40 characters.
+    const longName = 'X'.repeat(100);
+    const longUpdate = waitForQuestions(
+      author,
+      (qs) => qs[0] && qs[0].votes.some((v) => v.value === 'idea-long'),
+      'long-name vote'
+    );
+    voter.emit('vote', topic, question.id, 'idea-long', 'long-user', longName);
+    const longVote = (await longUpdate)[0].votes.find((v) => v.value === 'idea-long');
+    assert.equal(longVote.pseudonym, 'X'.repeat(40));
+  } finally {
+    author.disconnect();
+    voter.disconnect();
+  }
+});
+
 async function jsonRequest(method, urlPath, body) {
   const response = await fetch(`${baseUrl}${urlPath}`, {
     method,

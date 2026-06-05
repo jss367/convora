@@ -1215,7 +1215,18 @@ async function findSimilarQuestion(topic, text) {
   }
 }
 
+// Clients pick their own display name (a pseudonym, "Anonymous", or a typed-in
+// name), so clamp it defensively: a name is at most 40 chars and we never store
+// an empty string (let it fall back to the display layer's 'Anonymous').
+const MAX_PSEUDONYM_LENGTH = 40;
+function sanitizePseudonym(pseudonym) {
+  if (typeof pseudonym !== 'string') return null;
+  const trimmed = pseudonym.trim().slice(0, MAX_PSEUDONYM_LENGTH);
+  return trimmed || null;
+}
+
 async function addVote(questionId, vote, userId, pseudonym) {
+  pseudonym = sanitizePseudonym(pseudonym);
   console.log('Adding vote:', questionId, vote, userId, pseudonym);
   const client = await pool.connect();
   try {
