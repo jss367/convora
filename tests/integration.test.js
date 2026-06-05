@@ -611,6 +611,101 @@ test('promoting an offline participant fails and does not leave a dangling grant
   }
 });
 
+test('the creator can remove a moderator, revoking their access live', async () => {
+  const topic = uniqueTopic('demote');
+  const creator = await jsonRequest('POST', '/api/discussions', { topic });
+  const adminToken = creator.body.adminToken;
+
+  const mod = await connectSocket();
+  const guest = await connectSocket();
+  const guestUserId = 'demote-guest-1';
+
+  try {
+    mod.emit('joinDiscussion', topic);
+    guest.emit('joinDiscussion', topic);
+    guest.emit('identify', topic, guestUserId);
+
+    const questionAdded = waitForQuestions(mod, (questions) => questions.length === 1, 'question added');
+    mod.emit('addQuestion', topic, { text: 'Demote me?', type: 'Agreement', minValue: null, maxValue: null, options: [] });
+    const questionId = (await questionAdded)[0].id;
+
+    const voteRecorded = waitForQuestions(guest, (questions) => questions[0] && questions[0].votes.length === 1, 'guest vote');
+    guest.emit('vote', topic, questionId, 'Agree', guestUserId, 'Doomed Crab');
+    await voteRecorded;
+
+    const list = await emitWithAck(mod, 'listParticipants', topic, adminToken);
+    assert.equal(list.canDemote, true); // the creator may remove moderators
+    const guestHandle = list.participants[0].id;
+
+    const granted = waitForEvent(guest, 'moderatorGranted');
+    await emitWithAck(mod, 'promoteModerator', topic, adminToken, guestHandle);
+    const grant = await granted;
+
+    // The granted token works before demotion (a promoted mod is not the creator).
+    const asMod = await emitWithAck(guest, 'listParticipants', topic, grant.token);
+    assert.equal(asMod.success, true);
+    assert.equal(asMod.canDemote, false);
+
+    // The creator removes them: the guest is told live and the flag clears.
+    const revoked = waitForEvent(guest, 'moderatorRevoked');
+    const demote = await emitWithAck(mod, 'demoteModerator', topic, adminToken, guestHandle);
+    assert.equal(demote.success, true);
+    assert.equal(demote.participants[0].isModerator, false);
+    await revoked;
+
+    // Their token no longer grants moderation.
+    const afterRevoke = await emitWithAck(guest, 'listParticipants', topic, grant.token);
+    assert.equal(afterRevoke.success, false);
+    assert.equal(afterRevoke.error, 'not_authorized');
+  } finally {
+    mod.disconnect();
+    guest.disconnect();
+  }
+});
+
+test('a promoted moderator cannot remove moderators (creator-only)', async () => {
+  const topic = uniqueTopic('demote-deny');
+  const creator = await jsonRequest('POST', '/api/discussions', { topic });
+  const adminToken = creator.body.adminToken;
+
+  const mod = await connectSocket();
+  const guest = await connectSocket();
+  const guestUserId = 'demote-deny-guest';
+
+  try {
+    mod.emit('joinDiscussion', topic);
+    guest.emit('joinDiscussion', topic);
+    guest.emit('identify', topic, guestUserId);
+
+    const questionAdded = waitForQuestions(mod, (questions) => questions.length === 1, 'question added');
+    mod.emit('addQuestion', topic, { text: 'Q?', type: 'Agreement', minValue: null, maxValue: null, options: [] });
+    const questionId = (await questionAdded)[0].id;
+
+    const voteRecorded = waitForQuestions(guest, (questions) => questions[0] && questions[0].votes.length === 1, 'guest vote');
+    guest.emit('vote', topic, questionId, 'Agree', guestUserId, 'Power Hungry Yak');
+    await voteRecorded;
+
+    const list = await emitWithAck(mod, 'listParticipants', topic, adminToken);
+    const guestHandle = list.participants[0].id;
+
+    const granted = waitForEvent(guest, 'moderatorGranted');
+    await emitWithAck(mod, 'promoteModerator', topic, adminToken, guestHandle);
+    const grant = await granted;
+
+    // A promoted moderator is not the creator: their own token can't demote.
+    const demote = await emitWithAck(guest, 'demoteModerator', topic, grant.token, guestHandle);
+    assert.equal(demote.success, false);
+    assert.equal(demote.error, 'not_authorized');
+
+    // Still a moderator — the rejected attempt revoked nothing.
+    const after = await emitWithAck(mod, 'listParticipants', topic, adminToken);
+    assert.equal(after.participants[0].isModerator, true);
+  } finally {
+    mod.disconnect();
+    guest.disconnect();
+  }
+});
+
 async function jsonRequest(method, urlPath, body) {
   const response = await fetch(`${baseUrl}${urlPath}`, {
     method,

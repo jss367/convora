@@ -828,7 +828,9 @@ io.on('connection', (socket) => {
         cb({ success: false, error: 'not_authorized' });
         return;
       }
-      cb({ success: true, participants: await listParticipants(topic) });
+      // canDemote tells the UI whether to offer "Remove" — only the creator may.
+      const canDemote = !!(await verifyCreator(topic, token));
+      cb({ success: true, participants: await listParticipants(topic), canDemote });
     } catch (error) {
       console.error('Error listing participants:', error);
       cb({ success: false, error: 'server_error' });
@@ -864,10 +866,40 @@ io.on('connection', (socket) => {
       }
       await emitDiscussionState(topic);
       if (typeof cb === 'function') {
-        cb({ success: true, participants: await listParticipants(topic) });
+        const canDemote = !!(await verifyCreator(topic, token));
+        cb({ success: true, participants: await listParticipants(topic), canDemote });
       }
     } catch (error) {
       console.error('Error promoting moderator:', error);
+      if (typeof cb === 'function') cb({ success: false, error: 'server_error' });
+    }
+  });
+
+  // Creator-only: remove a participant's moderator status (e.g. it was granted
+  // by mistake). Gated by verifyCreator so promoted moderators can't revoke each
+  // other or the creator. Takes effect immediately server-side — the grant is
+  // deleted, so verifyAdmin rejects that token on the next action even if the
+  // user is offline; the live moderatorRevoked push just updates their UI.
+  socket.on('demoteModerator', async (topic, token, participantId, cb) => {
+    try {
+      const discussionId = await verifyCreator(topic, token);
+      if (!discussionId) {
+        if (typeof cb === 'function') cb({ success: false, error: 'not_authorized' });
+        return;
+      }
+      const target = await resolveParticipant(topic, participantId);
+      if (!target) {
+        if (typeof cb === 'function') cb({ success: false, error: 'unknown_participant' });
+        return;
+      }
+      await revokeModerator(discussionId, target.userId);
+      revokeModeratorToken(topic, target.userId);
+      await emitDiscussionState(topic);
+      if (typeof cb === 'function') {
+        cb({ success: true, participants: await listParticipants(topic), canDemote: true });
+      }
+    } catch (error) {
+      console.error('Error demoting moderator:', error);
       if (typeof cb === 'function') cb({ success: false, error: 'server_error' });
     }
   });
@@ -1304,6 +1336,19 @@ async function verifyAdmin(topic, token) {
   return result.rows.length > 0 ? result.rows[0].id : null;
 }
 
+// Verify that the supplied token is specifically the discussion's *creator*
+// token (admin_token), not a per-user grant. Returns the discussion id when it
+// is, else null. Used to gate creator-only actions like removing a moderator,
+// so promoted moderators can't revoke each other or the creator.
+async function verifyCreator(topic, token) {
+  if (!token) return null;
+  const result = await pool.query(
+    'SELECT id FROM discussions WHERE topic = $1 AND admin_token = $2',
+    [topic, token]
+  );
+  return result.rows.length > 0 ? result.rows[0].id : null;
+}
+
 // Create a discussion (or look up the existing one) and, when it has no
 // moderator yet, make the creator its moderator by minting a fresh admin token.
 // Returns the discussion id plus an adminToken that is non-null ONLY when this
@@ -1466,6 +1511,21 @@ function deliverModeratorToken(topic, userId, token) {
     }
   }
   return delivered;
+}
+
+// Tell a demoted user's connected sockets their moderation was revoked so their
+// UI drops the controls promptly. Best-effort/live-only: the grant is already
+// gone from the DB, so the token stops working immediately regardless of whether
+// the user is connected to receive this (verifyAdmin re-checks on every action).
+function revokeModeratorToken(topic, userId) {
+  const room = io.sockets.adapter.rooms.get(topic);
+  if (!room) return;
+  for (const socketId of room) {
+    const target = io.sockets.sockets.get(socketId);
+    if (target && target.data.userId === userId) {
+      target.emit('moderatorRevoked');
+    }
+  }
 }
 
 // Whether voting is currently closed for a discussion.

@@ -92,6 +92,8 @@ const DiscussionPage = () => {
     const [adminLinkCopied, setAdminLinkCopied] = useState(false);
     const [participants, setParticipants] = useState([]);
     const [showParticipants, setShowParticipants] = useState(false);
+    // Whether this viewer is the creator (only the creator may remove moderators).
+    const [canDemote, setCanDemote] = useState(false);
     const [showJoinQr, setShowJoinQr] = useState(false);
 
     const isAdmin = !!adminToken;
@@ -291,6 +293,7 @@ const DiscussionPage = () => {
         socket.emit('listParticipants', topic, adminToken, (resp) => {
             if (resp && resp.success) {
                 setParticipants(resp.participants);
+                setCanDemote(!!resp.canDemote);
             } else if (resp && resp.error === 'not_authorized') {
                 setError('You are no longer a moderator of this discussion.');
             }
@@ -309,10 +312,26 @@ const DiscussionPage = () => {
         socket.emit('promoteModerator', topic, adminToken, participantId, (resp) => {
             if (resp && resp.success) {
                 setParticipants(resp.participants);
+                setCanDemote(!!resp.canDemote);
             } else if (resp && resp.error === 'participant_offline') {
                 setError('That participant needs to have the discussion open to be made a moderator. Ask them to open it, then try again.');
             } else {
                 setError('Could not promote that participant. Try refreshing the list.');
+            }
+        });
+    };
+
+    // Remove a participant's moderator status. Creator-only; the server pushes a
+    // moderatorRevoked event to that user so their controls disappear live.
+    const handleDemoteParticipant = (participantId) => {
+        socket.emit('demoteModerator', topic, adminToken, participantId, (resp) => {
+            if (resp && resp.success) {
+                setParticipants(resp.participants);
+                setCanDemote(!!resp.canDemote);
+            } else if (resp && resp.error === 'not_authorized') {
+                setError('Only the discussion creator can remove a moderator.');
+            } else {
+                setError('Could not remove that moderator. Try refreshing the list.');
             }
         });
     };
@@ -409,6 +428,18 @@ const DiscussionPage = () => {
         setAdminToken(token);
     }, [topic]);
 
+    // The creator removed our moderator status: drop the stored token so the
+    // controls disappear. (The token is already invalid server-side.)
+    const handleModeratorRevoked = useCallback(() => {
+        try {
+            localStorage.removeItem(`convora_admin_${topic}`);
+        } catch (e) {
+            console.warn('Failed to clear admin token:', e);
+        }
+        setAdminToken(null);
+        setShowParticipants(false);
+    }, [topic]);
+
     useEffect(() => {
         console.log('Current topic:', topic);
         socket.emit('joinDiscussion', topic);
@@ -417,6 +448,7 @@ const DiscussionPage = () => {
         socket.on('discussionState', setDiscussionState);
         socket.on('similarQuestion', setSimilarPrompt);
         socket.on('moderatorGranted', handleModeratorGranted);
+        socket.on('moderatorRevoked', handleModeratorRevoked);
         return () => {
             // Leave the room so the server stops counting this client toward the
             // discussion's presence once the page unmounts (e.g. navigating home).
@@ -426,8 +458,9 @@ const DiscussionPage = () => {
             socket.off('discussionState', setDiscussionState);
             socket.off('similarQuestion', setSimilarPrompt);
             socket.off('moderatorGranted', handleModeratorGranted);
+            socket.off('moderatorRevoked', handleModeratorRevoked);
         };
-    }, [topic, handleQuestionsUpdate, handleModeratorGranted]);
+    }, [topic, handleQuestionsUpdate, handleModeratorGranted, handleModeratorRevoked]);
 
     // Tell the server which persistent user this socket is, so it can route
     // moderator grants to us. Re-sent after any reconnect so a promoted user
@@ -920,9 +953,19 @@ const DiscussionPage = () => {
                                 <li key={participant.id} className="flex items-center justify-between py-2">
                                     <span className="text-gray-800">{participant.pseudonym}</span>
                                     {participant.isModerator ? (
-                                        <span className="text-xs font-medium text-indigo-700 bg-indigo-50 px-2 py-1 rounded">
-                                            Moderator
-                                        </span>
+                                        <div className="flex items-center gap-2">
+                                            <span className="text-xs font-medium text-indigo-700 bg-indigo-50 px-2 py-1 rounded">
+                                                Moderator
+                                            </span>
+                                            {canDemote && (
+                                                <button
+                                                    onClick={() => handleDemoteParticipant(participant.id)}
+                                                    className="text-xs px-2 py-1 rounded bg-white border border-red-300 text-red-600 hover:bg-red-50"
+                                                >
+                                                    Remove
+                                                </button>
+                                            )}
+                                        </div>
                                     ) : (
                                         <button
                                             onClick={() => handlePromoteParticipant(participant.id)}
