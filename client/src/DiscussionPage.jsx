@@ -84,14 +84,16 @@ const DiscussionPage = () => {
     const [discussionState, setDiscussionState] = useState({ locked: false, hasModerator: false });
     const [similarPrompt, setSimilarPrompt] = useState(null);
     const [adminLinkCopied, setAdminLinkCopied] = useState(false);
+    const [showJoinQr, setShowJoinQr] = useState(false);
 
     const isAdmin = !!adminToken;
     const { locked } = discussionState;
     const discussionTitle = discussion?.topic || topic;
 
-    const shareUrl = typeof window !== 'undefined'
+    const joinUrl = typeof window !== 'undefined'
         ? `${window.location.origin}/discussion/${discussionSlug}`
         : '';
+    const shareUrl = joinUrl;
     const adminUrl = typeof window !== 'undefined' && adminToken
         ? `${window.location.origin}/discussion/${discussionSlug}?admin=${adminToken}`
         : '';
@@ -117,7 +119,8 @@ const DiscussionPage = () => {
 
     useEffect(() => {
         if (topic !== discussionSlug) {
-            navigate(`/discussion/${discussionSlug}`, { replace: true });
+            const search = typeof window !== 'undefined' ? window.location.search : '';
+            navigate(`/discussion/${discussionSlug}${search}`, { replace: true });
         }
     }, [topic, discussionSlug, navigate]);
 
@@ -137,11 +140,43 @@ const DiscussionPage = () => {
                 window.history.replaceState({}, '', `${window.location.pathname}${query ? `?${query}` : ''}`);
                 return;
             }
-            setAdminToken(localStorage.getItem(storageKey));
+
+            const legacyKeys = [
+                `convora_admin_${topic}`,
+                discussion?.topic ? `convora_admin_${discussion.topic}` : null,
+            ].filter(key => key && key !== storageKey);
+            const storedToken = localStorage.getItem(storageKey)
+                || legacyKeys.map(key => localStorage.getItem(key)).find(Boolean)
+                || null;
+            if (storedToken) {
+                localStorage.setItem(storageKey, storedToken);
+            }
+            setAdminToken(storedToken);
         } catch (e) {
             console.warn('Failed to read admin token:', e);
         }
+    }, [discussion?.topic, discussionSlug, topic]);
+
+    useEffect(() => {
+        try {
+            setShowJoinQr(localStorage.getItem(`convora_show_join_qr_${discussionSlug}`) === 'true');
+        } catch (e) {
+            console.warn('Failed to read QR visibility:', e);
+            setShowJoinQr(false);
+        }
     }, [discussionSlug]);
+
+    const handleToggleJoinQr = () => {
+        setShowJoinQr(prev => {
+            const next = !prev;
+            try {
+                localStorage.setItem(`convora_show_join_qr_${discussionSlug}`, String(next));
+            } catch (e) {
+                console.warn('Failed to store QR visibility:', e);
+            }
+            return next;
+        });
+    };
 
     const handleRegeneratePseudonym = () => {
         const updated = regeneratePseudonym();
@@ -640,6 +675,12 @@ const DiscussionPage = () => {
                         >
                             {adminLinkCopied ? 'Link copied!' : 'Copy moderator link'}
                         </button>
+                        <button
+                            onClick={handleToggleJoinQr}
+                            className="px-3 py-1 rounded bg-white border border-indigo-300 text-indigo-700 hover:bg-indigo-100"
+                        >
+                            {showJoinQr ? 'Hide join QR' : 'Show join QR'}
+                        </button>
                     </div>
                 ) : !discussionState.hasModerator ? (
                     <button
@@ -655,6 +696,16 @@ const DiscussionPage = () => {
             {locked && (
                 <div className="mb-6 bg-amber-50 border border-amber-200 text-amber-800 rounded-md p-3 text-center">
                     🔒 This discussion is locked. Voting and new statements are closed.
+                </div>
+            )}
+
+            {isAdmin && showJoinQr && (
+                <div className="fixed bottom-4 left-4 z-40 w-44 rounded-md border border-gray-200 bg-white p-3 text-center shadow-xl">
+                    <div className="flex justify-center">
+                        <QRCodeSVG value={joinUrl} size={140} includeMargin />
+                    </div>
+                    <div className="mt-2 text-xs font-semibold uppercase tracking-wide text-gray-500">Scan to join</div>
+                    <div className="mt-1 truncate text-sm font-semibold text-gray-800" title={discussionTitle}>{discussionTitle}</div>
                 </div>
             )}
 
