@@ -1149,14 +1149,15 @@ io.on('connection', (socket) => {
     if (typeof cb !== 'function') return;
     try {
       if (!topic || !userId) {
-        cb({ pseudonym: sanitizePseudonym(preferred) });
+        cb({ pseudonym: sanitizePseudonym(preferred), reserved: false });
         return;
       }
-      cb({ pseudonym: await assignPseudonym(slugifyTopic(topic), userId, preferred) });
+      cb(await assignPseudonym(slugifyTopic(topic), userId, preferred));
     } catch (error) {
       console.error('Error assigning pseudonym:', error);
-      // Fall back to the proposed name so the client still has something to show.
-      cb({ pseudonym: sanitizePseudonym(preferred) || null });
+      // Fall back to the proposed name so the client still has something to show,
+      // flagged unreserved so the client keeps trying to reserve it.
+      cb({ pseudonym: sanitizePseudonym(preferred) || null, reserved: false });
     }
   });
 
@@ -1166,13 +1167,13 @@ io.on('connection', (socket) => {
     if (typeof cb !== 'function') return;
     try {
       if (!topic || !userId) {
-        cb({ pseudonym: null });
+        cb({ pseudonym: null, reserved: false });
         return;
       }
-      cb({ pseudonym: await assignPseudonym(slugifyTopic(topic), userId, null, { regenerate: true }) });
+      cb(await assignPseudonym(slugifyTopic(topic), userId, null, { regenerate: true }));
     } catch (error) {
       console.error('Error regenerating pseudonym:', error);
-      cb({ pseudonym: null });
+      cb({ pseudonym: null, reserved: false });
     }
   });
 
@@ -2181,6 +2182,11 @@ async function reservePseudonym(discussionId, userId, name) {
 // On collision we hand out a different combination — never a numbered suffix —
 // so a discussion never shows the same handle twice. `regenerate: true` forces a
 // brand-new handle distinct from the user's current one (the shuffle button).
+//
+// Returns { pseudonym, reserved }. `reserved` is false ONLY when the discussion
+// doesn't exist yet and we could merely hand back a preview — the client must
+// keep asking in that case rather than treating the preview as final, otherwise
+// the user's handle would never get inserted and could later collide.
 async function assignPseudonym(slug, userId, preferred, { regenerate = false } = {}) {
   const canonicalSlug = slugifyTopic(slug);
   const discussionResult = await pool.query(
@@ -2189,9 +2195,9 @@ async function assignPseudonym(slug, userId, preferred, { regenerate = false } =
   );
   if (discussionResult.rows.length === 0) {
     // The discussion doesn't exist yet (nobody has added a question, so there's
-    // no row to reserve against). Hand back a preview name; the client re-asks
-    // once the discussion exists and the name gets reserved then.
-    return sanitizePseudonym(preferred) || randomPseudonym();
+    // no row to reserve against). Hand back a preview name, flagged unreserved so
+    // the client re-asks once the discussion exists and the name gets reserved.
+    return { pseudonym: sanitizePseudonym(preferred) || randomPseudonym(), reserved: false };
   }
   const discussionId = discussionResult.rows[0].id;
 
@@ -2200,7 +2206,7 @@ async function assignPseudonym(slug, userId, preferred, { regenerate = false } =
     [discussionId, userId]
   );
   const current = existingResult.rows[0] ? existingResult.rows[0].pseudonym : null;
-  if (current && !regenerate) return current;
+  if (current && !regenerate) return { pseudonym: current, reserved: true };
 
   // Names already in use in this discussion, so we can skip them up front (the
   // DB still has the final say via reservePseudonym's unique constraint).
@@ -2228,7 +2234,7 @@ async function assignPseudonym(slug, userId, preferred, { regenerate = false } =
 
   for (const name of candidates) {
     const reserved = await reservePseudonym(discussionId, userId, name);
-    if (reserved) return reserved;
+    if (reserved) return { pseudonym: reserved, reserved: true };
   }
 
   // Every one of the ~2300 combinations is taken (>2300 participants in a single
@@ -2239,7 +2245,7 @@ async function assignPseudonym(slug, userId, preferred, { regenerate = false } =
   for (let n = 2; ; n++) {
     const name = `${base} ${n}`.slice(0, MAX_PSEUDONYM_LENGTH);
     const reserved = await reservePseudonym(discussionId, userId, name);
-    if (reserved) return reserved;
+    if (reserved) return { pseudonym: reserved, reserved: true };
   }
 }
 

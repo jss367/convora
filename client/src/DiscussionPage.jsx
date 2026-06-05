@@ -106,6 +106,11 @@ const DiscussionPage = () => {
     // until the server responds, before which we show the local pseudonym as a
     // preview. May differ from identity.pseudonym when the local pick collided.
     const [assignedPseudonym, setAssignedPseudonym] = useState(null);
+    // Whether assignedPseudonym is an actual server-side reservation (vs. a
+    // preview handed back before the discussion row existed). We only stop asking
+    // once it's truly reserved — otherwise a shuffle before the first question
+    // could leave this user's handle un-inserted and free to collide later.
+    const [pseudonymReserved, setPseudonymReserved] = useState(false);
     const [editingIdentity, setEditingIdentity] = useState(false);
     const [error, setError] = useState(null);
     const [newTopicName, setNewTopicName] = useState('');
@@ -355,7 +360,11 @@ const DiscussionPage = () => {
         socket.emit('regeneratePseudonym', discussionSlug, userId, (resp) => {
             if (!resp?.pseudonym) return;
             setAssignedPseudonym(resp.pseudonym);
-            if (identity?.mode === NameModes.PSEUDONYM) {
+            // A shuffle before the discussion exists yields only a preview; leave
+            // it unreserved so the request effect still reserves a handle once the
+            // discussion is created, and don't rename responses (there are none).
+            setPseudonymReserved(!!resp.reserved);
+            if (resp.reserved && identity?.mode === NameModes.PSEUDONYM) {
                 socket.emit('updateDisplayName', discussionSlug, userId, resp.pseudonym);
             }
         });
@@ -572,27 +581,31 @@ const DiscussionPage = () => {
     // below then re-reserves a name in the new discussion.
     useEffect(() => {
         setAssignedPseudonym(null);
+        setPseudonymReserved(false);
     }, [discussionSlug]);
 
     // Ask the server for a handle that's unique within this discussion. We wait
     // until the discussion exists (so there's a row to reserve against) and our
-    // identity has loaded (so we can propose our local pick). If the server hands
-    // back a different handle because ours was already taken, push it to any
+    // identity has loaded (so we can propose our local pick). Keep asking until
+    // the server confirms a real reservation (not just a preview), and if it
+    // hands back a different handle because ours was taken, push it to any
     // responses we've already submitted so they stop showing the colliding name.
     useEffect(() => {
         if (!identity || !userId || topic !== discussionSlug || !discussion?.id) return undefined;
-        if (assignedPseudonym) return undefined; // already reserved for this discussion
+        if (pseudonymReserved) return undefined; // already reserved for this discussion
         let cancelled = false;
-        const preferred = identity.pseudonym || '';
+        const preferred = assignedPseudonym || identity.pseudonym || '';
         socket.emit('requestPseudonym', discussionSlug, userId, preferred, (resp) => {
             if (cancelled || !resp?.pseudonym) return;
             setAssignedPseudonym(resp.pseudonym);
+            if (!resp.reserved) return; // only a preview; the effect will retry
+            setPseudonymReserved(true);
             if (identity.mode === NameModes.PSEUDONYM && resp.pseudonym !== preferred) {
                 socket.emit('updateDisplayName', discussionSlug, userId, resp.pseudonym);
             }
         });
         return () => { cancelled = true; };
-    }, [identity, userId, topic, discussionSlug, discussion?.id, assignedPseudonym]);
+    }, [identity, userId, topic, discussionSlug, discussion?.id, pseudonymReserved, assignedPseudonym]);
 
     // Restore this user's own brainstorm ratings/reactions on join/reload. The
     // server only ever returns the requesting user's own selections.

@@ -1070,6 +1070,40 @@ test('Regenerating yields a different handle that stays unique', async () => {
   }
 });
 
+test('Before the discussion exists, handles are previews (unreserved) and reserve once it does', async () => {
+  const topic = uniqueTopic('pseudonym-preview');
+  const socket = await connectSocket();
+  try {
+    // No question has been added yet, so there is no discussion row to reserve
+    // against. The server must flag these as unreserved so the client keeps
+    // asking — otherwise the handle would never be inserted and could collide.
+    const preview = await emitWithAck(socket, 'requestPseudonym', topic, 'user-a', 'Tidy Newt');
+    assert.equal(preview.pseudonym, 'Tidy Newt');
+    assert.equal(preview.reserved, false);
+
+    const shufflePreview = await emitWithAck(socket, 'regeneratePseudonym', topic, 'user-a');
+    assert.ok(shufflePreview.pseudonym);
+    assert.equal(shufflePreview.reserved, false);
+
+    // Nothing was persisted while the discussion didn't exist.
+    const beforeRows = await pool.query('SELECT COUNT(*)::int AS n FROM discussion_pseudonyms');
+    assert.equal(beforeRows.rows[0].n, 0);
+
+    // Once the discussion exists, the same request reserves for real.
+    await seedDiscussion(topic);
+    const reserved = await emitWithAck(socket, 'requestPseudonym', topic, 'user-a', 'Tidy Newt');
+    assert.equal(reserved.pseudonym, 'Tidy Newt');
+    assert.equal(reserved.reserved, true);
+
+    const afterRows = await pool.query(
+      'SELECT pseudonym FROM discussion_pseudonyms WHERE user_id = $1', ['user-a']);
+    assert.equal(afterRows.rows.length, 1);
+    assert.equal(afterRows.rows[0].pseudonym, 'Tidy Newt');
+  } finally {
+    socket.disconnect();
+  }
+});
+
 function claimModerator(socket, topic) {
   return withTimeout(
     new Promise((resolve, reject) => {
