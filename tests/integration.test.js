@@ -14,31 +14,17 @@ const databaseUrl = process.env.DATABASE_URL || 'postgresql://convora:convora@12
 let serverProcess;
 let serverOutput = '';
 let baseUrl;
+let serverPort;
 let pool;
 
 test.before(async () => {
   assertSafeTestDatabase(databaseUrl);
 
-  const port = await getAvailablePort();
-  baseUrl = `http://127.0.0.1:${port}`;
+  serverPort = await getAvailablePort();
+  baseUrl = `http://127.0.0.1:${serverPort}`;
   pool = new Pool({ connectionString: databaseUrl });
 
-  serverProcess = spawn(process.execPath, ['server.js'], {
-    cwd: rootDir,
-    env: {
-      ...process.env,
-      NODE_ENV: 'test',
-      PORT: String(port),
-      DATABASE_URL: databaseUrl,
-      CLIENT_URL: baseUrl,
-    },
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
-
-  serverProcess.stdout.on('data', collectServerOutput);
-  serverProcess.stderr.on('data', collectServerOutput);
-
-  await waitForServer(baseUrl, serverProcess);
+  await startServer();
 });
 
 test.beforeEach(async () => {
@@ -50,10 +36,7 @@ test.after(async () => {
     await pool.end();
   }
 
-  if (serverProcess && serverProcess.exitCode === null) {
-    serverProcess.kill('SIGTERM');
-    await waitForExit(serverProcess);
-  }
+  await stopServer();
 });
 
 test('server startup creates schema and applies the pseudonym migration', async () => {
@@ -83,10 +66,67 @@ test('HTTP API creates and fetches discussions', async () => {
   assert.equal(createResponse.status, 200);
   assert.equal(createResponse.body.success, true);
   assert.equal(createResponse.body.id, 1);
+  assert.equal(createResponse.body.topic, topic);
+  assert.match(createResponse.body.slug, /^http-/);
+  assert.match(createResponse.body.adminToken, /^[a-f0-9]{32}$/);
 
   const fetchResponse = await jsonRequest('GET', `/api/discussions/${createResponse.body.id}`);
   assert.equal(fetchResponse.status, 200);
   assert.equal(fetchResponse.body.topic, topic);
+});
+
+test('HTTP API creates distinct discussions for colliding slugs', async () => {
+  const firstResponse = await jsonRequest('POST', '/api/discussions', { topic: 'C++' });
+  const secondResponse = await jsonRequest('POST', '/api/discussions', { topic: 'C#' });
+
+  assert.equal(firstResponse.status, 200);
+  assert.equal(secondResponse.status, 200);
+  assert.equal(firstResponse.body.topic, 'C++');
+  assert.equal(secondResponse.body.topic, 'C#');
+  assert.equal(firstResponse.body.slug, 'c');
+  assert.equal(secondResponse.body.slug, 'c-2');
+  assert.match(firstResponse.body.adminToken, /^[a-f0-9]{32}$/);
+  assert.match(secondResponse.body.adminToken, /^[a-f0-9]{32}$/);
+  assert.notEqual(firstResponse.body.id, secondResponse.body.id);
+});
+
+test('HTTP API resolves legacy title routes before falling back to canonical slugs', async () => {
+  await jsonRequest('POST', '/api/discussions', { topic: 'C++' });
+  await jsonRequest('POST', '/api/discussions', { topic: 'C#' });
+
+  const resolveTitle = await jsonRequest('GET', `/api/discussions/resolve/${encodeURIComponent('C#')}`);
+  assert.equal(resolveTitle.status, 200);
+  assert.equal(resolveTitle.body.topic, 'C#');
+  assert.equal(resolveTitle.body.slug, 'c-2');
+
+  const resolveSlug = await jsonRequest('GET', '/api/discussions/resolve/c');
+  assert.equal(resolveSlug.status, 200);
+  assert.equal(resolveSlug.body.topic, 'C++');
+  assert.equal(resolveSlug.body.slug, 'c');
+});
+
+test('slug migration preserves literal slug-shaped legacy titles', async () => {
+  await stopServer();
+  await pool.query('TRUNCATE TABLE votes, questions, discussions RESTART IDENTITY CASCADE');
+  await pool.query(`
+    INSERT INTO discussions (topic, slug)
+    VALUES
+      ('C++', 'c'),
+      ('c', 'c-2')
+  `);
+
+  await startServer();
+
+  const migrated = await pool.query('SELECT topic, slug FROM discussions ORDER BY topic');
+  assert.deepEqual(migrated.rows, [
+    { topic: 'C++', slug: 'c-2' },
+    { topic: 'c', slug: 'c' },
+  ]);
+
+  const resolveSlug = await jsonRequest('GET', '/api/discussions/resolve/c');
+  assert.equal(resolveSlug.status, 200);
+  assert.equal(resolveSlug.body.topic, 'c');
+  assert.equal(resolveSlug.body.slug, 'c');
 });
 
 test('creating a discussion makes the creator its moderator', async () => {
@@ -96,6 +136,7 @@ test('creating a discussion makes the creator its moderator', async () => {
   assert.equal(createResponse.status, 200);
   // The creator gets a moderator token back on the request that establishes it.
   assert.match(createResponse.body.adminToken, /^[a-f0-9]{32}$/);
+  assert.match(createResponse.body.slug, /^creator-mod-/);
 
   // The returned token is the discussion's stored admin token — i.e. it really
   // grants moderation (verifyAdmin matches on this exact value).
@@ -116,6 +157,7 @@ test('re-creating an already-moderated discussion does not hand over moderation'
   assert.equal(second.status, 200);
   assert.equal(second.body.success, true);
   assert.equal(second.body.id, first.body.id);
+  assert.equal(second.body.slug, first.body.slug);
   assert.equal(second.body.adminToken, null);
 
   // The original moderator's token is untouched.
@@ -639,6 +681,33 @@ function connectSocket() {
     5000,
     'Timed out connecting Socket.IO client'
   );
+}
+
+async function startServer() {
+  serverOutput = '';
+  serverProcess = spawn(process.execPath, ['server.js'], {
+    cwd: rootDir,
+    env: {
+      ...process.env,
+      NODE_ENV: 'test',
+      PORT: String(serverPort),
+      DATABASE_URL: databaseUrl,
+      CLIENT_URL: baseUrl,
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+
+  serverProcess.stdout.on('data', collectServerOutput);
+  serverProcess.stderr.on('data', collectServerOutput);
+
+  await waitForServer(baseUrl, serverProcess);
+}
+
+async function stopServer() {
+  if (serverProcess && serverProcess.exitCode === null) {
+    serverProcess.kill('SIGTERM');
+    await waitForExit(serverProcess);
+  }
 }
 
 function waitForQuestions(socket, predicate, description) {

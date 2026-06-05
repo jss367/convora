@@ -8,11 +8,13 @@
 CREATE TABLE IF NOT EXISTS discussions (
   id         SERIAL PRIMARY KEY,
   topic      TEXT NOT NULL,
+  slug       TEXT,
   created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
 );
 
 -- discussions.topic is made unique by migrateUniqueDiscussionTopics() after
 -- any duplicate rows from older deployments have been collapsed.
+-- discussions.slug is populated and made unique by migrateDiscussionSlugs().
 
 CREATE TABLE IF NOT EXISTS questions (
   id            SERIAL PRIMARY KEY,
