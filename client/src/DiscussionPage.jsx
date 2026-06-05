@@ -649,6 +649,12 @@ const DiscussionPage = () => {
         socket.emit('deleteVote', discussionSlug, voteId, userId);
     };
 
+    // Moderator-only: remove any participant's response/idea, regardless of
+    // owner (spam control). The server re-checks the admin token.
+    const handleModeratorDeleteVote = (questionId, voteId) => {
+        socket.emit('moderatorDeleteVote', discussionSlug, voteId, adminToken);
+    };
+
     const handleSliderChange = (questionId, value) => {
         setSliderValues(prev => ({ ...prev, [questionId]: value }));
     };
@@ -685,6 +691,11 @@ const DiscussionPage = () => {
 
     const handleDeleteComment = (commentId) => {
         socket.emit('deleteResponseComment', topic, commentId, userId);
+    };
+
+    // Moderator-only: remove any participant's comment, regardless of owner.
+    const handleModeratorDeleteComment = (commentId) => {
+        socket.emit('moderatorDeleteResponseComment', topic, commentId, adminToken);
     };
 
     const handleSetQuestionFlags = (questionId, flags) => {
@@ -815,7 +826,7 @@ const DiscussionPage = () => {
                 );
             }
             case QuestionTypes.OPEN_ENDED: {
-                return <OpenEndedQuestion question={question} userVote={userVote} handleVote={handleVote} ownedVoteIds={ownedVoteIds} upvotedVoteIds={upvotedVoteIds} handleResponseVote={handleResponseVote} locked={locked} />;
+                return <OpenEndedQuestion question={question} userVote={userVote} handleVote={handleVote} ownedVoteIds={ownedVoteIds} upvotedVoteIds={upvotedVoteIds} handleResponseVote={handleResponseVote} locked={locked} isAdmin={isAdmin} onModeratorDeleteVote={handleModeratorDeleteVote} />;
             }
             case QuestionTypes.BRAINSTORM: {
                 return <BrainstormQuestion
@@ -832,6 +843,8 @@ const DiscussionPage = () => {
                     onToggleReaction={handleToggleReaction}
                     onAddComment={handleAddComment}
                     onDeleteComment={handleDeleteComment}
+                    onModeratorDeleteVote={handleModeratorDeleteVote}
+                    onModeratorDeleteComment={handleModeratorDeleteComment}
                 />;
             }
 
@@ -1473,7 +1486,7 @@ QuestionEditor.propTypes = {
     onCancel: PropTypes.func.isRequired,
 };
 
-const OpenEndedQuestion = ({ question, userVote, handleVote, ownedVoteIds, upvotedVoteIds, handleResponseVote, locked }) => {
+const OpenEndedQuestion = ({ question, userVote, handleVote, ownedVoteIds, upvotedVoteIds, handleResponseVote, locked, isAdmin, onModeratorDeleteVote }) => {
     const [response, setResponse] = useState(userVote ? userVote.value : '');
 
     useEffect(() => {
@@ -1540,9 +1553,20 @@ const OpenEndedQuestion = ({ question, userVote, handleVote, ownedVoteIds, upvot
                                         <span className="text-xs font-semibold">{upvotes}</span>
                                     </button>
                                     <div className="flex-1">
-                                        <div className="text-xs font-semibold text-gray-500 mb-1">
-                                            {vote.pseudonym || 'Anonymous'}
-                                            {isYou && ' (you)'}
+                                        <div className="flex items-start justify-between gap-2">
+                                            <div className="text-xs font-semibold text-gray-500 mb-1">
+                                                {vote.pseudonym || 'Anonymous'}
+                                                {isYou && ' (you)'}
+                                            </div>
+                                            {isAdmin && (
+                                                <button
+                                                    onClick={() => onModeratorDeleteVote(question.id, vote.id)}
+                                                    title="Remove this response (moderator)"
+                                                    className="text-xs text-red-500 hover:text-red-700 shrink-0"
+                                                >
+                                                    Remove
+                                                </button>
+                                            )}
                                         </div>
                                         <div className="text-gray-800 whitespace-pre-wrap">{vote.value}</div>
                                     </div>
@@ -1575,7 +1599,9 @@ OpenEndedQuestion.propTypes = {
     ownedVoteIds: PropTypes.instanceOf(Set).isRequired,
     upvotedVoteIds: PropTypes.instanceOf(Set).isRequired,
     handleResponseVote: PropTypes.func.isRequired,
-    locked: PropTypes.bool
+    locked: PropTypes.bool,
+    isAdmin: PropTypes.bool,
+    onModeratorDeleteVote: PropTypes.func
 };
 
 // Stacked divergence bar + summary for an Agreement question. Shows at a glance
@@ -1683,8 +1709,9 @@ AgreementMiniBar.propTypes = {
 // aggregates; only this user's own selections (myRating/myReactions) are known
 // to the client, so nothing reveals who voted which way.
 const BrainstormIdea = ({
-    vote, isOwn, ownedCommentIds, reactionsActive, commentsEnabled, locked,
-    myRating, myReactions, onDeleteVote, onSetRating, onToggleReaction, onAddComment, onDeleteComment,
+    vote, isOwn, isAdmin, ownedCommentIds, reactionsActive, commentsEnabled, locked,
+    myRating, myReactions, onDeleteVote, onModeratorDelete, onSetRating, onToggleReaction,
+    onAddComment, onDeleteComment, onModeratorDeleteComment,
 }) => {
     const [comment, setComment] = useState('');
     const net = (vote.qualityUp || 0) - (vote.qualityDown || 0);
@@ -1729,12 +1756,13 @@ const BrainstormIdea = ({
                             {vote.value}
                             {isOwn && <span className="text-xs text-gray-500"> (You)</span>}
                         </span>
-                        {isOwn && (
+                        {(isOwn || isAdmin) && (
                             <button
-                                onClick={onDeleteVote}
+                                onClick={isOwn ? onDeleteVote : onModeratorDelete}
+                                title={isOwn ? undefined : 'Remove this idea (moderator)'}
                                 className="ml-2 text-sm text-red-500 hover:text-red-700 shrink-0"
                             >
-                                Delete
+                                {isOwn ? 'Delete' : 'Remove'}
                             </button>
                         )}
                     </div>
@@ -1795,12 +1823,13 @@ const BrainstormIdea = ({
                                                 <span className="font-semibold text-gray-600">{c.pseudonym || 'Anonymous'}:</span>{' '}
                                                 <span className="text-gray-800 whitespace-pre-wrap">{c.body}</span>
                                             </span>
-                                            {ownedCommentIds.has(c.id) && (
+                                            {(ownedCommentIds.has(c.id) || isAdmin) && (
                                                 <button
-                                                    onClick={() => onDeleteComment(c.id)}
+                                                    onClick={() => (ownedCommentIds.has(c.id) ? onDeleteComment(c.id) : onModeratorDeleteComment(c.id))}
+                                                    title={ownedCommentIds.has(c.id) ? undefined : 'Remove this comment (moderator)'}
                                                     className="text-xs text-red-500 hover:text-red-700 shrink-0"
                                                 >
-                                                    Delete
+                                                    {ownedCommentIds.has(c.id) ? 'Delete' : 'Remove'}
                                                 </button>
                                             )}
                                         </li>
@@ -1846,6 +1875,7 @@ BrainstormIdea.propTypes = {
         comments: PropTypes.array,
     }).isRequired,
     isOwn: PropTypes.bool,
+    isAdmin: PropTypes.bool,
     ownedCommentIds: PropTypes.instanceOf(Set).isRequired,
     reactionsActive: PropTypes.bool,
     commentsEnabled: PropTypes.bool,
@@ -1853,10 +1883,12 @@ BrainstormIdea.propTypes = {
     myRating: PropTypes.object,
     myReactions: PropTypes.array,
     onDeleteVote: PropTypes.func.isRequired,
+    onModeratorDelete: PropTypes.func,
     onSetRating: PropTypes.func.isRequired,
     onToggleReaction: PropTypes.func.isRequired,
     onAddComment: PropTypes.func.isRequired,
     onDeleteComment: PropTypes.func.isRequired,
+    onModeratorDeleteComment: PropTypes.func,
 };
 
 // participant add any number of separate ideas and delete their own. The
@@ -1866,6 +1898,7 @@ BrainstormIdea.propTypes = {
 const BrainstormQuestion = ({
     question, ownedVoteIds, ownedCommentIds, handleVote, handleDeleteVote, locked, isAdmin, myBrainstorm,
     onSetFlags, onSetRating, onToggleReaction, onAddComment, onDeleteComment,
+    onModeratorDeleteVote, onModeratorDeleteComment,
 }) => {
     const [idea, setIdea] = useState('');
     const votes = question.votes || [];
@@ -1941,6 +1974,7 @@ const BrainstormQuestion = ({
                                 // (the server no longer sends raw user ids); the
                                 // parent precomputes the sets of ids we own.
                                 isOwn={ownedVoteIds.has(vote.id)}
+                                isAdmin={isAdmin}
                                 ownedCommentIds={ownedCommentIds}
                                 reactionsActive={reactionsActive}
                                 commentsEnabled={commentsEnabled}
@@ -1948,10 +1982,12 @@ const BrainstormQuestion = ({
                                 myRating={myBrainstorm.ratings[vote.id] || {}}
                                 myReactions={myBrainstorm.reactions[vote.id] || []}
                                 onDeleteVote={() => handleDeleteVote(question.id, vote.id)}
+                                onModeratorDelete={() => onModeratorDeleteVote(question.id, vote.id)}
                                 onSetRating={onSetRating}
                                 onToggleReaction={onToggleReaction}
                                 onAddComment={onAddComment}
                                 onDeleteComment={onDeleteComment}
+                                onModeratorDeleteComment={onModeratorDeleteComment}
                             />
                         ))}
                     </ul>
@@ -2040,6 +2076,8 @@ BrainstormQuestion.propTypes = {
     onToggleReaction: PropTypes.func.isRequired,
     onAddComment: PropTypes.func.isRequired,
     onDeleteComment: PropTypes.func.isRequired,
+    onModeratorDeleteVote: PropTypes.func,
+    onModeratorDeleteComment: PropTypes.func,
 };
 
 export default DiscussionPage;

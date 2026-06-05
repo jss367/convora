@@ -788,6 +788,143 @@ test('Brainstorm comments can be added, listed with pseudonyms, and deleted', as
   }
 });
 
+test("a moderator can delete any participant's response (spam control)", async () => {
+  const topic = uniqueTopic('mod-delete-idea');
+  const mod = await connectSocket();
+  const participant = await connectSocket();
+
+  try {
+    mod.emit('joinDiscussion', topic);
+    participant.emit('joinDiscussion', topic);
+    const token = await claimModerator(mod, topic);
+    const question = await addBrainstormQuestion(mod, topic, 'Ideas?');
+
+    // A participant (not the moderator) posts the response.
+    const ideaUpdate = waitForQuestions(mod, (qs) => qs[0] && qs[0].votes.length === 1, 'idea added');
+    participant.emit('vote', topic, question.id, 'spam spam spam', 'spammer-1', 'Spammer');
+    const responseId = (await ideaUpdate)[0].votes[0].id;
+
+    // The moderator removes it even though they did not author it.
+    const deleteUpdate = waitForQuestions(mod, (qs) => qs[0] && qs[0].votes.length === 0, 'idea removed by moderator');
+    mod.emit('moderatorDeleteVote', topic, responseId, token);
+    assert.deepEqual((await deleteUpdate)[0].votes, []);
+  } finally {
+    mod.disconnect();
+    participant.disconnect();
+  }
+});
+
+test("a non-moderator cannot delete another participant's response", async () => {
+  const topic = uniqueTopic('mod-delete-deny');
+  const mod = await connectSocket();
+  const stranger = await connectSocket();
+
+  try {
+    mod.emit('joinDiscussion', topic);
+    stranger.emit('joinDiscussion', topic);
+    await claimModerator(mod, topic);
+    const question = await addBrainstormQuestion(mod, topic, 'Ideas?');
+
+    const ideaUpdate = waitForQuestions(mod, (qs) => qs[0] && qs[0].votes.length === 1, 'idea added');
+    mod.emit('vote', topic, question.id, 'keep me', 'author-1', 'Author');
+    const responseId = (await ideaUpdate)[0].votes[0].id;
+
+    // A stranger with a bogus token is rejected, not silently obeyed.
+    const denied = waitForEvent(stranger, 'error');
+    stranger.emit('moderatorDeleteVote', topic, responseId, 'bogus-token');
+    await denied;
+
+    // Re-joining re-sends the current state; the response is still there.
+    const refreshed = waitForQuestions(stranger, (qs) => qs[0] && qs[0].id === question.id, 'state refreshed');
+    stranger.emit('joinDiscussion', topic);
+    const votes = (await refreshed)[0].votes;
+    assert.equal(votes.length, 1);
+    assert.equal(votes[0].id, responseId);
+  } finally {
+    mod.disconnect();
+    stranger.disconnect();
+  }
+});
+
+test("a moderator can delete any participant's comment (spam control)", async () => {
+  const topic = uniqueTopic('mod-delete-comment');
+  const mod = await connectSocket();
+  const participant = await connectSocket();
+
+  try {
+    mod.emit('joinDiscussion', topic);
+    participant.emit('joinDiscussion', topic);
+    const token = await claimModerator(mod, topic);
+    const question = await addBrainstormQuestion(mod, topic, 'What should we try?');
+
+    const ideaUpdate = waitForQuestions(mod, (qs) => qs[0] && qs[0].votes.length === 1, 'idea added');
+    participant.emit('vote', topic, question.id, 'A real idea', 'user-idea', 'Planner');
+    const responseId = (await ideaUpdate)[0].votes[0].id;
+
+    const enabledUpdate = waitForQuestions(mod, (qs) => qs[0] && qs[0].commentsEnabled === true, 'comments enabled');
+    mod.emit('setQuestionFlags', topic, question.id, { comments_enabled: true }, token);
+    await enabledUpdate;
+
+    const commentUpdate = waitForQuestions(
+      mod,
+      (qs) => qs[0] && qs[0].votes[0] && (qs[0].votes[0].comments || []).length === 1,
+      'comment added'
+    );
+    const ack = await emitWithAck(
+      participant, 'addResponseComment', topic, responseId, 'buy now at spam.example', 'spammer-2', 'Spammer');
+    assert.equal(ack.added, true);
+    const comment = (await commentUpdate)[0].votes[0].comments[0];
+
+    // The moderator removes a comment they did not author.
+    const deleteUpdate = waitForQuestions(
+      mod,
+      (qs) => qs[0] && qs[0].votes[0] && (qs[0].votes[0].comments || []).length === 0,
+      'comment removed by moderator'
+    );
+    mod.emit('moderatorDeleteResponseComment', topic, comment.id, token);
+    assert.deepEqual((await deleteUpdate)[0].votes[0].comments, []);
+  } finally {
+    mod.disconnect();
+    participant.disconnect();
+  }
+});
+
+test('a moderator cannot delete a poll vote via moderatorDeleteVote (aggregate data)', async () => {
+  const topic = uniqueTopic('mod-delete-poll-deny');
+  const mod = await connectSocket();
+  const participant = await connectSocket();
+
+  try {
+    mod.emit('joinDiscussion', topic);
+    participant.emit('joinDiscussion', topic);
+    const token = await claimModerator(mod, topic);
+
+    // Agreement polls are aggregate data, not spammable free text. The
+    // moderator-delete feature is scoped to written responses, so the backend
+    // must refuse to remove a poll vote even with a valid token.
+    const questionAdded = waitForQuestions(mod, (qs) => qs.length === 1, 'poll added');
+    mod.emit('addQuestion', topic, { text: 'Agree?', type: 'Agreement', minValue: null, maxValue: null, options: [] });
+    const question = (await questionAdded)[0];
+
+    const voteUpdate = waitForQuestions(mod, (qs) => qs[0] && qs[0].votes.length === 1, 'poll vote recorded');
+    participant.emit('vote', topic, question.id, 'Agree', 'poll-voter', 'Voter');
+    const voteId = (await voteUpdate)[0].votes[0].id;
+
+    // The moderator targets the poll vote id directly, as if from the console.
+    // The handler always re-broadcasts questions after running, so waiting for
+    // that broadcast guarantees the (no-op) delete query has completed before
+    // we assert. The poll vote must still be there.
+    const afterDelete = waitForQuestions(mod, (qs) => qs[0] && qs[0].id === question.id, 'state after delete');
+    mod.emit('moderatorDeleteVote', topic, voteId, token);
+    const votes = (await afterDelete)[0].votes;
+    assert.equal(votes.length, 1);
+    assert.equal(votes[0].id, voteId);
+  } finally {
+    mod.disconnect();
+    participant.disconnect();
+  }
+});
+
 test('Brainstorm ratings, reactions, and comments are rejected once the discussion is locked', async () => {
   const topic = uniqueTopic('brainstorm-locked');
   const mod = await connectSocket();
