@@ -90,11 +90,15 @@ const DiscussionPage = () => {
     const [discussionState, setDiscussionState] = useState({ locked: false, hasModerator: false });
     const [similarPrompt, setSimilarPrompt] = useState(null);
     const [adminLinkCopied, setAdminLinkCopied] = useState(false);
+    const [showJoinQr, setShowJoinQr] = useState(false);
 
     const isAdmin = !!adminToken;
     const { locked } = discussionState;
 
-    const shareUrl = typeof window !== 'undefined' ? window.location.href : '';
+    const joinUrl = typeof window !== 'undefined'
+        ? `${window.location.origin}${window.location.pathname}`
+        : '';
+    const shareUrl = joinUrl;
     const adminUrl = typeof window !== 'undefined' && adminToken
         ? `${window.location.origin}${window.location.pathname}?admin=${adminToken}`
         : '';
@@ -192,6 +196,27 @@ const DiscussionPage = () => {
             console.warn('Failed to read admin token:', e);
         }
     }, [topic]);
+
+    useEffect(() => {
+        try {
+            setShowJoinQr(localStorage.getItem(`convora_show_join_qr_${topic}`) === 'true');
+        } catch (e) {
+            console.warn('Failed to read QR visibility:', e);
+            setShowJoinQr(false);
+        }
+    }, [topic]);
+
+    const handleToggleJoinQr = () => {
+        setShowJoinQr(prev => {
+            const next = !prev;
+            try {
+                localStorage.setItem(`convora_show_join_qr_${topic}`, String(next));
+            } catch (e) {
+                console.warn('Failed to store QR visibility:', e);
+            }
+            return next;
+        });
+    };
 
     // Push a changed broadcast name to the server so it retroactively renames
     // this browser's already-submitted responses (otherwise prior responses keep
@@ -776,6 +801,12 @@ const DiscussionPage = () => {
                         >
                             {adminLinkCopied ? 'Link copied!' : 'Copy moderator link'}
                         </button>
+                        <button
+                            onClick={handleToggleJoinQr}
+                            className="px-3 py-1 rounded bg-white border border-indigo-300 text-indigo-700 hover:bg-indigo-100"
+                        >
+                            {showJoinQr ? 'Hide join QR' : 'Show join QR'}
+                        </button>
                     </div>
                 ) : !discussionState.hasModerator ? (
                     <button
@@ -791,6 +822,16 @@ const DiscussionPage = () => {
             {locked && (
                 <div className="mb-6 bg-amber-50 border border-amber-200 text-amber-800 rounded-md p-3 text-center">
                     🔒 This discussion is locked. Voting and new statements are closed.
+                </div>
+            )}
+
+            {isAdmin && showJoinQr && (
+                <div className="fixed bottom-4 left-4 z-40 w-44 rounded-md border border-gray-200 bg-white p-3 text-center shadow-xl">
+                    <div className="flex justify-center">
+                        <QRCodeSVG value={joinUrl} size={140} includeMargin />
+                    </div>
+                    <div className="mt-2 text-xs font-semibold uppercase tracking-wide text-gray-500">Scan to join</div>
+                    <div className="mt-1 truncate text-sm font-semibold text-gray-800" title={topic}>{topic}</div>
                 </div>
             )}
 
