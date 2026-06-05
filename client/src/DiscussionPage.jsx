@@ -203,24 +203,31 @@ const DiscussionPage = () => {
 
     // Validate any adopted moderator token with the server. A token revoked
     // while this user was offline (so they never got moderatorRevoked) would
-    // otherwise keep rendering a dead moderator UI on their next visit; here we
-    // drop it once the server confirms it no longer grants moderation. We only
-    // clear on a definitive isModerator:false — never on a transient error.
+    // otherwise keep rendering a dead moderator UI; here we drop it once the
+    // server confirms it no longer grants moderation. We only clear on a
+    // definitive isModerator:false — never on a transient error. Re-run on
+    // reconnect too (like the identify effect), so a demotion missed during a
+    // disconnect is caught when Socket.IO reconnects rather than lingering
+    // until a reload.
     useEffect(() => {
         if (!adminToken) return;
         let cancelled = false;
-        socket.emit('checkModerator', topic, adminToken, (resp) => {
-            if (cancelled || !resp || !resp.ok) return;
-            if (resp.isModerator === false) {
-                try {
-                    localStorage.removeItem(`convora_admin_${topic}`);
-                } catch (e) {
-                    console.warn('Failed to clear admin token:', e);
+        const verify = () => {
+            socket.emit('checkModerator', topic, adminToken, (resp) => {
+                if (cancelled || !resp || !resp.ok) return;
+                if (resp.isModerator === false) {
+                    try {
+                        localStorage.removeItem(`convora_admin_${topic}`);
+                    } catch (e) {
+                        console.warn('Failed to clear admin token:', e);
+                    }
+                    setAdminToken(null);
                 }
-                setAdminToken(null);
-            }
-        });
-        return () => { cancelled = true; };
+            });
+        };
+        verify();
+        socket.on('connect', verify);
+        return () => { cancelled = true; socket.off('connect', verify); };
     }, [topic, adminToken]);
 
     useEffect(() => {
