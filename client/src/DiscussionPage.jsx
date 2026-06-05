@@ -201,6 +201,28 @@ const DiscussionPage = () => {
         }
     }, [topic]);
 
+    // Validate any adopted moderator token with the server. A token revoked
+    // while this user was offline (so they never got moderatorRevoked) would
+    // otherwise keep rendering a dead moderator UI on their next visit; here we
+    // drop it once the server confirms it no longer grants moderation. We only
+    // clear on a definitive isModerator:false — never on a transient error.
+    useEffect(() => {
+        if (!adminToken) return;
+        let cancelled = false;
+        socket.emit('checkModerator', topic, adminToken, (resp) => {
+            if (cancelled || !resp || !resp.ok) return;
+            if (resp.isModerator === false) {
+                try {
+                    localStorage.removeItem(`convora_admin_${topic}`);
+                } catch (e) {
+                    console.warn('Failed to clear admin token:', e);
+                }
+                setAdminToken(null);
+            }
+        });
+        return () => { cancelled = true; };
+    }, [topic, adminToken]);
+
     useEffect(() => {
         try {
             setShowJoinQr(localStorage.getItem(`convora_show_join_qr_${topic}`) === 'true');

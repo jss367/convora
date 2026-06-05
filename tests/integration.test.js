@@ -706,6 +706,50 @@ test('a promoted moderator cannot remove moderators (creator-only)', async () =>
   }
 });
 
+test('checkModerator rejects a revoked token so offline demotions clear stale UI', async () => {
+  const topic = uniqueTopic('check-mod');
+  const creator = await jsonRequest('POST', '/api/discussions', { topic });
+  const adminToken = creator.body.adminToken;
+
+  const mod = await connectSocket();
+  const guest = await connectSocket();
+  const guestUserId = 'check-guest-1';
+
+  try {
+    mod.emit('joinDiscussion', topic);
+    guest.emit('joinDiscussion', topic);
+    guest.emit('identify', topic, guestUserId);
+
+    const questionAdded = waitForQuestions(mod, (questions) => questions.length === 1, 'question added');
+    mod.emit('addQuestion', topic, { text: 'Q?', type: 'Agreement', minValue: null, maxValue: null, options: [] });
+    const questionId = (await questionAdded)[0].id;
+
+    const voteRecorded = waitForQuestions(guest, (questions) => questions[0] && questions[0].votes.length === 1, 'guest vote');
+    guest.emit('vote', topic, questionId, 'Agree', guestUserId, 'Soon Gone Fox');
+    await voteRecorded;
+
+    const list = await emitWithAck(mod, 'listParticipants', topic, adminToken);
+    const guestHandle = list.participants[0].id;
+    const granted = waitForEvent(guest, 'moderatorGranted');
+    await emitWithAck(mod, 'promoteModerator', topic, adminToken, guestHandle);
+    const grant = await granted;
+
+    // While granted, the token checks out.
+    assert.deepEqual(await emitWithAck(guest, 'checkModerator', topic, grant.token), { ok: true, isModerator: true });
+
+    // After removal the same token no longer checks out — this is what lets an
+    // offline-demoted user's client drop its stale token on next load.
+    await emitWithAck(mod, 'demoteModerator', topic, adminToken, guestHandle);
+    assert.deepEqual(await emitWithAck(guest, 'checkModerator', topic, grant.token), { ok: true, isModerator: false });
+
+    // The creator's own token still checks out.
+    assert.deepEqual(await emitWithAck(mod, 'checkModerator', topic, adminToken), { ok: true, isModerator: true });
+  } finally {
+    mod.disconnect();
+    guest.disconnect();
+  }
+});
+
 async function jsonRequest(method, urlPath, body) {
   const response = await fetch(`${baseUrl}${urlPath}`, {
     method,

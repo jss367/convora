@@ -904,6 +904,22 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Let a client confirm a stored moderator token is still valid. Used on load
+  // so a token revoked while the user was offline (they never got
+  // moderatorRevoked) is cleared instead of rendering a dead moderator UI.
+  // ok:false signals a server error so the client keeps the token rather than
+  // dropping a possibly-valid one on a transient failure.
+  socket.on('checkModerator', async (topic, token, cb) => {
+    if (typeof cb !== 'function') return;
+    try {
+      const discussionId = await verifyAdmin(topic, token);
+      cb({ ok: true, isModerator: !!discussionId });
+    } catch (error) {
+      console.error('Error checking moderator status:', error);
+      cb({ ok: false });
+    }
+  });
+
   socket.on('deleteQuestion', async (topic, questionId, token) => {
     try {
       const discussionId = await verifyAdmin(topic, token);
