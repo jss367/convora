@@ -56,6 +56,16 @@ const HomePage = () => {
                     throw new Error('Failed to create discussion');
                 }
                 const discussion = await response.json();
+                // The creator is the moderator: the server hands back an admin
+                // token when this request established the discussion. Persist it
+                // under the canonical slug key DiscussionPage reads on mount.
+                if (discussion && discussion.adminToken) {
+                    try {
+                        localStorage.setItem(`convora_admin_${discussion.slug}`, discussion.adminToken);
+                    } catch (e) {
+                        console.warn('Failed to store admin token:', e);
+                    }
+                }
                 navigate(`/discussion/${discussion.slug}`);
             } catch (error) {
                 console.error('Error creating discussion:', error);
