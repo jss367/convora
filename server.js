@@ -474,16 +474,21 @@ async function claimModerator(topic) {
     const existing = await client.query('SELECT admin_token FROM discussions WHERE topic = $1', [topic]);
 
     let result;
-    if (existing.rows.length === 0) {
+    if (existing.rows.some(row => row.admin_token)) {
+      // Already claimed. Inspect every row for the topic, not just the first:
+      // duplicate-topic rows can exist (no unique constraint), so a later row
+      // holding a token must block a fresh claim even if rows[0] is unclaimed.
+      result = null;
+    } else if (existing.rows.length === 0) {
       const inserted = await client.query(
         'INSERT INTO discussions (topic, admin_token) VALUES ($1, $2) RETURNING admin_token',
         [topic, token]
       );
       result = inserted.rows[0].admin_token;
-    } else if (existing.rows[0].admin_token) {
-      result = null; // already has a moderator
     } else {
-      // Claim the existing, unclaimed discussion.
+      // No row is claimed yet. Stamp the same token on all unclaimed rows for
+      // the topic so it resolves to a single moderator regardless of which
+      // duplicate row a later SELECT happens to read.
       const updated = await client.query(
         'UPDATE discussions SET admin_token = $1 WHERE topic = $2 AND admin_token IS NULL RETURNING admin_token',
         [token, topic]
