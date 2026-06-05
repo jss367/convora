@@ -1001,13 +1001,19 @@ const DiscussionPage = () => {
                     className="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full flex items-center justify-center"
                     onClick={() => setShowShareModal(false)}
                 >
-                    <div className="bg-white p-6 rounded-lg shadow-xl text-center" onClick={(e) => e.stopPropagation()}>
-                        <h2 className="text-xl font-bold mb-4">Share this discussion</h2>
+                    <div className="bg-white p-6 rounded-lg shadow-xl text-center max-w-[95vw] max-h-[95vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+                        <h2 className="text-2xl font-bold mb-4">Share this discussion</h2>
                         <div className="flex justify-center mb-4">
-                            <QRCodeSVG value={shareUrl} size={180} includeMargin />
+                            <QRCodeSVG
+                                value={shareUrl}
+                                size={1024}
+                                includeMargin
+                                className="w-auto h-auto max-w-full"
+                                style={{ width: 'min(80vw, 70vh)', height: 'min(80vw, 70vh)' }}
+                            />
                         </div>
-                        <p className="text-sm text-gray-500 mb-2">Scan to join, or copy the link:</p>
-                        <div className="flex items-center gap-2 mb-4">
+                        <p className="text-base text-gray-500 mb-2">Scan to join, or copy the link:</p>
+                        <div className="flex items-center gap-2 mb-4 max-w-2xl mx-auto w-full">
                             <input
                                 type="text"
                                 readOnly
