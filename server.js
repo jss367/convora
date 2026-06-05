@@ -1078,6 +1078,32 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Moderator-only: remove any participant's comment (spam control). Scoped
+  // through the discussion so a moderator of one discussion can't reach another
+  // discussion's comments. Mirrors the author-only deleteResponseComment above.
+  socket.on('moderatorDeleteResponseComment', async (topic, commentId, token) => {
+    const discussionSlug = slugifyTopic(topic);
+    try {
+      const discussionId = await verifyAdmin(discussionSlug, token);
+      if (!discussionId) {
+        socket.emit('error', { message: 'Not authorized to moderate this discussion.' });
+        return;
+      }
+      await pool.query(
+        `DELETE FROM response_comments c
+         USING votes v, questions q
+         WHERE c.id = $1
+           AND c.response_id = v.id AND v.question_id = q.id
+           AND q.discussion_id = $2`,
+        [commentId, discussionId]
+      );
+      io.to(discussionSlug).emit('questions', await getQuestions(discussionSlug));
+    } catch (error) {
+      console.error('Error deleting comment (moderator):', error);
+      socket.emit('error', { message: 'Failed to delete comment' });
+    }
+  });
+
   // Moderator-only: flip the per-question interaction flags (allow/disallow
   // reactions, reveal/hide reactions, allow/disallow comments). Only known
   // boolean flags are applied.
@@ -1132,6 +1158,32 @@ io.on('connection', (socket) => {
     } catch (error) {
       console.error('Error deleting vote:', error);
       socket.emit('error', { message: 'Failed to delete vote' });
+    }
+  });
+
+  // Moderator-only: remove any participant's response/idea (a votes row),
+  // regardless of who authored it (spam control). Scoped through the discussion
+  // so a moderator can't reach another discussion's responses by passing a
+  // foreign voteId. Dependent ratings/reactions/comments/upvotes cascade away
+  // via their ON DELETE CASCADE foreign keys on votes(id).
+  socket.on('moderatorDeleteVote', async (topic, voteId, token) => {
+    const discussionSlug = slugifyTopic(topic);
+    try {
+      const discussionId = await verifyAdmin(discussionSlug, token);
+      if (!discussionId) {
+        socket.emit('error', { message: 'Not authorized to moderate this discussion.' });
+        return;
+      }
+      await pool.query(
+        `DELETE FROM votes
+         WHERE id = $1
+           AND question_id IN (SELECT id FROM questions WHERE discussion_id = $2)`,
+        [voteId, discussionId]
+      );
+      io.to(discussionSlug).emit('questions', await getQuestions(discussionSlug));
+    } catch (error) {
+      console.error('Error deleting response (moderator):', error);
+      socket.emit('error', { message: 'Failed to delete response' });
     }
   });
 
