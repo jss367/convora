@@ -2864,7 +2864,7 @@ app.post('/api/duplicate-discussion', async (req, res) => {
     // preserves whether reactions/comments were enabled (and reactions
     // revealed) rather than silently resetting them to the defaults.
     const originalDiscussionResult = await client.query(
-      'SELECT id, reactions_enabled, reactions_visible, comments_enabled FROM discussions WHERE slug = $1',
+      'SELECT id, reactions_enabled, reactions_visible, comments_enabled, theme FROM discussions WHERE slug = $1',
       [slugifyTopic(originalTopic)]
     );
 
@@ -2898,14 +2898,15 @@ app.post('/api/duplicate-discussion', async (req, res) => {
     for (let suffix = 1; suffix <= 1000; suffix += 1) {
       const newSlug = suffixSlug(baseNewSlug, suffix);
       const newDiscussionResult = await client.query(
-        `INSERT INTO discussions (topic, slug, admin_token, reactions_enabled, reactions_visible, comments_enabled)
-         VALUES ($1, $2, $3, $4, $5, $6)
+        `INSERT INTO discussions (topic, slug, admin_token, reactions_enabled, reactions_visible, comments_enabled, theme)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
          ON CONFLICT (slug) DO NOTHING
          RETURNING id, topic, slug`,
         [displayNewTopic, newSlug, newAdminToken,
           originalDiscussion.reactions_enabled,
           originalDiscussion.reactions_visible,
-          originalDiscussion.comments_enabled]
+          originalDiscussion.comments_enabled,
+          originalDiscussion.theme]
       );
 
       if (newDiscussionResult.rows.length > 0) {

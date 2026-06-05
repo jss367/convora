@@ -1290,11 +1290,16 @@ test('Duplicating a discussion preserves brainstorm interaction flags', async ()
     mod.emit('setReactionKeys', topic, ['crux', 'follows'], token);
     await narrowed;
 
+    // And pick a non-default color theme; the duplicate should keep it too.
+    const themed = waitForEvent(mod, 'discussionState', (s) => s.theme === 'orange');
+    mod.emit('setTheme', topic, 'orange', token);
+    await themed;
+
     const newTopic = uniqueTopic('brainstorm-dup-copy');
     const dup = await jsonRequest('POST', '/api/duplicate-discussion', { originalTopic: topic, newTopic });
     assert.equal(dup.status, 200);
 
-    // The duplicate must keep the same flags and reaction set, not reset to defaults.
+    // The duplicate must keep the same flags, reaction set, and theme, not reset to defaults.
     const copy = await connectSocket();
     try {
       const copyQuestions = waitForQuestions(
@@ -1305,7 +1310,9 @@ test('Duplicating a discussion preserves brainstorm interaction flags', async ()
       assert.equal(q.reactionsEnabled, true);
       assert.equal(q.reactionsVisible, false);
       assert.equal(q.commentsEnabled, true);
-      assert.deepEqual((await copyState).reactionKeys, ['crux', 'follows']);
+      const state = await copyState;
+      assert.deepEqual(state.reactionKeys, ['crux', 'follows']);
+      assert.equal(state.theme, 'orange');
     } finally {
       copy.disconnect();
     }
