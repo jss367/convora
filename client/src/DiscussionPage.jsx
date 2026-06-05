@@ -36,6 +36,7 @@ const clampJoinQrSize = (size) => Math.min(maxJoinQrSize(), Math.max(MIN_JOIN_QR
 
 const QuestionTypes = {
     AGREEMENT: 'Agreement',
+    YES_NO: 'Yes/No',
     NUMERICAL: 'Numerical',
     OPEN_ENDED: 'Open Ended',
     BRAINSTORM: 'Brainstorm'
@@ -43,7 +44,8 @@ const QuestionTypes = {
 
 // Shown under the type picker so creators understand what each type does.
 const QuestionTypeDescriptions = {
-    [QuestionTypes.AGREEMENT]: 'Each participant picks one option from Strongly Agree to Strongly Disagree.',
+    [QuestionTypes.AGREEMENT]: 'Each participant picks one option on the five-point scale from Strongly Agree to Strongly Disagree.',
+    [QuestionTypes.YES_NO]: 'Each participant picks a simple Yes or No — a binary alternative to the five-point agreement scale.',
     [QuestionTypes.NUMERICAL]: 'Each participant submits a single number on a slider between your min and max.',
     [QuestionTypes.OPEN_ENDED]: 'Each participant gives one free-text response, which they can edit later. One answer per person.',
     [QuestionTypes.BRAINSTORM]: 'Each participant can add as many separate ideas as they want, and remove their own. Many answers per person.'
@@ -55,6 +57,13 @@ const VoteOptions = {
     UNSURE: 'Unsure',
     DISAGREE: 'Disagree',
     STRONGLY_DISAGREE: 'Strongly Disagree',
+};
+
+// The two choices for a Yes/No question. Listed Yes-first so the green/red
+// divergence bar reads left-to-right the same way the agreement bar does.
+const YesNoOptions = {
+    YES: 'Yes',
+    NO: 'No',
 };
 
 const SortOptions = {
@@ -850,12 +859,22 @@ const DiscussionPage = () => {
         }
     };
 
+    // Only Agreement and Yes/No are opinion prompts; the agreement sorts ignore
+    // other types so an Open Ended / Brainstorm answer that happens to read
+    // "Yes", "No", "Agree", etc. can't mis-rank a non-opinion question.
+    const isOpinionQuestion = (question) =>
+        question?.type === QuestionTypes.AGREEMENT || question?.type === QuestionTypes.YES_NO;
+
+    // Yes/No votes count toward the same agreement/disagreement sorts as the
+    // five-point scale: Yes reads as agreement, No as disagreement.
     const getAgreementCount = (question) => {
-        return (question.votes || []).filter(v => v.value === VoteOptions.STRONGLY_AGREE || v.value === VoteOptions.AGREE).length;
+        if (!isOpinionQuestion(question)) return 0;
+        return (question.votes || []).filter(v => v.value === VoteOptions.STRONGLY_AGREE || v.value === VoteOptions.AGREE || v.value === YesNoOptions.YES).length;
     };
 
     const getDisagreementCount = (question) => {
-        return (question.votes || []).filter(v => v.value === VoteOptions.STRONGLY_DISAGREE || v.value === VoteOptions.DISAGREE).length;
+        if (!isOpinionQuestion(question)) return 0;
+        return (question.votes || []).filter(v => v.value === VoteOptions.STRONGLY_DISAGREE || v.value === VoteOptions.DISAGREE || v.value === YesNoOptions.NO).length;
     };
 
     const getControversyScore = (question) => {
@@ -897,6 +916,32 @@ const DiscussionPage = () => {
                         {!locked && (
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                 {Object.values(VoteOptions).map((option) => (
+                                    <div key={option} className="flex items-center justify-between bg-gray-100 p-3 rounded-md">
+                                        <span className="font-medium">
+                                            {option}: {question.votes ? question.votes.filter(v => v.value === option).length : 0}
+                                        </span>
+                                        <button
+                                            onClick={() => handleVote(question.id, option)}
+                                            className={`px-4 py-2 rounded-md transition duration-300 ${userVote && userVote.value === option
+                                                ? 'bg-primary text-white hover:bg-opacity-90'
+                                                : 'bg-secondary text-white hover:bg-opacity-90'
+                                                }`}
+                                        >
+                                            {userVote && userVote.value === option ? 'Undo Vote' : 'Vote'}
+                                        </button>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+                );
+            case QuestionTypes.YES_NO:
+                return (
+                    <div>
+                        <YesNoResults question={question} />
+                        {!locked && (
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                {Object.values(YesNoOptions).map((option) => (
                                     <div key={option} className="flex items-center justify-between bg-gray-100 p-3 rounded-md">
                                         <span className="font-medium">
                                             {option}: {question.votes ? question.votes.filter(v => v.value === option).length : 0}
@@ -1887,6 +1932,74 @@ const AgreementResults = ({ question }) => {
 };
 
 AgreementResults.propTypes = {
+    question: PropTypes.shape({
+        votes: PropTypes.array,
+    }).isRequired,
+};
+
+// Stacked divergence bar + summary for a Yes/No question — the binary sibling of
+// AgreementResults. Yes is green, No is red, mirroring the agreement scale.
+const YesNoResults = ({ question }) => {
+    const votes = question.votes || [];
+    const total = votes.length;
+
+    if (total === 0) {
+        return <p className="text-sm text-gray-500 mb-4">No votes yet — be the first to weigh in.</p>;
+    }
+
+    const yesCount = votes.filter(v => v.value === YesNoOptions.YES).length;
+    const noCount = votes.filter(v => v.value === YesNoOptions.NO).length;
+    const yesPct = Math.round((yesCount / total) * 100);
+    const noPct = Math.round((noCount / total) * 100);
+
+    // Divisive when the room is split roughly evenly; consensus when one side
+    // clearly dominates. Mirrors the thresholds used for agreement questions.
+    let badge = null;
+    if (total >= 2) {
+        const split = Math.min(yesCount, noCount) / total; // 0..0.5
+        if (split >= 0.4) {
+            badge = <span className="px-2 py-0.5 text-xs font-semibold rounded-full bg-amber-100 text-amber-800">Divisive</span>;
+        } else if (split <= 0.15) {
+            badge = <span className="px-2 py-0.5 text-xs font-semibold rounded-full bg-emerald-100 text-emerald-800">Consensus</span>;
+        }
+    }
+
+    const segments = [
+        { key: YesNoOptions.NO, label: 'No', count: noCount, bar: 'bg-red-500', dot: 'bg-red-500' },
+        { key: YesNoOptions.YES, label: 'Yes', count: yesCount, bar: 'bg-green-500', dot: 'bg-green-500' },
+    ];
+
+    return (
+        <div className="mb-4">
+            <div className="flex items-center justify-between mb-2">
+                <span className="text-sm text-gray-600">
+                    {total} {total === 1 ? 'vote' : 'votes'} · {yesPct}% yes · {noPct}% no
+                </span>
+                {badge}
+            </div>
+            <div className="flex w-full h-4 rounded-full overflow-hidden bg-gray-200">
+                {segments.map(seg => seg.count > 0 && (
+                    <div
+                        key={seg.key}
+                        className={seg.bar}
+                        style={{ width: `${(seg.count / total) * 100}%` }}
+                        title={`${seg.label}: ${seg.count}`}
+                    />
+                ))}
+            </div>
+            <div className="flex flex-wrap gap-x-4 gap-y-1 mt-2">
+                {segments.map(seg => (
+                    <span key={seg.key} className="flex items-center text-xs text-gray-600">
+                        <span className={`inline-block w-2.5 h-2.5 rounded-full mr-1 ${seg.dot}`} />
+                        {seg.label}: {seg.count}
+                    </span>
+                ))}
+            </div>
+        </div>
+    );
+};
+
+YesNoResults.propTypes = {
     question: PropTypes.shape({
         votes: PropTypes.array,
     }).isRequired,
