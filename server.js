@@ -60,12 +60,30 @@ function parseOptions(options) {
 app.use(bodyParser.json());
 app.use(express.static(path.join(__dirname, 'dist')));
 
+// Emit the number of clients currently in a discussion room to everyone there.
+function emitPresence(topic) {
+  if (!topic) return;
+  const count = io.sockets.adapter.rooms.get(topic)?.size || 0;
+  io.to(topic).emit('presence', count);
+}
+
 // WebSocket handlers
 io.on('connection', (socket) => {
   console.log('New client connected');
 
   socket.on('joinDiscussion', async (topic) => {
+    // If this socket was viewing another discussion, leave it so presence
+    // counts stay accurate as the user navigates within the SPA.
+    const previousTopic = socket.data.topic;
+    if (previousTopic && previousTopic !== topic) {
+      socket.leave(previousTopic);
+      emitPresence(previousTopic);
+    }
+
     socket.join(topic);
+    socket.data.topic = topic;
+    emitPresence(topic);
+
     try {
       const questions = await getQuestions(topic);
       socket.emit('questions', questions);
@@ -103,8 +121,22 @@ io.on('connection', (socket) => {
     }
   });
 
+  socket.on('toggleResponseVote', async (topic, responseId, userId) => {
+    try {
+      await toggleResponseVote(responseId, userId);
+      const questions = await getQuestions(topic);
+      io.to(topic).emit('questions', questions);
+    } catch (error) {
+      console.error('Error toggling response vote:', error);
+      socket.emit('error', { message: 'Failed to upvote response' });
+    }
+  });
+
   socket.on('disconnect', () => {
     console.log('Client disconnected');
+    // The socket has already left its rooms by now, so the count reflects the
+    // remaining participants.
+    emitPresence(socket.data.topic);
   });
 });
 
@@ -161,7 +193,9 @@ async function getQuestions(topic) {
           'id', v.id,
           'value', v.value,
           'userId', v.user_id,
-          'pseudonym', v.pseudonym
+          'pseudonym', v.pseudonym,
+          'upvotes', (SELECT COUNT(*) FROM response_votes rv WHERE rv.response_id = v.id),
+          'upvoters', (SELECT COALESCE(json_agg(rv.user_id), '[]'::json) FROM response_votes rv WHERE rv.response_id = v.id)
         ) ORDER BY v.id
       ) FILTER (WHERE v.id IS NOT NULL), '[]'::json) as votes
     FROM questions q
@@ -265,6 +299,25 @@ async function migrateAddPseudonymColumn() {
 }
 migrateAddPseudonymColumn().catch(console.error);
 
+// Table for upvotes on individual open-ended responses. One row per
+// (response, user); a response is identified by its votes.id. Idempotent.
+async function migrateResponseVotesTable() {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS response_votes (
+        id SERIAL PRIMARY KEY,
+        response_id INTEGER NOT NULL REFERENCES votes(id) ON DELETE CASCADE,
+        user_id TEXT NOT NULL,
+        UNIQUE (response_id, user_id)
+      )
+    `);
+    console.log('response_votes table migration completed');
+  } catch (e) {
+    console.error('Error creating response_votes table:', e);
+  }
+}
+migrateResponseVotesTable().catch(console.error);
+
 async function addVote(questionId, vote, userId, pseudonym) {
   console.log('Adding vote:', questionId, vote, userId, pseudonym);
   const client = await pool.connect();
@@ -315,6 +368,21 @@ async function addVote(questionId, vote, userId, pseudonym) {
     throw e;
   } finally {
     client.release();
+  }
+}
+
+// Toggle a user's upvote on an open-ended response. Adds the upvote if absent,
+// removes it if already present.
+async function toggleResponseVote(responseId, userId) {
+  const deleteResult = await pool.query(
+    'DELETE FROM response_votes WHERE response_id = $1 AND user_id = $2',
+    [responseId, userId]
+  );
+  if (deleteResult.rowCount === 0) {
+    await pool.query(
+      'INSERT INTO response_votes (response_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+      [responseId, userId]
+    );
   }
 }
 

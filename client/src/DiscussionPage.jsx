@@ -2,6 +2,7 @@ import PropTypes from 'prop-types';
 import React, { useCallback, useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import io from 'socket.io-client';
+import { QRCodeSVG } from 'qrcode.react';
 import { getIdentity, regeneratePseudonym } from './identity';
 
 const VERSION = '0.1.8';
@@ -59,6 +60,22 @@ const DiscussionPage = () => {
     const [error, setError] = useState(null);
     const [newTopicName, setNewTopicName] = useState('');
     const [showDuplicateModal, setShowDuplicateModal] = useState(false);
+    const [showShareModal, setShowShareModal] = useState(false);
+    const [presence, setPresence] = useState(0);
+    const [copied, setCopied] = useState(false);
+
+    const shareUrl = typeof window !== 'undefined' ? window.location.href : '';
+
+    const handleCopyLink = async () => {
+        try {
+            await navigator.clipboard.writeText(shareUrl);
+            setCopied(true);
+            setTimeout(() => setCopied(false), 2000);
+        } catch (err) {
+            console.error('Failed to copy link:', err);
+            setError('Could not copy the link. You can select and copy it manually.');
+        }
+    };
 
     useEffect(() => {
         const identity = getIdentity();
@@ -138,8 +155,10 @@ const DiscussionPage = () => {
         console.log('Current topic:', topic);
         socket.emit('joinDiscussion', topic);
         socket.on('questions', handleQuestionsUpdate);
+        socket.on('presence', setPresence);
         return () => {
             socket.off('questions', handleQuestionsUpdate);
+            socket.off('presence', setPresence);
         };
     }, [topic, handleQuestionsUpdate]);
 
@@ -198,6 +217,10 @@ const DiscussionPage = () => {
 
     const handleSliderChange = (questionId, value) => {
         setSliderValues(prev => ({ ...prev, [questionId]: value }));
+    };
+
+    const handleResponseVote = (responseId) => {
+        socket.emit('toggleResponseVote', topic, responseId, userId);
     };
 
     const sortQuestions = (questions) => {
@@ -310,7 +333,7 @@ const DiscussionPage = () => {
                 );
             }
             case QuestionTypes.OPEN_ENDED: {
-                return <OpenEndedQuestion question={question} userVote={userVote} handleVote={handleVote} />;
+                return <OpenEndedQuestion question={question} userVote={userVote} handleVote={handleVote} userId={userId} handleResponseVote={handleResponseVote} />;
             }
 
             default:
@@ -325,7 +348,7 @@ const DiscussionPage = () => {
         <div className="max-w-4xl mx-auto mt-10 px-4">
             <h1 className="text-4xl font-bold mb-2 text-center text-gray-800">Discussion: {topic}</h1>
 
-            {/* Participant identity */}
+            {/* Participant identity + live presence */}
             <div className="mb-8 text-center text-sm text-gray-600">
                 You are <span className="font-semibold text-gray-800">{pseudonym || '…'}</span>
                 <button
@@ -335,15 +358,28 @@ const DiscussionPage = () => {
                 >
                     (change)
                 </button>
+                <span className="mx-2 text-gray-300">·</span>
+                <span className="inline-flex items-center">
+                    <span className="inline-block w-2 h-2 rounded-full bg-green-500 mr-1.5" />
+                    {presence} {presence === 1 ? 'person' : 'people'} here now
+                </span>
             </div>
 
-            {/* Duplicate Discussion Button */}
-            <button
-                onClick={() => setShowDuplicateModal(true)}
-                className="mb-4 bg-blue-500 text-white py-2 px-4 rounded hover:bg-blue-600 transition duration-300"
-            >
-                Duplicate Discussion
-            </button>
+            {/* Discussion actions */}
+            <div className="mb-4 flex gap-2">
+                <button
+                    onClick={() => setShowShareModal(true)}
+                    className="bg-primary text-white py-2 px-4 rounded hover:bg-opacity-90 transition duration-300"
+                >
+                    Share
+                </button>
+                <button
+                    onClick={() => setShowDuplicateModal(true)}
+                    className="bg-blue-500 text-white py-2 px-4 rounded hover:bg-blue-600 transition duration-300"
+                >
+                    Duplicate Discussion
+                </button>
+            </div>
 
             {/* Duplicate Modal */}
             {showDuplicateModal && (
@@ -371,6 +407,43 @@ const DiscussionPage = () => {
                                 Duplicate
                             </button>
                         </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Share Modal */}
+            {showShareModal && (
+                <div
+                    className="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full flex items-center justify-center"
+                    onClick={() => setShowShareModal(false)}
+                >
+                    <div className="bg-white p-6 rounded-lg shadow-xl text-center" onClick={(e) => e.stopPropagation()}>
+                        <h2 className="text-xl font-bold mb-4">Share this discussion</h2>
+                        <div className="flex justify-center mb-4">
+                            <QRCodeSVG value={shareUrl} size={180} includeMargin />
+                        </div>
+                        <p className="text-sm text-gray-500 mb-2">Scan to join, or copy the link:</p>
+                        <div className="flex items-center gap-2 mb-4">
+                            <input
+                                type="text"
+                                readOnly
+                                value={shareUrl}
+                                onFocus={(e) => e.target.select()}
+                                className="flex-1 p-2 border rounded text-sm bg-gray-50"
+                            />
+                            <button
+                                onClick={handleCopyLink}
+                                className="px-4 py-2 bg-primary text-white rounded hover:bg-opacity-90 whitespace-nowrap"
+                            >
+                                {copied ? 'Copied!' : 'Copy'}
+                            </button>
+                        </div>
+                        <button
+                            onClick={() => setShowShareModal(false)}
+                            className="px-4 py-2 bg-gray-300 rounded hover:bg-gray-400"
+                        >
+                            Close
+                        </button>
                     </div>
                 </div>
             )}
@@ -457,12 +530,17 @@ const DiscussionPage = () => {
         </div>
     );
 };
-const OpenEndedQuestion = ({ question, userVote, handleVote }) => {
+const OpenEndedQuestion = ({ question, userVote, handleVote, userId, handleResponseVote }) => {
     const [response, setResponse] = useState(userVote ? userVote.value : '');
 
     useEffect(() => {
         setResponse(userVote ? userVote.value : '');
     }, [userVote]);
+
+    // Most-upvoted responses first; ties keep submission order (vote id).
+    const sortedResponses = [...(question.votes || [])].sort(
+        (a, b) => (b.upvotes || 0) - (a.upvotes || 0) || a.id - b.id
+    );
 
     return (
         <div>
@@ -487,15 +565,32 @@ const OpenEndedQuestion = ({ question, userVote, handleVote }) => {
                 <div className="mt-4">
                     <h3 className="font-semibold mb-2">All Responses:</h3>
                     <ul className="space-y-2">
-                        {question.votes.map((vote, index) => {
+                        {sortedResponses.map((vote) => {
                             const isYou = vote.userId === userVote?.userId;
+                            const upvotes = vote.upvotes || 0;
+                            const hasUpvoted = Array.isArray(vote.upvoters) && vote.upvoters.includes(userId);
+                            const isOwnResponse = vote.userId === userId;
                             return (
-                                <li key={index} className="bg-gray-50 rounded-md p-3">
-                                    <div className="text-xs font-semibold text-gray-500 mb-1">
-                                        {vote.pseudonym || 'Anonymous'}
-                                        {isYou && ' (you)'}
+                                <li key={vote.id} className="bg-gray-50 rounded-md p-3 flex items-start gap-3">
+                                    <button
+                                        onClick={() => handleResponseVote(vote.id)}
+                                        disabled={isOwnResponse}
+                                        title={isOwnResponse ? "You can't upvote your own response" : 'Upvote'}
+                                        className={`flex flex-col items-center justify-center px-2 py-1 rounded-md border transition duration-200 ${hasUpvoted
+                                            ? 'bg-primary text-white border-primary'
+                                            : 'bg-white text-gray-600 border-gray-300 hover:border-primary'
+                                            } ${isOwnResponse ? 'opacity-40 cursor-not-allowed' : ''}`}
+                                    >
+                                        <span className="leading-none">▲</span>
+                                        <span className="text-xs font-semibold">{upvotes}</span>
+                                    </button>
+                                    <div className="flex-1">
+                                        <div className="text-xs font-semibold text-gray-500 mb-1">
+                                            {vote.pseudonym || 'Anonymous'}
+                                            {isYou && ' (you)'}
+                                        </div>
+                                        <div className="text-gray-800 whitespace-pre-wrap">{vote.value}</div>
                                     </div>
-                                    <div className="text-gray-800 whitespace-pre-wrap">{vote.value}</div>
                                 </li>
                             );
                         })}
@@ -508,18 +603,22 @@ const OpenEndedQuestion = ({ question, userVote, handleVote }) => {
 
 OpenEndedQuestion.propTypes = {
     question: PropTypes.shape({
-        id: PropTypes.string.isRequired,
+        id: PropTypes.oneOfType([PropTypes.string, PropTypes.number]).isRequired,
         votes: PropTypes.arrayOf(PropTypes.shape({
             userId: PropTypes.string.isRequired,
             value: PropTypes.string.isRequired,
-            pseudonym: PropTypes.string
+            pseudonym: PropTypes.string,
+            upvotes: PropTypes.number,
+            upvoters: PropTypes.array
         }))
     }).isRequired,
     userVote: PropTypes.shape({
         userId: PropTypes.string.isRequired,
         value: PropTypes.string
     }),
-    handleVote: PropTypes.func.isRequired
+    handleVote: PropTypes.func.isRequired,
+    userId: PropTypes.string,
+    handleResponseVote: PropTypes.func.isRequired
 };
 
 // Stacked divergence bar + summary for an Agreement question. Shows at a glance
