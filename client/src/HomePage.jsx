@@ -2,7 +2,10 @@ import React, { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import io from 'socket.io-client';
 
-const SOCKET_URL = process.env.REACT_APP_SOCKET_URL || 'https://convora-e40a9ae358dc.herokuapp.com/';
+// In production the client is served by the same server it talks to, so we
+// default to a same-origin connection. Set REACT_APP_SOCKET_URL only when the
+// client runs on a different origin than the API (e.g. `vite` dev server).
+const SOCKET_URL = process.env.REACT_APP_SOCKET_URL || undefined;
 
 const HomePage = () => {
     const [discussions, setDiscussions] = useState([]);

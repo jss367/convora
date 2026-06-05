@@ -9,9 +9,6 @@ console.log('Convora version:', VERSION);
 const QuestionTypes = {
     AGREEMENT: 'Agreement',
     NUMERICAL: 'Numerical',
-    // MULTIPLE_CHOICE: 'Multiple Choice',
-    // CHECKBOX: 'Checkbox',
-    // RANKING: 'Ranking',
     OPEN_ENDED: 'Open Ended'
 };
 
@@ -30,8 +27,10 @@ const SortOptions = {
     MOST_CONTROVERSIAL: 'Most Controversial',
 };
 
-const SOCKET_URL = process.env.REACT_APP_SOCKET_URL || 'https://convora-e40a9ae358dc.herokuapp.com/';
-console.log('Environment SOCKET_URL:', SOCKET_URL);
+// In production the client is served by the same server it talks to, so we
+// default to a same-origin connection. Set REACT_APP_SOCKET_URL only when the
+// client runs on a different origin than the API (e.g. `vite` dev server).
+const SOCKET_URL = process.env.REACT_APP_SOCKET_URL || undefined;
 
 const socket = io(SOCKET_URL);
 
@@ -47,13 +46,19 @@ const DiscussionPage = () => {
     const [sortOption, setSortOption] = useState(SortOptions.MOST_RECENT);
     const [showUnansweredOnly, setShowUnansweredOnly] = useState(false);
     const [userId, setUserId] = useState(null);
-    const [optionsText, setOptionsText] = useState('');
     const [error, setError] = useState(null);
     const [newTopicName, setNewTopicName] = useState('');
     const [showDuplicateModal, setShowDuplicateModal] = useState(false);
 
     useEffect(() => {
-        setUserId(Math.random().toString(36).substr(2, 9));
+        // Persist a stable per-browser id so a user is recognized across reloads
+        // (otherwise vote de-duplication breaks on every refresh).
+        let id = localStorage.getItem('convora_user_id');
+        if (!id) {
+            id = crypto.randomUUID();
+            localStorage.setItem('convora_user_id', id);
+        }
+        setUserId(id);
     }, []);
 
     const handleDuplicateDiscussion = async () => {
@@ -63,9 +68,7 @@ const DiscussionPage = () => {
         }
 
         try {
-            // Remove any trailing slash from SOCKET_URL and ensure a single leading slash
-            const baseUrl = SOCKET_URL.replace(/\/$/, '').replace(/^\/+/, '/');
-            const response = await fetch(`${baseUrl}/api/duplicate-discussion`, {
+            const response = await fetch('/api/duplicate-discussion', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -157,17 +160,6 @@ const DiscussionPage = () => {
             console.log('Adding numerical question with min:', question.minValue, 'max:', question.maxValue);
         }
 
-        // Handle questions with options
-        if ([QuestionTypes.MULTIPLE_CHOICE, QuestionTypes.CHECKBOX, QuestionTypes.RANKING].includes(questionType)) {
-            const options = optionsText.split('\n').filter(option => option.trim() !== '');
-            if (options.length < 2) {
-                console.error('Failed to add question: Not enough options provided.');
-                setError('Please provide at least two options.');
-                return;
-            }
-            question.options = options;
-        }
-
         console.log('Adding question:', question);
 
         try {
@@ -178,7 +170,6 @@ const DiscussionPage = () => {
             setQuestionType(QuestionTypes.AGREEMENT);
             setMinValue(0);
             setMaxValue(100);
-            setOptionsText('');
             // Clear any previous errors
             setError(null);
         } catch (error) {
@@ -302,108 +293,6 @@ const DiscussionPage = () => {
                     </div>
                 );
             }
-            case QuestionTypes.MULTIPLE_CHOICE: {
-                if (!Array.isArray(question.options)) {
-                    console.error('Invalid options for multiple choice question:', question);
-                    return null;
-                }
-                return (
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        {question.options.map((option) => (
-                            <button
-                                key={option}
-                                onClick={() => handleVote(question.id, option)}
-                                className={`p-2 rounded-md transition duration-300 ${userVote && userVote.value === option
-                                    ? 'bg-primary text-white'
-                                    : 'bg-secondary text-white hover:bg-opacity-90'
-                                    }`}
-                            >
-                                {option}
-                            </button>
-                        ))}
-                    </div>
-                );
-            }
-            case QuestionTypes.CHECKBOX: {
-                if (optionsText.length === 0) {
-                    console.error('Invalid or missing options for checkbox question:', question);
-                    return <p>Error: This question has no options.</p>;
-                }
-                return (
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        {optionsText.map((option) => (
-                            <label key={option} className="flex items-center space-x-2">
-                                <input
-                                    type="checkbox"
-                                    checked={userVote && Array.isArray(userVote.value) && userVote.value.includes(option)}
-                                    onChange={() => {
-                                        const newValue = userVote && Array.isArray(userVote.value)
-                                            ? userVote.value.includes(option)
-                                                ? userVote.value.filter(v => v !== option)
-                                                : [...userVote.value, option]
-                                            : [option];
-                                        handleVote(question.id, newValue);
-                                    }}
-                                />
-                                <span>{option}</span>
-                            </label>
-                        ))}
-                    </div>
-                );
-            }
-
-            case QuestionTypes.RANKING: {
-                if (!Array.isArray(question.options)) {
-                    console.error('Invalid options for ranking question:', question);
-                    return null;
-                }
-                const [rankingOrder, setRankingOrder] = useState(userVote ? userVote.value : question.options);
-
-                useEffect(() => {
-                    if (userVote && Array.isArray(userVote.value)) {
-                        setRankingOrder(userVote.value);
-                    }
-                }, [userVote]);
-
-                return (
-                    <div>
-                        {rankingOrder.map((option, index) => (
-                            <div key={option} className="flex items-center space-x-2 mb-2">
-                                <span>{index + 1}.</span>
-                                <span>{option}</span>
-                                <button
-                                    onClick={() => {
-                                        const newOrder = [...rankingOrder];
-                                        if (index > 0) {
-                                            [newOrder[index], newOrder[index - 1]] = [newOrder[index - 1], newOrder[index]];
-                                            setRankingOrder(newOrder);
-                                            handleVote(question.id, newOrder);
-                                        }
-                                    }}
-                                    className="p-1 bg-secondary text-white rounded"
-                                    disabled={index === 0}
-                                >
-                                    ▲
-                                </button>
-                                <button
-                                    onClick={() => {
-                                        const newOrder = [...rankingOrder];
-                                        if (index < rankingOrder.length - 1) {
-                                            [newOrder[index], newOrder[index + 1]] = [newOrder[index + 1], newOrder[index]];
-                                            setRankingOrder(newOrder);
-                                            handleVote(question.id, newOrder);
-                                        }
-                                    }}
-                                    className="p-1 bg-secondary text-white rounded"
-                                    disabled={index === rankingOrder.length - 1}
-                                >
-                                    ▼
-                                </button>
-                            </div>
-                        ))}
-                    </div>
-                );
-            }
             case QuestionTypes.OPEN_ENDED: {
                 return <OpenEndedQuestion question={question} userVote={userVote} handleVote={handleVote} />;
             }
@@ -497,17 +386,6 @@ const DiscussionPage = () => {
                                 className="w-full p-3 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary"
                             />
                         </div>
-                    </div>
-                )}
-                {[QuestionTypes.MULTIPLE_CHOICE, QuestionTypes.CHECKBOX, QuestionTypes.RANKING].includes(questionType) && (
-                    <div className="mb-4">
-                        <label className="block mb-2">Options (one per line):</label>
-                        <textarea
-                            value={optionsText}
-                            onChange={(e) => setOptionsText(e.target.value)}
-                            className="w-full p-3 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary"
-                            rows="4"
-                        />
                     </div>
                 )}
                 <button
