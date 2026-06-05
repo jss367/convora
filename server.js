@@ -67,6 +67,11 @@ const AGREEMENT_OPTIONS = [
   'Strongly Agree',
 ];
 
+// Yes/No questions are a binary opinion type: Yes reads as agreement, No as
+// disagreement, so they feed the same consensus/divisive analysis as the
+// five-point agreement scale.
+const YES_NO_OPTIONS = ['No', 'Yes'];
+
 function sanitizeFilename(value) {
   return String(value || 'discussion')
     .replace(/[^a-z0-9-_]+/gi, '-')
@@ -243,10 +248,17 @@ function buildFacilitatorDashboard(questionSummaries, participantStats) {
 
   const participantCount = participants.length;
   const totalResponses = participants.reduce((sum, participant) => sum + participant.responseCount, 0);
-  const agreementPrompts = questionSummaries.filter(question => question.type === 'Agreement');
+  // Agreement and Yes/No are both single-choice opinion prompts, so they share
+  // the divisiveness analysis. Yes/No phrasing uses "yes/no" rather than the
+  // five-point scale's "agree/disagree/unsure".
+  const opinionPrompts = questionSummaries.filter(question => question.type === 'Agreement' || question.type === 'Yes/No');
   const numericalPrompts = questionSummaries.filter(question => question.type === 'Numerical');
 
-  const mostDivisiveStatements = agreementPrompts
+  const opinionTensionDetail = (question) => question.type === 'Yes/No'
+    ? `${question.agreeCount} yes / ${question.disagreeCount} no`
+    : `${question.agreeCount} agree / ${question.disagreeCount} disagree / ${question.unsureCount} unsure`;
+
+  const mostDivisiveStatements = opinionPrompts
     .filter(question => question.decidedCount >= 2)
     .map(question => ({
       id: question.id,
@@ -261,14 +273,14 @@ function buildFacilitatorDashboard(questionSummaries, participantStats) {
     .sort((a, b) => b.divisiveScore - a.divisiveScore || b.responseCount - a.responseCount)
     .slice(0, 5);
 
-  const agreementTensions = agreementPrompts
+  const agreementTensions = opinionPrompts
     .filter(question => question.decidedCount >= 2 && question.divisiveScore >= 0.35)
     .map(question => ({
       id: question.id,
       type: 'Opinion split',
       text: question.text,
       severity: roundMetric(question.divisiveScore),
-      detail: `${question.agreeCount} agree / ${question.disagreeCount} disagree / ${question.unsureCount} unsure`,
+      detail: opinionTensionDetail(question),
     }));
 
   const numericalTensions = numericalPrompts
@@ -456,7 +468,7 @@ function buildSummary(discussion, questions, synthesis) {
         const participant = participantMap.get(participantKey);
         participant.responseCount += 1;
         participant.answeredQuestionIds.add(question.id);
-        if (question.type === 'Agreement') {
+        if (question.type === 'Agreement' || question.type === 'Yes/No') {
           participant.agreementResponseCount += 1;
         } else if (question.type === 'Numerical') {
           participant.numericalResponseCount += 1;
@@ -498,6 +510,31 @@ function buildSummary(discussion, questions, synthesis) {
         divisiveScore,
         label: decidedCount < 2 ? 'Not enough votes' : divisiveScore >= 0.4 ? 'Divisive' : consensusScore >= 0.85 ? 'Consensus' : 'Mixed',
         leadingPosition: agreeCount === disagreeCount ? 'Split' : agreeCount > disagreeCount ? 'Agree' : 'Disagree',
+      };
+    }
+
+    if (question.type === 'Yes/No') {
+      const optionCounts = YES_NO_OPTIONS.reduce((acc, option) => {
+        acc[option] = votes.filter(vote => vote.value === option).length;
+        return acc;
+      }, {});
+      const agreeCount = optionCounts.Yes;
+      const disagreeCount = optionCounts.No;
+      const decidedCount = agreeCount + disagreeCount;
+      const consensusScore = decidedCount > 0 ? Math.max(agreeCount, disagreeCount) / decidedCount : 0;
+      const divisiveScore = decidedCount > 0 ? Math.min(agreeCount, disagreeCount) / decidedCount : 0;
+
+      return {
+        ...base,
+        optionCounts,
+        agreeCount,
+        disagreeCount,
+        unsureCount: 0,
+        decidedCount,
+        consensusScore,
+        divisiveScore,
+        label: decidedCount < 2 ? 'Not enough votes' : divisiveScore >= 0.4 ? 'Divisive' : consensusScore >= 0.85 ? 'Consensus' : 'Mixed',
+        leadingPosition: agreeCount === disagreeCount ? 'Split' : agreeCount > disagreeCount ? 'Yes' : 'No',
       };
     }
 
@@ -582,9 +619,11 @@ function renderReportHtml(summary) {
     const label = question.label ? `<span class="pill">${escapeHtml(question.label)}</span>` : '';
     const metric = question.type === 'Agreement'
       ? `${question.agreeCount || 0} agree / ${question.disagreeCount || 0} disagree / ${question.unsureCount || 0} unsure`
-      : question.type === 'Numerical'
-        ? `Avg ${question.average === null ? '-' : roundMetric(question.average, 1)} | Low ${question.minResponse ?? '-'} | High ${question.maxResponse ?? '-'}`
-        : `${question.responseCount} written ${question.responseCount === 1 ? 'response' : 'responses'}`;
+      : question.type === 'Yes/No'
+        ? `${question.agreeCount || 0} yes / ${question.disagreeCount || 0} no`
+        : question.type === 'Numerical'
+          ? `Avg ${question.average === null ? '-' : roundMetric(question.average, 1)} | Low ${question.minResponse ?? '-'} | High ${question.maxResponse ?? '-'}`
+          : `${question.responseCount} written ${question.responseCount === 1 ? 'response' : 'responses'}`;
     return `
       <tr>
         <td>${escapeHtml(question.text)} ${label}</td>
@@ -2096,10 +2135,11 @@ async function addVote(questionId, vote, userId, pseudonym) {
           'UPDATE votes SET value = $1, pseudonym = $2 WHERE id = $3',
           [JSON.stringify(vote), pseudonym, existingVote.id]
         );
-      } else if (existingVote.value === vote && questionType === 'Agreement') {
-        // Agreement votes toggle: re-selecting your current option undoes it.
-        // This must stay scoped to Agreement — for Open Ended, re-submitting the
-        // same text means "keep it", not "delete it".
+      } else if (existingVote.value === vote && (questionType === 'Agreement' || questionType === 'Yes/No')) {
+        // Agreement and Yes/No votes toggle: re-selecting your current option
+        // undoes it. This must stay scoped to those single-choice opinion types —
+        // for Open Ended, re-submitting the same text means "keep it", not
+        // "delete it".
         console.log('Voting for a option they already voted for');
         await client.query(
           'DELETE FROM votes WHERE id = $1',

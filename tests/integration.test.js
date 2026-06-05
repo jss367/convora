@@ -228,6 +228,63 @@ test('Socket.IO adds questions and broadcasts votes with pseudonyms', async () =
   }
 });
 
+test('Yes/No questions record a single choice that toggles off when reselected', async () => {
+  const topic = uniqueTopic('yesno');
+  const author = await connectSocket();
+  const voter = await connectSocket();
+
+  try {
+    const authorInitialQuestions = waitForQuestions(author, (questions) => Array.isArray(questions), 'author join');
+    author.emit('joinDiscussion', topic);
+    await authorInitialQuestions;
+
+    const questionUpdate = waitForQuestions(
+      author,
+      (questions) => questions.length === 1 && questions[0].text === 'Ship it?',
+      'yes/no question broadcast'
+    );
+    author.emit('addQuestion', topic, {
+      text: 'Ship it?',
+      type: 'Yes/No',
+      minValue: null,
+      maxValue: null,
+      options: [],
+    });
+    const question = (await questionUpdate)[0];
+    assert.equal(question.type, 'Yes/No');
+
+    // Vote Yes.
+    const yesUpdate = waitForQuestions(
+      author,
+      (qs) => qs[0] && qs[0].votes.length === 1 && qs[0].votes[0].value === 'Yes',
+      'yes vote'
+    );
+    voter.emit('vote', topic, question.id, 'Yes', 'yn-user', 'Decider');
+    await yesUpdate;
+
+    // Switching to No replaces the single choice rather than adding a row.
+    const noUpdate = waitForQuestions(
+      author,
+      (qs) => qs[0] && qs[0].votes.length === 1 && qs[0].votes[0].value === 'No',
+      'switch to no'
+    );
+    voter.emit('vote', topic, question.id, 'No', 'yn-user', 'Decider');
+    await noUpdate;
+
+    // Re-selecting the current choice toggles it off, like Agreement votes.
+    const toggleOffUpdate = waitForQuestions(
+      author,
+      (qs) => qs[0] && qs[0].votes.length === 0,
+      'toggle off'
+    );
+    voter.emit('vote', topic, question.id, 'No', 'yn-user', 'Decider');
+    await toggleOffUpdate;
+  } finally {
+    author.disconnect();
+    voter.disconnect();
+  }
+});
+
 test('Socket.IO sanitizes display names: anonymous stores null, long names are clamped', async () => {
   const topic = uniqueTopic('names');
   const author = await connectSocket();

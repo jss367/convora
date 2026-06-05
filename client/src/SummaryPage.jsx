@@ -11,6 +11,9 @@ const AGREEMENT_OPTIONS = [
     'Strongly Agree',
 ];
 
+// No-first so the green/red bar reads the same direction as the agreement bar.
+const YES_NO_OPTIONS = ['No', 'Yes'];
+
 function formatPercent(value) {
     if (!Number.isFinite(value)) {
         return '0%';
@@ -480,6 +483,48 @@ AgreementBar.propTypes = {
     total: PropTypes.number.isRequired,
 };
 
+const YesNoBar = ({ optionCounts, total }) => {
+    if (!total) {
+        return null;
+    }
+
+    const colors = {
+        No: 'bg-red-500',
+        Yes: 'bg-green-500',
+    };
+
+    return (
+        <div className="mt-3">
+            <div className="flex w-full h-3 rounded-full overflow-hidden bg-gray-200">
+                {YES_NO_OPTIONS.map(option => {
+                    const count = optionCounts[option] || 0;
+                    if (count === 0) {
+                        return null;
+                    }
+                    return (
+                        <div
+                            key={option}
+                            className={colors[option]}
+                            style={{ width: `${(count / total) * 100}%` }}
+                            title={`${option}: ${count}`}
+                        />
+                    );
+                })}
+            </div>
+            <div className="flex flex-wrap gap-x-3 gap-y-1 mt-2 text-xs text-gray-500">
+                {YES_NO_OPTIONS.map(option => (
+                    <span key={option}>{option}: {optionCounts[option] || 0}</span>
+                ))}
+            </div>
+        </div>
+    );
+};
+
+YesNoBar.propTypes = {
+    optionCounts: PropTypes.objectOf(PropTypes.number).isRequired,
+    total: PropTypes.number.isRequired,
+};
+
 const SynthesisPanel = ({ synthesis }) => (
     <section className="bg-white shadow rounded-lg p-6">
         <div className="flex items-center justify-between gap-4 mb-4">
@@ -588,6 +633,10 @@ const QuestionSummary = ({ question }) => (
 
         {question.type === 'Agreement' && (
             <AgreementBar optionCounts={question.optionCounts} total={question.responseCount} />
+        )}
+
+        {question.type === 'Yes/No' && (
+            <YesNoBar optionCounts={question.optionCounts} total={question.responseCount} />
         )}
 
         {question.type === 'Numerical' && (
