@@ -377,9 +377,15 @@ const DiscussionPage = () => {
             // The discussion exists (we were already reserved), so a real
             // reservation is expected; ignore anything else defensively.
             if (!resp?.pseudonym || !resp.reserved) return;
+            // Rename existing responses only if the shuffle changes the name we
+            // actually show — i.e. pseudonym mode or custom mode with a blank
+            // name (both display the pseudonym), but not a real custom name or
+            // anonymous.
+            const before = getDisplayName(identity, assignedPseudonym);
+            const after = getDisplayName(identity, resp.pseudonym);
             setAssignedPseudonym(resp.pseudonym);
-            if (identity?.mode === NameModes.PSEUDONYM) {
-                socket.emit('updateDisplayName', discussionSlug, userId, resp.pseudonym);
+            if (after !== before) {
+                socket.emit('updateDisplayName', discussionSlug, userId, after);
             }
         });
     };
@@ -616,8 +622,15 @@ const DiscussionPage = () => {
             setAssignedPseudonym(resp.pseudonym);
             if (!resp.reserved) return; // only a preview; the effect will retry
             setPseudonymReserved(true);
-            if (identity.mode === NameModes.PSEUDONYM && resp.pseudonym !== preferred) {
-                socket.emit('updateDisplayName', discussionSlug, userId, resp.pseudonym);
+            // If the reserved handle changes the name we'd actually show, rename
+            // any responses already submitted under the old one. Comparing the
+            // derived display name (not just the mode) also covers custom mode
+            // with a blank name — which falls back to the pseudonym — while
+            // correctly leaving a real custom name or anonymous untouched.
+            const before = getDisplayName(identity, preferred);
+            const after = getDisplayName(identity, resp.pseudonym);
+            if (after !== before) {
+                socket.emit('updateDisplayName', discussionSlug, userId, after);
             }
         });
         return () => { cancelled = true; };
