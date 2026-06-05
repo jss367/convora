@@ -376,6 +376,14 @@ const DiscussionPage = () => {
         setJoinQrSize(next);
     };
 
+    const persistJoinQrSize = (size) => {
+        try {
+            localStorage.setItem(`convora_join_qr_size_${discussionSlug}`, String(size));
+        } catch (err) {
+            console.warn('Failed to store QR size:', err);
+        }
+    };
+
     const handleJoinQrResizeEnd = (e) => {
         const drag = joinQrDragRef.current;
         if (!drag) return;
@@ -385,11 +393,36 @@ const DiscussionPage = () => {
         } catch {
             // Ignore — capture may not have been set.
         }
-        try {
-            localStorage.setItem(`convora_join_qr_size_${discussionSlug}`, String(drag.latest));
-        } catch (err) {
-            console.warn('Failed to store QR size:', err);
+        persistJoinQrSize(drag.latest);
+    };
+
+    // Keyboard support for the resize handle so the advertised slider role is
+    // actually operable for keyboard/assistive-tech users (arrows step, Home/End jump).
+    const handleJoinQrResizeKeyDown = (e) => {
+        const step = 20;
+        let next;
+        switch (e.key) {
+            case 'ArrowRight':
+            case 'ArrowUp':
+                next = joinQrSize + step;
+                break;
+            case 'ArrowLeft':
+            case 'ArrowDown':
+                next = joinQrSize - step;
+                break;
+            case 'Home':
+                next = MIN_JOIN_QR_SIZE;
+                break;
+            case 'End':
+                next = maxJoinQrSize();
+                break;
+            default:
+                return;
         }
+        e.preventDefault();
+        next = Math.round(clampJoinQrSize(next));
+        setJoinQrSize(next);
+        persistJoinQrSize(next);
     };
 
     // Push a changed broadcast name to the server so it retroactively renames
@@ -1246,12 +1279,15 @@ const DiscussionPage = () => {
                         onPointerMove={handleJoinQrResizeMove}
                         onPointerUp={handleJoinQrResizeEnd}
                         onPointerCancel={handleJoinQrResizeEnd}
+                        onKeyDown={handleJoinQrResizeKeyDown}
+                        tabIndex={0}
                         role="slider"
                         aria-label="Resize join QR code"
                         aria-valuemin={MIN_JOIN_QR_SIZE}
+                        aria-valuemax={maxJoinQrSize()}
                         aria-valuenow={joinQrSize}
                         title="Drag to resize"
-                        className="absolute -right-2 -top-2 flex h-7 w-7 cursor-nesw-resize touch-none items-center justify-center rounded-full border border-gray-300 bg-white text-gray-400 shadow hover:text-gray-600"
+                        className="absolute -right-2 -top-2 flex h-7 w-7 cursor-nesw-resize touch-none items-center justify-center rounded-full border border-gray-300 bg-white text-gray-400 shadow hover:text-gray-600 focus:outline-none focus:ring-2 focus:ring-indigo-400"
                     >
                         <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                             <path d="M14 2 2 14" />
