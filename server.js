@@ -1717,6 +1717,16 @@ async function migrateResponseVotesTable() {
 // reactions for an evaluation phase). The flags live on the discussion so a
 // moderator opens them for every brainstorm prompt at once. All idempotent.
 async function migrateBrainstormInteractions() {
+  // Detect whether the discussion-level flags already exist BEFORE creating
+  // them. This distinguishes a first migration (where we must backfill from the
+  // legacy per-question flags) from an already-migrated DB (where the
+  // discussion columns are the live source of truth and must not be touched).
+  const { rows: existing } = await pool.query(`
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'discussions' AND column_name = 'reactions_enabled'
+  `);
+  const discussionFlagsExist = existing.length > 0;
+
   await pool.query('ALTER TABLE discussions ADD COLUMN IF NOT EXISTS reactions_enabled BOOLEAN NOT NULL DEFAULT FALSE');
   await pool.query('ALTER TABLE discussions ADD COLUMN IF NOT EXISTS reactions_visible BOOLEAN NOT NULL DEFAULT TRUE');
   await pool.query('ALTER TABLE discussions ADD COLUMN IF NOT EXISTS comments_enabled BOOLEAN NOT NULL DEFAULT FALSE');
@@ -1724,10 +1734,39 @@ async function migrateBrainstormInteractions() {
   // Legacy per-question flag columns from when these toggles were per-question
   // (added 2026-06-05, PR #39). Kept idempotently so older databases and a
   // rollback still work, but no longer read or written — the discussion-level
-  // columns above are now the source of truth.
+  // columns above are now the source of truth. The ADD COLUMN IF NOT EXISTS
+  // also guarantees the backfill query below is valid even on a fresh DB.
   await pool.query('ALTER TABLE questions ADD COLUMN IF NOT EXISTS reactions_enabled BOOLEAN NOT NULL DEFAULT FALSE');
   await pool.query('ALTER TABLE questions ADD COLUMN IF NOT EXISTS reactions_visible BOOLEAN NOT NULL DEFAULT TRUE');
   await pool.query('ALTER TABLE questions ADD COLUMN IF NOT EXISTS comments_enabled BOOLEAN NOT NULL DEFAULT FALSE');
+
+  // One-time backfill: only on the FIRST migration that creates the discussion
+  // columns. Databases upgrading from PR #39 already carry per-question flags;
+  // without this, every existing discussion would default to
+  // reactions_enabled=false / comments_enabled=false and any live brainstorm
+  // that had interactions open would silently go dark until a moderator
+  // reopened them. BOOL_OR rolls each discussion's questions up to "on if any
+  // question had it on." This is guarded by the existence check so it runs
+  // exactly once — re-running on every boot would clobber later moderator
+  // changes by resurrecting stale per-question values. On a fresh DB it's a
+  // harmless no-op since all values are at their defaults.
+  if (!discussionFlagsExist) {
+    await pool.query(`
+      UPDATE discussions d SET
+        reactions_enabled = sub.re,
+        reactions_visible = sub.rv,
+        comments_enabled  = sub.ce
+      FROM (
+        SELECT discussion_id,
+               BOOL_OR(reactions_enabled) AS re,
+               BOOL_OR(reactions_visible) AS rv,
+               BOOL_OR(comments_enabled)  AS ce
+        FROM questions
+        GROUP BY discussion_id
+      ) sub
+      WHERE d.id = sub.discussion_id
+    `);
+  }
 
   // One row per (response, user): that user's quality vote (-1/+1) and/or
   // agreement selection. Either axis may be null when only the other is set.
