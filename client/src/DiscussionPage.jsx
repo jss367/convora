@@ -439,6 +439,10 @@ const DiscussionPage = () => {
                 return next;
             });
         };
+        // Clamp immediately on becoming visible: if the viewport shrank while the
+        // panel was hidden, the stored size would otherwise render off-screen
+        // until the next resize event fires.
+        handleResize();
         window.addEventListener('resize', handleResize);
         return () => window.removeEventListener('resize', handleResize);
     }, [showJoinQr, discussionSlug]);
