@@ -297,6 +297,11 @@ function buildClusterReport(statements, participants, matrix, voted, assignments
     // labeled common ground while the UI shows that group as "Mixed / unsure".
     const allAgree = votedMeans.length > 0 && votedMeans.every(m => m >= COMMON_GROUND_LEAN);
     const allDisagree = votedMeans.length > 0 && votedMeans.every(m => m <= -COMMON_GROUND_LEAN);
+    // Genuine division needs groups leaning in opposite directions, not merely
+    // agreeing with different intensity. This also keeps a statement from ever
+    // landing in both the common-ground and divisive lists.
+    const groupsOppose = votedMeans.some(m => m >= COMMON_GROUND_LEAN)
+      && votedMeans.some(m => m <= -COMMON_GROUND_LEAN);
 
     return {
       id: s.id,
@@ -304,6 +309,7 @@ function buildClusterReport(statements, participants, matrix, voted, assignments
       clusterMeans,
       clusterVoters,
       votedGroups,
+      groupsOppose,
       overallMean: overall.mean,
       voters: overall.voters,
       agree: overall.agree,
@@ -320,10 +326,11 @@ function buildClusterReport(statements, participants, matrix, voted, assignments
     .sort((a, b) => b.minMagnitude - a.minMagnitude || a.spread - b.spread)
     .slice(0, 5);
 
-  // Divisive needs at least two groups that actually voted, so a single group's
-  // internal spread can't masquerade as cross-group disagreement.
+  // Divisive needs at least two groups that actually voted AND leaning in
+  // opposite directions, so neither a single group's internal spread nor a
+  // same-direction intensity gap can masquerade as cross-group disagreement.
   const divisive = perStatement
-    .filter(st => st.voters >= 2 && st.votedGroups >= 2)
+    .filter(st => st.voters >= 2 && st.votedGroups >= 2 && st.groupsOppose)
     .sort((a, b) => b.spread - a.spread)
     .slice(0, 5);
 
