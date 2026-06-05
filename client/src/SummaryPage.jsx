@@ -261,7 +261,7 @@ const FacilitatorDashboard = ({ dashboard }) => {
                     title="Most Divisive Statements"
                     emptyText="No divisive agreement statements yet."
                     items={dashboard.mostDivisiveStatements}
-                    renderMeta={item => `${item.agreeCount} agree / ${item.disagreeCount} disagree / ${item.unsureCount} unsure`}
+                    renderMeta={item => item.detail}
                     renderScore={item => `Split ${formatPercent(item.divisiveScore)}`}
                 />
                 <FacilitatorSignalList

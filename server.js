@@ -263,10 +263,14 @@ function buildFacilitatorDashboard(questionSummaries, participantStats) {
     .map(question => ({
       id: question.id,
       text: question.text,
+      type: question.type,
       responseCount: question.responseCount,
       agreeCount: question.agreeCount,
       disagreeCount: question.disagreeCount,
       unsureCount: question.unsureCount,
+      // Preformatted so renderers don't have to know the prompt type: Yes/No
+      // reads "yes / no", the five-point scale reads "agree / disagree / unsure".
+      detail: opinionTensionDetail(question),
       divisiveScore: roundMetric(question.divisiveScore),
       leadingPosition: question.leadingPosition,
     }))
@@ -701,7 +705,7 @@ function renderReportHtml(summary) {
     <section class="split">
       <div>
         <h2>Most Divisive Statements</h2>
-        ${renderList(dashboard.mostDivisiveStatements, 'No divisive agreement statements yet.', item => `<li><strong>${escapeHtml(formatReportPercent(item.divisiveScore))}</strong> split | ${escapeHtml(item.text)}<br><span class="muted">${item.agreeCount} agree / ${item.disagreeCount} disagree / ${item.unsureCount} unsure</span></li>`)}
+        ${renderList(dashboard.mostDivisiveStatements, 'No divisive agreement statements yet.', item => `<li><strong>${escapeHtml(formatReportPercent(item.divisiveScore))}</strong> split | ${escapeHtml(item.text)}<br><span class="muted">${escapeHtml(item.detail)}</span></li>`)}
       </div>
       <div>
         <h2>Unanswered Prompts</h2>
