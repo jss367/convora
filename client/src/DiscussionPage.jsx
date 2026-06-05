@@ -73,11 +73,14 @@ const AGREEMENT_SHORT = {
 const EPISTEMIC_REACTIONS = [
     { key: 'changed-mind', label: 'Changed my mind', emoji: '🔁' },
     { key: 'crux', label: 'Crux', emoji: '🎯' },
-    { key: 'locally-valid', label: 'Locally valid', emoji: '✅' },
-    { key: 'locally-invalid', label: 'Locally invalid', emoji: '❌' },
+    { key: 'follows', label: 'Follows', emoji: '✅' },
     { key: 'citation-needed', label: 'Citation needed', emoji: '📚' },
     { key: 'key-insight', label: 'Key insight', emoji: '💡' },
 ];
+
+// All catalog keys, used as the fallback active set before the server's
+// discussionState (which carries the discussion's chosen subset) arrives.
+const ALL_REACTION_KEYS = EPISTEMIC_REACTIONS.map(r => r.key);
 
 // In production the client is served by the same server it talks to, so we
 // default to a same-origin connection. Set VITE_SOCKET_URL only when the
@@ -112,7 +115,7 @@ const DiscussionPage = () => {
     const [presence, setPresence] = useState(0);
     const [copied, setCopied] = useState(false);
     const [adminToken, setAdminToken] = useState(null);
-    const [discussionState, setDiscussionState] = useState({ locked: false, hasModerator: false });
+    const [discussionState, setDiscussionState] = useState({ locked: false, hasModerator: false, reactionKeys: ALL_REACTION_KEYS });
     const [similarPrompt, setSimilarPrompt] = useState(null);
     const [adminLinkCopied, setAdminLinkCopied] = useState(false);
     // Id of the question a moderator is currently editing inline (null when none).
@@ -132,6 +135,10 @@ const DiscussionPage = () => {
 
     const isAdmin = !!adminToken;
     const { locked } = discussionState;
+    // Which epistemic reactions are active for this session (creator-configurable,
+    // a subset of the catalog). Falls back to the full catalog until the server's
+    // discussionState arrives.
+    const activeReactionKeys = discussionState.reactionKeys || ALL_REACTION_KEYS;
     const discussionTitle = discussion?.topic || topic;
 
     const joinUrl = typeof window !== 'undefined'
@@ -702,6 +709,12 @@ const DiscussionPage = () => {
         socket.emit('setQuestionFlags', topic, questionId, flags, adminToken);
     };
 
+    // Set the active epistemic reactions for the whole session. The server
+    // re-broadcasts discussionState, so we don't update local state optimistically.
+    const handleSetReactionKeys = (keys) => {
+        socket.emit('setReactionKeys', topic, keys, adminToken);
+    };
+
     const sortQuestions = (questions) => {
         switch (sortOption) {
             case SortOptions.MOST_RECENT:
@@ -838,7 +851,9 @@ const DiscussionPage = () => {
                     locked={locked}
                     isAdmin={isAdmin}
                     myBrainstorm={myBrainstorm}
+                    activeReactionKeys={activeReactionKeys}
                     onSetFlags={handleSetQuestionFlags}
+                    onSetReactionKeys={handleSetReactionKeys}
                     onSetRating={handleSetRating}
                     onToggleReaction={handleToggleReaction}
                     onAddComment={handleAddComment}
@@ -1709,7 +1724,7 @@ AgreementMiniBar.propTypes = {
 // aggregates; only this user's own selections (myRating/myReactions) are known
 // to the client, so nothing reveals who voted which way.
 const BrainstormIdea = ({
-    vote, isOwn, isAdmin, ownedCommentIds, reactionsActive, commentsEnabled, locked,
+    vote, isOwn, isAdmin, ownedCommentIds, reactionsActive, activeReactionKeys, commentsEnabled, locked,
     myRating, myReactions, onDeleteVote, onModeratorDelete, onSetRating, onToggleReaction,
     onAddComment, onDeleteComment, onModeratorDeleteComment,
 }) => {
@@ -1791,7 +1806,7 @@ const BrainstormIdea = ({
 
                     {reactionsActive && (
                         <div className="flex flex-wrap gap-1 mt-2">
-                            {EPISTEMIC_REACTIONS.map(r => {
+                            {EPISTEMIC_REACTIONS.filter(r => activeReactionKeys.includes(r.key)).map(r => {
                                 const count = (vote.reactionCounts || {})[r.key] || 0;
                                 const active = myReactions.includes(r.key);
                                 return (
@@ -1879,6 +1894,7 @@ BrainstormIdea.propTypes = {
     ownedCommentIds: PropTypes.instanceOf(Set).isRequired,
     reactionsActive: PropTypes.bool,
     commentsEnabled: PropTypes.bool,
+    activeReactionKeys: PropTypes.array.isRequired,
     locked: PropTypes.bool,
     myRating: PropTypes.object,
     myReactions: PropTypes.array,
@@ -1897,7 +1913,7 @@ BrainstormIdea.propTypes = {
 // evaluating them.
 const BrainstormQuestion = ({
     question, ownedVoteIds, ownedCommentIds, handleVote, handleDeleteVote, locked, isAdmin, myBrainstorm,
-    onSetFlags, onSetRating, onToggleReaction, onAddComment, onDeleteComment,
+    activeReactionKeys, onSetFlags, onSetReactionKeys, onSetRating, onToggleReaction, onAddComment, onDeleteComment,
     onModeratorDeleteVote, onModeratorDeleteComment,
 }) => {
     const [idea, setIdea] = useState('');
@@ -1934,6 +1950,37 @@ const BrainstormQuestion = ({
                     <button onClick={() => onSetFlags(question.id, { comments_enabled: !commentsEnabled })} className={modButton}>
                         {commentsEnabled ? 'Disable comments' : 'Enable comments'}
                     </button>
+                    {reactionsEnabled && (
+                        <div className="w-full flex flex-wrap items-center gap-1 mt-1 border-t border-indigo-100 pt-2">
+                            <span className="text-indigo-800">Reaction set (whole session):</span>
+                            {EPISTEMIC_REACTIONS.map(r => {
+                                const on = activeReactionKeys.includes(r.key);
+                                return (
+                                    <button
+                                        key={r.key}
+                                        type="button"
+                                        // Toggling rebuilds the active list in catalog order; the
+                                        // last remaining reaction can't be removed (the server
+                                        // ignores an empty set, so guard the UI to match).
+                                        onClick={() => {
+                                            const next = on
+                                                ? activeReactionKeys.filter(k => k !== r.key)
+                                                : EPISTEMIC_REACTIONS.map(c => c.key)
+                                                    .filter(k => k === r.key || activeReactionKeys.includes(k));
+                                            if (next.length === 0) return;
+                                            onSetReactionKeys(next);
+                                        }}
+                                        title={on ? `Hide "${r.label}"` : `Show "${r.label}"`}
+                                        className={`px-2 py-0.5 rounded-full border ${on
+                                            ? 'bg-indigo-100 border-indigo-400 text-indigo-800'
+                                            : 'bg-white border-gray-300 text-gray-400 line-through'}`}
+                                    >
+                                        <span className="mr-1">{r.emoji}</span>{r.label}
+                                    </button>
+                                );
+                            })}
+                        </div>
+                    )}
                 </div>
             )}
 
@@ -1977,6 +2024,7 @@ const BrainstormQuestion = ({
                                 isAdmin={isAdmin}
                                 ownedCommentIds={ownedCommentIds}
                                 reactionsActive={reactionsActive}
+                                activeReactionKeys={activeReactionKeys}
                                 commentsEnabled={commentsEnabled}
                                 locked={locked}
                                 myRating={myBrainstorm.ratings[vote.id] || {}}
@@ -2071,7 +2119,9 @@ BrainstormQuestion.propTypes = {
         ratings: PropTypes.object,
         reactions: PropTypes.object,
     }).isRequired,
+    activeReactionKeys: PropTypes.array.isRequired,
     onSetFlags: PropTypes.func.isRequired,
+    onSetReactionKeys: PropTypes.func.isRequired,
     onSetRating: PropTypes.func.isRequired,
     onToggleReaction: PropTypes.func.isRequired,
     onAddComment: PropTypes.func.isRequired,
