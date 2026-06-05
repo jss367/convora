@@ -334,11 +334,11 @@ const DiscussionPage = () => {
         try {
             setShowJoinQr(localStorage.getItem(`convora_show_join_qr_${discussionSlug}`) === 'true');
             const storedSize = parseInt(localStorage.getItem(`convora_join_qr_size_${discussionSlug}`), 10);
-            setJoinQrSize(Number.isFinite(storedSize) ? clampJoinQrSize(storedSize) : DEFAULT_JOIN_QR_SIZE);
+            setJoinQrSize(clampJoinQrSize(Number.isFinite(storedSize) ? storedSize : DEFAULT_JOIN_QR_SIZE));
         } catch (e) {
             console.warn('Failed to read QR visibility:', e);
             setShowJoinQr(false);
-            setJoinQrSize(DEFAULT_JOIN_QR_SIZE);
+            setJoinQrSize(clampJoinQrSize(DEFAULT_JOIN_QR_SIZE));
         }
     }, [discussionSlug]);
 
