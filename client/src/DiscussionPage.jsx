@@ -24,6 +24,16 @@ console.log('Convora version:', VERSION);
 const MIN_JOIN_QR_SIZE = 140;
 const DEFAULT_JOIN_QR_SIZE = 300;
 
+// Largest square the QR panel can grow to without overflowing the viewport
+// (leaves a margin for the panel's padding/caption and screen edges).
+const maxJoinQrSize = () => {
+    if (typeof window === 'undefined') return DEFAULT_JOIN_QR_SIZE;
+    return Math.max(MIN_JOIN_QR_SIZE, Math.min(window.innerWidth, window.innerHeight) - 120);
+};
+
+// Clamp a QR size to the range the current viewport can accommodate.
+const clampJoinQrSize = (size) => Math.min(maxJoinQrSize(), Math.max(MIN_JOIN_QR_SIZE, size));
+
 const QuestionTypes = {
     AGREEMENT: 'Agreement',
     NUMERICAL: 'Numerical',
@@ -324,7 +334,7 @@ const DiscussionPage = () => {
         try {
             setShowJoinQr(localStorage.getItem(`convora_show_join_qr_${discussionSlug}`) === 'true');
             const storedSize = parseInt(localStorage.getItem(`convora_join_qr_size_${discussionSlug}`), 10);
-            setJoinQrSize(Number.isFinite(storedSize) ? Math.max(MIN_JOIN_QR_SIZE, storedSize) : DEFAULT_JOIN_QR_SIZE);
+            setJoinQrSize(Number.isFinite(storedSize) ? clampJoinQrSize(storedSize) : DEFAULT_JOIN_QR_SIZE);
         } catch (e) {
             console.warn('Failed to read QR visibility:', e);
             setShowJoinQr(false);
@@ -344,13 +354,6 @@ const DiscussionPage = () => {
         });
     };
 
-    // Largest square the QR panel can grow to without overflowing the viewport
-    // (leaves a margin for the panel's padding/caption and screen edges).
-    const maxJoinQrSize = () => {
-        if (typeof window === 'undefined') return DEFAULT_JOIN_QR_SIZE;
-        return Math.max(MIN_JOIN_QR_SIZE, Math.min(window.innerWidth, window.innerHeight) - 120);
-    };
-
     const handleJoinQrResizeStart = (e) => {
         e.preventDefault();
         e.stopPropagation();
@@ -368,7 +371,7 @@ const DiscussionPage = () => {
         // Panel is anchored bottom-left, so dragging the handle right (+x) or up
         // (-y) grows it; average the two axes so the corner tracks the pointer.
         const delta = ((e.clientX - drag.startX) - (e.clientY - drag.startY)) / 2;
-        const next = Math.round(Math.min(maxJoinQrSize(), Math.max(MIN_JOIN_QR_SIZE, drag.startSize + delta)));
+        const next = Math.round(clampJoinQrSize(drag.startSize + delta));
         drag.latest = next;
         setJoinQrSize(next);
     };
