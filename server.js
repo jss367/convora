@@ -710,6 +710,20 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Associate this socket with the client's persistent userId so the server can
+  // route a live moderator grant to it when a moderator promotes this user.
+  //
+  // Deliberately does NOT hand back an existing moderator token here: userId is
+  // not a secret (getQuestions broadcasts each vote's userId to the whole room),
+  // so re-delivering a token to anyone who supplies a promoted user's id would
+  // let an observer steal moderator access. A genuinely promoted user receives
+  // their token live at promotion time and persists it locally (so it survives
+  // reloads/reconnects via verifyAdmin); we never re-mint it from the id alone.
+  socket.on('identify', (topic, userId) => {
+    if (!userId) return;
+    socket.data.userId = userId;
+  });
+
   socket.on('leaveDiscussion', (topic) => {
     // The client unmounted its discussion page; drop it from the room and
     // recompute presence so the counter doesn't over-report lingering viewers.
@@ -804,6 +818,61 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Moderator-only: list the discussion's participants (opaque handle +
+  // pseudonym + whether they already moderate) so a moderator can pick someone
+  // to promote. Raw user_ids are never sent to the client.
+  socket.on('listParticipants', async (topic, token, cb) => {
+    if (typeof cb !== 'function') return;
+    try {
+      const discussionId = await verifyAdmin(topic, token);
+      if (!discussionId) {
+        cb({ success: false, error: 'not_authorized' });
+        return;
+      }
+      cb({ success: true, participants: await listParticipants(topic) });
+    } catch (error) {
+      console.error('Error listing participants:', error);
+      cb({ success: false, error: 'server_error' });
+    }
+  });
+
+  // Moderator-only: promote a participant (named by their opaque handle) to
+  // moderator. Mints them a personal token, delivers it live to their connected
+  // sockets, and returns the refreshed participant list.
+  socket.on('promoteModerator', async (topic, token, participantId, cb) => {
+    try {
+      const discussionId = await verifyAdmin(topic, token);
+      if (!discussionId) {
+        if (typeof cb === 'function') cb({ success: false, error: 'not_authorized' });
+        return;
+      }
+      const target = await resolveParticipant(topic, participantId);
+      if (!target) {
+        // The handle no longer maps to a participant (e.g. the list shifted).
+        if (typeof cb === 'function') cb({ success: false, error: 'unknown_participant' });
+        return;
+      }
+      const { token: grantedToken, inserted } = await promoteModerator(discussionId, target.userId);
+      const delivered = deliverModeratorToken(topic, target.userId, grantedToken);
+      // A token can only reach a user via a live push (we never re-deliver from a
+      // client-supplied id). If this call newly granted moderation but the user
+      // isn't connected to receive it, roll the grant back rather than leaving
+      // them marked as a moderator with a token they can never obtain.
+      if (inserted && delivered === 0) {
+        await revokeModerator(discussionId, target.userId);
+        if (typeof cb === 'function') cb({ success: false, error: 'participant_offline' });
+        return;
+      }
+      await emitDiscussionState(topic);
+      if (typeof cb === 'function') {
+        cb({ success: true, participants: await listParticipants(topic) });
+      }
+    } catch (error) {
+      console.error('Error promoting moderator:', error);
+      if (typeof cb === 'function') cb({ success: false, error: 'server_error' });
+    }
+  });
+
   socket.on('deleteQuestion', async (topic, questionId, token) => {
     try {
       const discussionId = await verifyAdmin(topic, token);
@@ -881,6 +950,31 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Retroactively rename a participant's already-submitted responses when they
+  // change name mode, edit their custom name, or shuffle their pseudonym. Without
+  // this, switching to "Completely anonymous" would still show the old name on
+  // prior responses, breaking the privacy promise. Allowed even when the
+  // discussion is locked: this is a display-name edit, not a new vote.
+  socket.on('updateDisplayName', async (topic, userId, displayName) => {
+    try {
+      if (!topic || !userId) return;
+      const pseudonym = sanitizePseudonym(displayName);
+      await pool.query(
+        `UPDATE votes SET pseudonym = $1
+         WHERE user_id = $2
+           AND question_id IN (
+             SELECT id FROM questions
+             WHERE discussion_id = (SELECT id FROM discussions WHERE topic = $3)
+           )`,
+        [pseudonym, userId, topic]
+      );
+      io.to(topic).emit('questions', await getQuestions(topic));
+    } catch (error) {
+      console.error('Error updating display name:', error);
+      socket.emit('error', { message: 'Failed to update display name' });
+    }
+  });
+
   socket.on('disconnect', () => {
     console.log('Client disconnected');
     // The socket has already left its rooms by now, so the count reflects the
@@ -898,8 +992,12 @@ app.use((req, res, next) => {
 app.post('/api/discussions', async (req, res) => {
   const { topic } = req.body;
   try {
-    const id = await getOrCreateDiscussion(pool, topic);
-    res.json({ success: true, id });
+    // The creator becomes the moderator: createDiscussion mints an admin token
+    // and returns it when (and only when) this caller is the one establishing
+    // the discussion's moderator. The client persists it so the person who made
+    // the session lands as its moderator instead of racing others for the role.
+    const { id, adminToken } = await createDiscussion(topic);
+    res.json({ success: true, id, adminToken });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Server error' });
@@ -909,8 +1007,11 @@ app.post('/api/discussions', async (req, res) => {
 app.get('/api/discussions/:id', async (req, res) => {
   const { id } = req.params;
   try {
+    // Select explicit columns, never admin_token: this endpoint is public and
+    // the discussion id is discoverable via GET /api/discussions, so returning
+    // the moderator secret here would let anyone claim moderator controls.
     const result = await pool.query(
-      'SELECT * FROM discussions WHERE id = $1',
+      'SELECT id, topic, created_at, locked FROM discussions WHERE id = $1',
       [id]
     );
     if (result.rows.length > 0) {
@@ -936,7 +1037,7 @@ async function getOrCreateDiscussion(db, topic) {
   return result.rows[0].id;
 }
 
-async function getQuestions(topic) {
+async function getQuestions(topic, { includeUserIds = false } = {}) {
   const query = `
     SELECT 
       q.id, 
@@ -971,8 +1072,44 @@ async function getQuestions(topic) {
     ...row,
     minValue: row.min_value,
     maxValue: row.max_value,
-    options: parseOptions(row.options)
+    options: parseOptions(row.options),
+    // Replace raw stable user ids on the wire with per-response ownership
+    // tokens so a socket observer can't correlate a participant's responses —
+    // not across prompts, and not even across multiple ideas in the same
+    // Brainstorm prompt. Each token is keyed by the vote's own row id, so one
+    // anonymous participant's separate ideas each carry a DIFFERENT token and
+    // can't be grouped. Each client recomputes the same token for its own votes
+    // (see ownerToken() in client/src/identity.js — the two MUST match).
+    votes: (Array.isArray(row.votes) ? row.votes : []).map(vote => {
+      // Internal callers (e.g. getDiscussionSummary) opt into keeping the raw
+      // stable user_id so they can count distinct participants correctly. This
+      // path is SERVER-SIDE ONLY and must never feed a socket/API response.
+      if (includeUserIds) return { ...vote };
+      const tokenized = {
+        ...vote,
+        ownerToken: ownerToken(vote.id, vote.userId),
+        upvoterTokens: (Array.isArray(vote.upvoters) ? vote.upvoters : [])
+          .map(uid => ownerToken(vote.id, uid)),
+      };
+      delete tokenized.userId;
+      delete tokenized.upvoters;
+      return tokenized;
+    }),
   }));
+}
+
+// Per-response, non-reversible ownership token broadcast in place of raw stable
+// user ids (see getQuestions). Definition: sha256(idPart + ':' + userId), hex,
+// where idPart is the vote's own row id. No server secret needed — userIds are
+// long random strings, and folding in the per-response id means the same
+// browser gets a different token for every response (so an anonymous
+// participant's multiple ideas in one prompt can't be grouped).
+//
+// IMPORTANT: must stay byte-for-byte identical to ownerToken() in
+// client/src/identity.js. Change one, change both.
+function ownerToken(idPart, userId) {
+  if (idPart === null || idPart === undefined || !userId) return null;
+  return crypto.createHash('sha256').update(`${idPart}:${userId}`).digest('hex');
 }
 
 async function addQuestion(topic, question) {
@@ -1129,15 +1266,80 @@ async function migrateModerationAndDedup() {
   console.log('Moderation + dedup migration completed');
 }
 
-// Verify that the supplied token is the discussion's admin token. Returns the
+// Per-user moderator grants: when a moderator promotes a participant, that user
+// gets their own token here (one row per user per discussion). verifyAdmin
+// accepts these tokens alongside the creator's admin_token. Idempotent.
+async function migrateModeratorsTable() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS discussion_moderators (
+      id SERIAL PRIMARY KEY,
+      discussion_id INTEGER NOT NULL REFERENCES discussions(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL,
+      token TEXT NOT NULL,
+      created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE (discussion_id, user_id)
+    )
+  `);
+  console.log('discussion_moderators table migration completed');
+}
+
+// Verify that the supplied token grants moderation of this discussion. A token
+// is valid if it's the discussion's creator admin_token OR a per-user token
+// granted to a promoted moderator (discussion_moderators). Returns the
 // discussion id when valid, or null otherwise.
 async function verifyAdmin(topic, token) {
   if (!token) return null;
   const result = await pool.query(
-    'SELECT id FROM discussions WHERE topic = $1 AND admin_token = $2',
+    `SELECT d.id
+       FROM discussions d
+      WHERE d.topic = $1
+        AND (
+          d.admin_token = $2
+          OR EXISTS (
+            SELECT 1 FROM discussion_moderators m
+             WHERE m.discussion_id = d.id AND m.token = $2
+          )
+        )`,
     [topic, token]
   );
   return result.rows.length > 0 ? result.rows[0].id : null;
+}
+
+// Create a discussion (or look up the existing one) and, when it has no
+// moderator yet, make the creator its moderator by minting a fresh admin token.
+// Returns the discussion id plus an adminToken that is non-null ONLY when this
+// caller became the moderator. If a moderator already exists, adminToken is null
+// and the existing token is never disclosed — so re-creating an already-moderated
+// topic can't hand its controls to whoever re-submits it.
+// Shares claimModerator()'s advisory-lock + COALESCE upsert so the create-time
+// claim is race-safe against concurrent creates and lazy (question-post) creation.
+async function createDiscussion(topic) {
+  const token = crypto.randomBytes(16).toString('hex');
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [topic]);
+
+    const result = await client.query(
+      `INSERT INTO discussions (topic, admin_token)
+       VALUES ($1, $2)
+       ON CONFLICT (topic) DO UPDATE
+       SET admin_token = COALESCE(discussions.admin_token, EXCLUDED.admin_token)
+       RETURNING id, admin_token`,
+      [topic, token]
+    );
+
+    await client.query('COMMIT');
+    const row = result.rows[0];
+    // The stored token equals ours exactly when we just minted it (fresh row, or
+    // an existing row that had no moderator); otherwise a moderator already held it.
+    return { id: row.id, adminToken: row.admin_token === token ? token : null };
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    client.release();
+  }
 }
 
 // First-come moderator claim: assigns a fresh admin token only if the
@@ -1169,6 +1371,102 @@ async function claimModerator(topic) {
   } finally {
     client.release();
   }
+}
+
+// An opaque, stable handle for a participant: a hash of their user_id, so it
+// stays bound to the same user no matter how the list reorders or who drops
+// out. This lets the moderator UI refer to users without ever receiving the
+// raw user_id (which doubles as the vote-ownership secret), and means a stale
+// UI promotes the user it displayed — never whoever now sits at that position.
+function participantHandle(userId) {
+  return `participant-${crypto.createHash('sha256').update(String(userId)).digest('hex').slice(0, 16)}`;
+}
+
+// The discussion's participants: everyone who has cast a vote or written a
+// response (the only users the server can identify, since there are no
+// accounts and presence is anonymous). Ordered by first activity for a stable
+// display order. Returns rows of { id, userId, pseudonym, isModerator }.
+async function getParticipants(topic) {
+  const result = await pool.query(
+    `SELECT v.user_id,
+            MIN(v.created_at) AS first_seen,
+            (ARRAY_AGG(v.pseudonym ORDER BY v.id DESC))[1] AS pseudonym,
+            BOOL_OR(m.user_id IS NOT NULL) AS is_moderator
+       FROM votes v
+       JOIN questions q ON v.question_id = q.id
+       JOIN discussions d ON q.discussion_id = d.id
+       LEFT JOIN discussion_moderators m
+              ON m.discussion_id = d.id AND m.user_id = v.user_id
+      WHERE d.topic = $1 AND v.user_id IS NOT NULL
+      GROUP BY v.user_id
+      ORDER BY MIN(v.created_at), v.user_id`,
+    [topic]
+  );
+  return result.rows.map((row) => ({
+    id: participantHandle(row.user_id),
+    userId: row.user_id,
+    pseudonym: row.pseudonym || 'Anonymous',
+    isModerator: row.is_moderator === true,
+  }));
+}
+
+// The moderator-facing view of getParticipants: opaque handle, display name,
+// and whether they already moderate — never the raw user_id.
+async function listParticipants(topic) {
+  const participants = await getParticipants(topic);
+  return participants.map(({ id, pseudonym, isModerator }) => ({ id, pseudonym, isModerator }));
+}
+
+// Resolve an opaque participant handle back to its user_id. Because the handle
+// is a hash of the user_id (not a position), this matches the exact user the
+// moderator selected even if the list has since reordered; it returns null when
+// that user is no longer a participant (e.g. they removed their only response).
+async function resolveParticipant(topic, participantId) {
+  const participants = await getParticipants(topic);
+  return participants.find(p => p.id === participantId) || null;
+}
+
+// Promote a user to moderator by minting them a personal token (idempotent: a
+// user already promoted keeps their existing token). Returns the token plus
+// whether this call newly created the grant (vs. the user already being a
+// moderator), so the caller can roll back a brand-new grant that couldn't be
+// delivered.
+async function promoteModerator(discussionId, userId) {
+  const token = crypto.randomBytes(16).toString('hex');
+  const result = await pool.query(
+    `INSERT INTO discussion_moderators (discussion_id, user_id, token)
+     VALUES ($1, $2, $3)
+     ON CONFLICT (discussion_id, user_id) DO UPDATE SET user_id = EXCLUDED.user_id
+     RETURNING token, (xmax = 0) AS inserted`,
+    [discussionId, userId, token]
+  );
+  return { token: result.rows[0].token, inserted: result.rows[0].inserted === true };
+}
+
+// Remove a user's moderator grant for a discussion.
+async function revokeModerator(discussionId, userId) {
+  await pool.query(
+    'DELETE FROM discussion_moderators WHERE discussion_id = $1 AND user_id = $2',
+    [discussionId, userId]
+  );
+}
+
+// Push a freshly granted moderator token to every connected socket belonging to
+// the given user in the discussion's room, so promotion takes effect live.
+// Returns how many sockets received it — 0 means the user isn't currently
+// connected/identified, so the grant can't reach them.
+function deliverModeratorToken(topic, userId, token) {
+  const room = io.sockets.adapter.rooms.get(topic);
+  if (!room) return 0;
+  let delivered = 0;
+  for (const socketId of room) {
+    const target = io.sockets.sockets.get(socketId);
+    if (target && target.data.userId === userId) {
+      target.emit('moderatorGranted', { token });
+      delivered++;
+    }
+  }
+  return delivered;
 }
 
 // Whether voting is currently closed for a discussion.
@@ -1216,7 +1514,18 @@ async function findSimilarQuestion(topic, text) {
   }
 }
 
+// Clients pick their own display name (a pseudonym, "Anonymous", or a typed-in
+// name), so clamp it defensively: a name is at most 40 chars and we never store
+// an empty string (let it fall back to the display layer's 'Anonymous').
+const MAX_PSEUDONYM_LENGTH = 40;
+function sanitizePseudonym(pseudonym) {
+  if (typeof pseudonym !== 'string') return null;
+  const trimmed = pseudonym.trim().slice(0, MAX_PSEUDONYM_LENGTH);
+  return trimmed || null;
+}
+
 async function addVote(questionId, vote, userId, pseudonym) {
+  pseudonym = sanitizePseudonym(pseudonym);
   console.log('Adding vote:', questionId, vote, userId, pseudonym);
   const client = await pool.connect();
   try {
@@ -1355,7 +1664,11 @@ async function getDiscussionSummary(topic, options = {}) {
     return null;
   }
 
-  const questions = await getQuestions(topic);
+  // Internal use: keep the raw stable user_id on each vote so buildSummary can
+  // count distinct participants (anonymous/duplicate display names must not
+  // collapse). buildFacilitatorDashboard re-keys to participant-N before any
+  // of this reaches a client, so the raw ids never leave the server.
+  const questions = await getQuestions(topic, { includeUserIds: true });
   const writtenResponses = questions
     .filter(question => question.type === 'Open Ended' || question.type === 'Brainstorm')
     .flatMap(question => (question.votes || [])
@@ -1562,15 +1875,19 @@ app.post('/api/duplicate-discussion', async (req, res) => {
 
     const originalDiscussionId = originalDiscussionResult.rows[0].id;
 
-    // Create new discussion. Duplicating into an existing topic would merge
-    // questions into that discussion, so treat the unique conflict as a user
-    // error instead.
+    // Create new discussion, minting an admin token so the person duplicating
+    // lands as its moderator (same creator-is-moderator rule as POST
+    // /api/discussions). The row is always brand new here — a topic conflict is
+    // rejected below — so this never overwrites an existing moderator.
+    // Duplicating into an existing topic would merge questions into that
+    // discussion, so treat the unique conflict as a user error instead.
+    const newAdminToken = crypto.randomBytes(16).toString('hex');
     const newDiscussionResult = await client.query(
-      `INSERT INTO discussions (topic)
-       VALUES ($1)
+      `INSERT INTO discussions (topic, admin_token)
+       VALUES ($1, $2)
        ON CONFLICT (topic) DO NOTHING
        RETURNING id`,
-      [newTopic]
+      [newTopic, newAdminToken]
     );
 
     if (newDiscussionResult.rows.length === 0) {
@@ -1590,7 +1907,7 @@ app.post('/api/duplicate-discussion', async (req, res) => {
 
     await client.query('COMMIT');
 
-    res.json({ success: true, newTopic });
+    res.json({ success: true, newTopic, adminToken: newAdminToken });
   } catch (error) {
     await client.query('ROLLBACK');
     console.error('Error duplicating discussion:', error);
@@ -1625,7 +1942,7 @@ const PORT = process.env.PORT || 3001;
 initSchema()
   .then(() => migrateModerationAndDedup())
   .then(() => migrateUniqueDiscussionTopics())
-  .then(() => Promise.all([migrateAddPseudonymColumn(), migrateResponseVotesTable()]))
+  .then(() => Promise.all([migrateAddPseudonymColumn(), migrateResponseVotesTable(), migrateModeratorsTable()]))
   .then(() => {
     server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
   })
