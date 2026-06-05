@@ -1174,10 +1174,22 @@ io.on('connection', (socket) => {
         socket.emit('error', { message: 'Not authorized to moderate this discussion.' });
         return;
       }
+      // Scope deletes to written-response question types only. The feature
+      // exists to remove spammy free text (Open Ended responses, Brainstorm
+      // ideas), and the UI only surfaces the "Remove" control for those. Poll
+      // and scale votes (Agreement, Numerical) are aggregate data, not
+      // spammable free text — deleting one would silently distort the results,
+      // so we forbid it server-side even though every vote id is broadcast in
+      // getQuestions and a moderator could otherwise target a poll vote id
+      // directly from the console.
       await pool.query(
         `DELETE FROM votes
          WHERE id = $1
-           AND question_id IN (SELECT id FROM questions WHERE discussion_id = $2)`,
+           AND question_id IN (
+             SELECT id FROM questions
+             WHERE discussion_id = $2
+               AND type IN ('Open Ended', 'Brainstorm')
+           )`,
         [voteId, discussionId]
       );
       io.to(discussionSlug).emit('questions', await getQuestions(discussionSlug));

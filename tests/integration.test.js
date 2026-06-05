@@ -889,6 +889,42 @@ test("a moderator can delete any participant's comment (spam control)", async ()
   }
 });
 
+test('a moderator cannot delete a poll vote via moderatorDeleteVote (aggregate data)', async () => {
+  const topic = uniqueTopic('mod-delete-poll-deny');
+  const mod = await connectSocket();
+  const participant = await connectSocket();
+
+  try {
+    mod.emit('joinDiscussion', topic);
+    participant.emit('joinDiscussion', topic);
+    const token = await claimModerator(mod, topic);
+
+    // Agreement polls are aggregate data, not spammable free text. The
+    // moderator-delete feature is scoped to written responses, so the backend
+    // must refuse to remove a poll vote even with a valid token.
+    const questionAdded = waitForQuestions(mod, (qs) => qs.length === 1, 'poll added');
+    mod.emit('addQuestion', topic, { text: 'Agree?', type: 'Agreement', minValue: null, maxValue: null, options: [] });
+    const question = (await questionAdded)[0];
+
+    const voteUpdate = waitForQuestions(mod, (qs) => qs[0] && qs[0].votes.length === 1, 'poll vote recorded');
+    participant.emit('vote', topic, question.id, 'Agree', 'poll-voter', 'Voter');
+    const voteId = (await voteUpdate)[0].votes[0].id;
+
+    // The moderator targets the poll vote id directly, as if from the console.
+    // The handler always re-broadcasts questions after running, so waiting for
+    // that broadcast guarantees the (no-op) delete query has completed before
+    // we assert. The poll vote must still be there.
+    const afterDelete = waitForQuestions(mod, (qs) => qs[0] && qs[0].id === question.id, 'state after delete');
+    mod.emit('moderatorDeleteVote', topic, voteId, token);
+    const votes = (await afterDelete)[0].votes;
+    assert.equal(votes.length, 1);
+    assert.equal(votes[0].id, voteId);
+  } finally {
+    mod.disconnect();
+    participant.disconnect();
+  }
+});
+
 test('Brainstorm ratings, reactions, and comments are rejected once the discussion is locked', async () => {
   const topic = uniqueTopic('brainstorm-locked');
   const mod = await connectSocket();
