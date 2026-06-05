@@ -38,8 +38,10 @@ const AGREEMENT_SCALE = [
     { key: VoteOptions.STRONGLY_AGREE, label: 'Strongly Agree', bar: 'bg-green-600', dot: 'bg-green-600' },
 ];
 
-const SOCKET_URL = process.env.REACT_APP_SOCKET_URL || 'https://convora-e40a9ae358dc.herokuapp.com/';
-console.log('Environment SOCKET_URL:', SOCKET_URL);
+// In production the client is served by the same server it talks to, so we
+// default to a same-origin connection. Set REACT_APP_SOCKET_URL only when the
+// client runs on a different origin than the API (e.g. `vite` dev server).
+const SOCKET_URL = process.env.REACT_APP_SOCKET_URL || undefined;
 
 const socket = io(SOCKET_URL);
 
@@ -61,6 +63,8 @@ const DiscussionPage = () => {
     const [showDuplicateModal, setShowDuplicateModal] = useState(false);
 
     useEffect(() => {
+        // getIdentity() persists a stable userId (so vote de-duplication survives
+        // reloads) together with a friendly pseudonym, both in localStorage.
         const identity = getIdentity();
         setUserId(identity.userId);
         setPseudonym(identity.pseudonym);
@@ -78,9 +82,7 @@ const DiscussionPage = () => {
         }
 
         try {
-            // Remove any trailing slash from SOCKET_URL and ensure a single leading slash
-            const baseUrl = SOCKET_URL.replace(/\/$/, '').replace(/^\/+/, '/');
-            const response = await fetch(`${baseUrl}/api/duplicate-discussion`, {
+            const response = await fetch('/api/duplicate-discussion', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',

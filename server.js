@@ -228,42 +228,13 @@ async function addQuestion(topic, question) {
   }
 }
 
-// might get rid of this
-async function migrateOptionsToJson() {
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-
-    const result = await client.query('SELECT id, options FROM questions WHERE options IS NOT NULL');
-
-    for (const row of result.rows) {
-      const parsedOptions = parseOptions(row.options);
-      await client.query('UPDATE questions SET options = $1 WHERE id = $2', [JSON.stringify(parsedOptions), row.id]);
-    }
-
-    await client.query('COMMIT');
-    console.log('Migration completed successfully');
-  } catch (e) {
-    await client.query('ROLLBACK');
-    console.error('Error during migration:', e);
-  } finally {
-    client.release();
-  }
-}
-migrateOptionsToJson().catch(console.error);
-// might get rid of above
-
 // Add the pseudonym column to votes if it doesn't already exist. Idempotent so
-// it's safe to run on every boot.
+// it's safe to run on every boot. Must complete before the server starts
+// serving questions, since getQuestions() selects v.pseudonym.
 async function migrateAddPseudonymColumn() {
-  try {
-    await pool.query('ALTER TABLE votes ADD COLUMN IF NOT EXISTS pseudonym TEXT');
-    console.log('Pseudonym column migration completed');
-  } catch (e) {
-    console.error('Error adding pseudonym column:', e);
-  }
+  await pool.query('ALTER TABLE votes ADD COLUMN IF NOT EXISTS pseudonym TEXT');
+  console.log('Pseudonym column migration completed');
 }
-migrateAddPseudonymColumn().catch(console.error);
 
 async function addVote(questionId, vote, userId, pseudonym) {
   console.log('Adding vote:', questionId, vote, userId, pseudonym);
@@ -330,8 +301,7 @@ app.get('/api/discussions', async (req, res) => {
   }
 });
 
-// for some reason I'm getting duplicate forward slashes, so just throwing this hack in to fix it
-app.post(['/api/duplicate-discussion', '//api/duplicate-discussion'], async (req, res) => {
+app.post('/api/duplicate-discussion', async (req, res) => {
   const { originalTopic, newTopic } = req.body;
   console.log(`Attempting to duplicate discussion. Original: ${originalTopic}, New: ${newTopic}`);
 
@@ -390,4 +360,14 @@ app.get('*', (req, res) => {
 });
 
 const PORT = process.env.PORT || 3001;
-server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+
+// Run required migrations before accepting connections so that no client can
+// query a column that doesn't exist yet (e.g. votes.pseudonym).
+migrateAddPseudonymColumn()
+  .then(() => {
+    server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+  })
+  .catch((err) => {
+    console.error('Failed to run migrations, exiting:', err);
+    process.exit(1);
+  });
