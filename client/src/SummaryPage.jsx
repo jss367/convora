@@ -44,12 +44,42 @@ const SummaryPage = () => {
     const encodedTopic = encodeURIComponent(discussionSlug);
 
     useEffect(() => {
-        if (topic !== discussionSlug) {
-            navigate(`/discussion/${discussionSlug}/summary`, { replace: true });
-        }
+        if (topic === discussionSlug) return undefined;
+
+        let cancelled = false;
+        const search = typeof window !== 'undefined' ? window.location.search : '';
+        const fallback = `/discussion/${discussionSlug}/summary${search}`;
+
+        const resolveRoute = async () => {
+            try {
+                const response = await fetch(`/api/discussions/resolve/${encodeURIComponent(topic)}`);
+                if (response.ok) {
+                    const data = await response.json();
+                    if (!cancelled && data?.slug) {
+                        navigate(`/discussion/${data.slug}/summary${search}`, { replace: true });
+                        return;
+                    }
+                }
+            } catch (error) {
+                console.warn('Failed to resolve summary route:', error);
+            }
+
+            if (!cancelled) {
+                navigate(fallback, { replace: true });
+            }
+        };
+
+        resolveRoute();
+        return () => {
+            cancelled = true;
+        };
     }, [topic, discussionSlug, navigate]);
 
     const loadSummary = useCallback(async ({ llm = false } = {}) => {
+        if (topic !== discussionSlug) {
+            return;
+        }
+
         if (llm) {
             setSynthesisLoading(true);
         } else {
@@ -72,7 +102,7 @@ const SummaryPage = () => {
             setLoading(false);
             setSynthesisLoading(false);
         }
-    }, [encodedTopic]);
+    }, [encodedTopic, topic, discussionSlug]);
 
     useEffect(() => {
         loadSummary();
