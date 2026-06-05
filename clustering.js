@@ -25,6 +25,12 @@ const MIN_PARTICIPANTS = 4;
 const MIN_STATEMENTS = 2;
 const MAX_CLUSTERS = 5;
 
+// Smallest group we'll surface. A one-person cluster's per-statement stats
+// would expose that individual's exact votes, undoing the anonymity that
+// getQuestions() otherwise provides, so k-splits producing singletons are
+// rejected (we fall back to a coarser k, ultimately a single consensus group).
+const MIN_GROUP_SIZE = 2;
+
 // A group counts as leaning (rather than neutral) only once its mean agreement
 // passes this magnitude. Matches the UI's "Agrees/Disagrees" vs "Mixed/unsure"
 // boundary, so a statement is never called common ground while a group is shown
@@ -261,11 +267,15 @@ function buildClusterReport(statements, participants, matrix, voted, assignments
         unsure: inStats.unsure,
         noVote: inStats.noVote,
         voters: inStats.voters,
+        restVoters: restStats.voters,
         divergence: Math.abs(inStats.mean - restStats.mean),
       };
     });
+    // A statement only defines a group when both that group and the rest of the
+    // room have actually voted on it — otherwise divergence just reflects who
+    // happened to weigh in (the rest's no-votes read as a neutral 0 mean).
     const definingStatements = perStatement
-      .filter(st => st.voters > 0)
+      .filter(st => st.voters > 0 && st.restVoters > 0)
       .sort((a, b) => b.divergence - a.divergence)
       .slice(0, 5);
     return {
@@ -365,8 +375,12 @@ function analyzeClusters(questions) {
   let best = null;
   for (let k = 2; k <= maxK; k += 1) {
     const { assignments } = kmeans(matrix, k, rng);
-    if (new Set(assignments).size < k) {
-      continue; // collapsed into fewer real groups; skip
+    const sizes = new Array(k).fill(0);
+    assignments.forEach(a => { sizes[a] += 1; });
+    // Skip splits that collapsed (an empty cluster) or produced a singleton —
+    // both would either misreport k or expose an individual's votes.
+    if (sizes.some(sz => sz < MIN_GROUP_SIZE)) {
+      continue;
     }
     const score = silhouette(matrix, assignments, k);
     if (!best || score > best.score) {
