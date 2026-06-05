@@ -280,8 +280,9 @@ function buildFacilitatorDashboard(questionSummaries, participantStats) {
     });
   } else {
     const topContributor = participants[0];
+    const nextContributor = participants[1];
     const topShare = totalResponses > 0 ? topContributor.responseCount / totalResponses : 0;
-    if (topShare >= 0.5) {
+    if (topShare > 0.5 && topContributor.responseCount > nextContributor.responseCount) {
       participationGaps.push({
         type: 'Dominant contributor',
         severity: topShare >= 0.7 ? 'high' : 'medium',
