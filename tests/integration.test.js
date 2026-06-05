@@ -910,6 +910,69 @@ test('Brainstorm authors cannot rate or react to their own idea', async () => {
   }
 });
 
+test('Brainstorm reactions can be narrowed to a creator-chosen set', async () => {
+  const topic = uniqueTopic('brainstorm-reactset');
+  const mod = await connectSocket();
+
+  try {
+    mod.emit('joinDiscussion', topic);
+    // A fresh discussion broadcasts the full default reaction catalog.
+    const initial = await waitForEvent(mod, 'discussionState', (s) => Array.isArray(s.reactionKeys));
+    assert.deepEqual(initial.reactionKeys, ['changed-mind', 'crux', 'follows', 'citation-needed', 'key-insight']);
+
+    const token = await claimModerator(mod, topic);
+    const question = await addBrainstormQuestion(mod, topic, 'Narrow the reactions');
+
+    const ideaUpdate = waitForQuestions(mod, (qs) => qs[0] && qs[0].votes.length === 1, 'idea added');
+    mod.emit('vote', topic, question.id, 'An idea', 'user-idea', 'Ideator');
+    const responseId = (await ideaUpdate)[0].votes[0].id;
+
+    // The creator narrows the active set (and passes a bogus key, which is dropped
+    // and the rest re-ordered to catalog order).
+    const narrowed = waitForEvent(
+      mod, 'discussionState', (s) => Array.isArray(s.reactionKeys) && s.reactionKeys.length === 1);
+    mod.emit('setReactionKeys', topic, ['bogus', 'crux'], token);
+    assert.deepEqual((await narrowed).reactionKeys, ['crux']);
+
+    const enabledUpdate = waitForQuestions(mod, (qs) => qs[0] && qs[0].reactionsEnabled === true, 'reactions enabled');
+    mod.emit('setQuestionFlags', topic, question.id, { reactions_enabled: true }, token);
+    await enabledUpdate;
+
+    // A reaction outside the active set is rejected; one inside is accepted.
+    const reactUpdate = waitForQuestions(
+      mod, (qs) => qs[0] && qs[0].votes[0] && (qs[0].votes[0].reactionCounts || {}).crux === 1, 'crux counted');
+    mod.emit('toggleResponseReaction', topic, responseId, 'key-insight', 'user-react');
+    mod.emit('toggleResponseReaction', topic, responseId, 'crux', 'user-react');
+    const counts = (await reactUpdate)[0].votes[0].reactionCounts;
+    assert.equal(counts.crux, 1);
+    assert.equal(counts['key-insight'], undefined, 'reaction outside the active set must be rejected');
+  } finally {
+    mod.disconnect();
+  }
+});
+
+test('Only a moderator can change the brainstorm reaction set', async () => {
+  const topic = uniqueTopic('brainstorm-reactset-auth');
+  const mod = await connectSocket();
+
+  try {
+    mod.emit('joinDiscussion', topic);
+    await claimModerator(mod, topic);
+
+    // A non-moderator attempt is rejected and leaves the set at its defaults.
+    const errored = waitForEvent(mod, 'error', (e) => /Not authorized/.test(e.message));
+    mod.emit('setReactionKeys', topic, ['crux'], 'bogus-token');
+    await errored;
+
+    // Re-joining re-broadcasts discussionState, confirming the set is untouched.
+    const state = waitForEvent(mod, 'discussionState', (s) => Array.isArray(s.reactionKeys));
+    mod.emit('joinDiscussion', topic);
+    assert.deepEqual((await state).reactionKeys, ['changed-mind', 'crux', 'follows', 'citation-needed', 'key-insight']);
+  } finally {
+    mod.disconnect();
+  }
+});
+
 test('Brainstorm comment pseudonyms are sanitized before storage', async () => {
   const topic = uniqueTopic('brainstorm-sanitize');
   const mod = await connectSocket();
@@ -963,20 +1026,28 @@ test('Duplicating a discussion preserves brainstorm interaction flags', async ()
       { reactions_enabled: true, reactions_visible: false, comments_enabled: true }, token);
     await flaggedUpdate;
 
+    // Also narrow the session-level reaction set to a non-default subset.
+    const narrowed = waitForEvent(
+      mod, 'discussionState', (s) => Array.isArray(s.reactionKeys) && s.reactionKeys.length === 2);
+    mod.emit('setReactionKeys', topic, ['crux', 'follows'], token);
+    await narrowed;
+
     const newTopic = uniqueTopic('brainstorm-dup-copy');
     const dup = await jsonRequest('POST', '/api/duplicate-discussion', { originalTopic: topic, newTopic });
     assert.equal(dup.status, 200);
 
-    // The duplicate must keep the same flags, not reset to defaults.
+    // The duplicate must keep the same flags and reaction set, not reset to defaults.
     const copy = await connectSocket();
     try {
       const copyQuestions = waitForQuestions(
         copy, (qs) => qs.length === 1 && qs[0].type === 'Brainstorm', 'copy questions');
+      const copyState = waitForEvent(copy, 'discussionState', (s) => Array.isArray(s.reactionKeys));
       copy.emit('joinDiscussion', dup.body.newTopic);
       const q = (await copyQuestions)[0];
       assert.equal(q.reactionsEnabled, true);
       assert.equal(q.reactionsVisible, false);
       assert.equal(q.commentsEnabled, true);
+      assert.deepEqual((await copyState).reactionKeys, ['crux', 'follows']);
     } finally {
       copy.disconnect();
     }
