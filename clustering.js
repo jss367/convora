@@ -272,22 +272,34 @@ function buildClusterReport(statements, participants, matrix, voted, assignments
 
   // Statement-level view across groups, for bridging vs. divisive lists.
   const perStatement = statements.map((s, j) => {
-    const clusterMeans = members.map(memberIdxs => statementStats(memberIdxs, j, matrix, voted).mean);
+    const clusterStats = members.map(memberIdxs => statementStats(memberIdxs, j, matrix, voted));
+    const clusterMeans = clusterStats.map(cs => cs.mean);
+    const clusterVoters = clusterStats.map(cs => cs.voters);
     const overall = statementStats(allIdx, j, matrix, voted);
-    const opinions = clusterMeans.filter(m => Math.abs(m) > 0.1);
+
+    // A cluster with no votes also has mean 0, which is indistinguishable from
+    // a neutral "Unsure". So all cross-group metrics consider only the groups
+    // that actually voted: common ground requires every group to have weighed
+    // in, and spread/magnitude are measured over voting groups only.
+    const everyGroupVoted = clusterStats.every(cs => cs.voters > 0);
+    const votedMeans = clusterMeans.filter((m, i) => clusterVoters[i] > 0);
+    const opinions = votedMeans.filter(m => Math.abs(m) > 0.1);
     const signs = new Set(opinions.map(m => Math.sign(m)));
+
     return {
       id: s.id,
       text: s.text,
       clusterMeans,
+      clusterVoters,
       overallMean: overall.mean,
       voters: overall.voters,
       agree: overall.agree,
       disagree: overall.disagree,
-      // Every group that has an opinion leans the same way.
-      allGroupsAgree: opinions.length > 0 && signs.size === 1,
-      minMagnitude: Math.min(...clusterMeans.map(m => Math.abs(m))),
-      spread: Math.max(...clusterMeans) - Math.min(...clusterMeans),
+      // Common ground: every group voted, and every group with a clear opinion
+      // leans the same way.
+      allGroupsAgree: everyGroupVoted && opinions.length > 0 && signs.size === 1,
+      minMagnitude: votedMeans.length > 0 ? Math.min(...votedMeans.map(m => Math.abs(m))) : 0,
+      spread: votedMeans.length >= 2 ? Math.max(...votedMeans) - Math.min(...votedMeans) : 0,
       direction: overall.mean > 0 ? 'agree' : overall.mean < 0 ? 'disagree' : 'split',
     };
   });

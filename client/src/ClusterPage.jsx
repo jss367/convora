@@ -102,14 +102,17 @@ const StatementList = ({ title, subtitle, items, clusters, emptyText }) => (
                         <div className="text-gray-900 font-medium">{st.text}</div>
                         <div className="flex flex-wrap gap-2 mt-2">
                             {st.clusterMeans.map((mean, idx) => {
+                                const didVote = !st.clusterVoters || st.clusterVoters[idx] > 0;
                                 const lean = leaning(mean);
+                                const label = didVote ? lean.label : "Didn't vote";
+                                const dot = didVote ? lean.dot : 'bg-gray-200';
                                 return (
                                     <span
                                         key={idx}
                                         className="inline-flex items-center text-xs px-2 py-1 rounded-full bg-gray-50 border border-gray-200 text-gray-700"
                                     >
-                                        <span className={`inline-block w-2 h-2 rounded-full mr-1.5 ${lean.dot}`} />
-                                        {clusters[idx] ? clusters[idx].label : `Group ${idx + 1}`}: {lean.label}
+                                        <span className={`inline-block w-2 h-2 rounded-full mr-1.5 ${dot}`} />
+                                        {clusters[idx] ? clusters[idx].label : `Group ${idx + 1}`}: {label}
                                     </span>
                                 );
                             })}
