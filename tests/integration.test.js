@@ -792,6 +792,362 @@ test('checkModerator rejects a revoked token so offline demotions clear stale UI
   }
 });
 
+test('Brainstorm ratings broadcast as aggregates without exposing who voted', async () => {
+  const topic = uniqueTopic('brainstorm-rate');
+  const mod = await connectSocket();
+  const participant = await connectSocket();
+
+  try {
+    mod.emit('joinDiscussion', topic);
+    participant.emit('joinDiscussion', topic);
+
+    const token = await claimModerator(mod, topic);
+
+    const question = await addBrainstormQuestion(mod, topic, 'How should we cut costs?');
+
+    const ideaUpdate = waitForQuestions(
+      mod,
+      (questions) => questions[0] && questions[0].votes.length === 1,
+      'brainstorm idea added'
+    );
+    participant.emit('vote', topic, question.id, 'Switch to solar', 'user-idea', 'Sunny');
+    const responseId = (await ideaUpdate)[0].votes[0].id;
+
+    // Reactions are off by default, so a rating should be ignored until enabled.
+    const enabledUpdate = waitForQuestions(
+      mod,
+      (questions) => questions[0] && questions[0].reactionsEnabled === true,
+      'reactions enabled'
+    );
+    mod.emit('setResponseRating', topic, responseId, 'quality', 1, 'user-early');
+    mod.emit('setQuestionFlags', topic, question.id, { reactions_enabled: true }, token);
+    const afterEnable = (await enabledUpdate)[0].votes[0];
+    assert.equal(afterEnable.qualityUp, 0, 'rating before enabling reactions must be rejected');
+
+    // Now ratings are accepted and surface as aggregate tallies.
+    const ratingUpdate = waitForQuestions(
+      mod,
+      (questions) => questions[0] && questions[0].votes[0] && questions[0].votes[0].qualityUp === 1,
+      'quality rating broadcast'
+    );
+    participant.emit('setResponseRating', topic, responseId, 'quality', 1, 'user-rater');
+    const rated = (await ratingUpdate)[0].votes[0];
+
+    assert.equal(rated.qualityUp, 1);
+    assert.equal(rated.qualityDown, 0);
+    // The payload exposes counts only — never a list of who rated or reacted.
+    assert.equal(rated.raters, undefined);
+    assert.equal(rated.reactors, undefined);
+    assert.deepEqual(rated.reactionCounts, {});
+  } finally {
+    mod.disconnect();
+    participant.disconnect();
+  }
+});
+
+test('Brainstorm agreement votes accumulate into a distribution', async () => {
+  const topic = uniqueTopic('brainstorm-agree');
+  const mod = await connectSocket();
+
+  try {
+    mod.emit('joinDiscussion', topic);
+    const token = await claimModerator(mod, topic);
+    const question = await addBrainstormQuestion(mod, topic, 'Pick a direction');
+
+    const ideaUpdate = waitForQuestions(mod, (qs) => qs[0] && qs[0].votes.length === 1, 'idea added');
+    mod.emit('vote', topic, question.id, 'Build the thing', 'user-idea', 'Maker');
+    const responseId = (await ideaUpdate)[0].votes[0].id;
+
+    const enabledUpdate = waitForQuestions(mod, (qs) => qs[0] && qs[0].reactionsEnabled === true, 'reactions enabled');
+    mod.emit('setQuestionFlags', topic, question.id, { reactions_enabled: true }, token);
+    await enabledUpdate;
+
+    const agreeUpdate = waitForQuestions(
+      mod,
+      (qs) => qs[0] && qs[0].votes[0] && (qs[0].votes[0].agreementCounts || {})['Strongly Agree'] === 1,
+      'agreement counted'
+    );
+    mod.emit('setResponseRating', topic, responseId, 'agreement', 'Strongly Agree', 'user-a');
+    mod.emit('setResponseRating', topic, responseId, 'agreement', 'Disagree', 'user-b');
+    const counts = (await agreeUpdate)[0].votes[0].agreementCounts;
+
+    assert.equal(counts['Strongly Agree'], 1);
+    assert.equal(counts['Disagree'], 1);
+  } finally {
+    mod.disconnect();
+  }
+});
+
+test('Brainstorm comments can be added, listed with pseudonyms, and deleted', async () => {
+  const topic = uniqueTopic('brainstorm-comment');
+  const mod = await connectSocket();
+  const participant = await connectSocket();
+
+  try {
+    mod.emit('joinDiscussion', topic);
+    participant.emit('joinDiscussion', topic);
+    const token = await claimModerator(mod, topic);
+    const question = await addBrainstormQuestion(mod, topic, 'What should we try?');
+
+    const ideaUpdate = waitForQuestions(mod, (qs) => qs[0] && qs[0].votes.length === 1, 'idea added');
+    participant.emit('vote', topic, question.id, 'Run a pilot', 'user-idea', 'Planner');
+    const responseId = (await ideaUpdate)[0].votes[0].id;
+
+    // Comments are rejected until enabled.
+    const enabledUpdate = waitForQuestions(mod, (qs) => qs[0] && qs[0].commentsEnabled === true, 'comments enabled');
+    const rejected = await new Promise((resolve) =>
+      participant.emit('addResponseComment', topic, responseId, 'too early', 'user-c', 'Critic', resolve));
+    assert.equal(rejected.added, false, 'comment before enabling must be rejected');
+    mod.emit('setQuestionFlags', topic, question.id, { comments_enabled: true }, token);
+    await enabledUpdate;
+
+    const commentUpdate = waitForQuestions(
+      mod,
+      (qs) => qs[0] && qs[0].votes[0] && (qs[0].votes[0].comments || []).length === 1,
+      'comment added'
+    );
+    const ack = await new Promise((resolve) =>
+      participant.emit('addResponseComment', topic, responseId, 'Scope it to one team', 'user-c', 'Critic', resolve));
+    assert.equal(ack.added, true);
+    const comment = (await commentUpdate)[0].votes[0].comments[0];
+    assert.equal(comment.body, 'Scope it to one team');
+    assert.equal(comment.pseudonym, 'Critic');
+
+    const deleteUpdate = waitForQuestions(
+      mod,
+      (qs) => qs[0] && qs[0].votes[0] && (qs[0].votes[0].comments || []).length === 0,
+      'comment deleted'
+    );
+    participant.emit('deleteResponseComment', topic, comment.id, 'user-c');
+    const afterDelete = (await deleteUpdate)[0].votes[0].comments;
+    assert.deepEqual(afterDelete, []);
+  } finally {
+    mod.disconnect();
+    participant.disconnect();
+  }
+});
+
+test('Brainstorm ratings, reactions, and comments are rejected once the discussion is locked', async () => {
+  const topic = uniqueTopic('brainstorm-locked');
+  const mod = await connectSocket();
+  const participant = await connectSocket();
+
+  try {
+    mod.emit('joinDiscussion', topic);
+    participant.emit('joinDiscussion', topic);
+    const token = await claimModerator(mod, topic);
+    const question = await addBrainstormQuestion(mod, topic, 'Locked-phase ideas');
+
+    const ideaUpdate = waitForQuestions(mod, (qs) => qs[0] && qs[0].votes.length === 1, 'idea added');
+    participant.emit('vote', topic, question.id, 'An idea', 'user-idea', 'Thinker');
+    const responseId = (await ideaUpdate)[0].votes[0].id;
+
+    // Reactions and comments are enabled...
+    const enabledUpdate = waitForQuestions(
+      mod,
+      (qs) => qs[0] && qs[0].reactionsEnabled === true && qs[0].commentsEnabled === true,
+      'reactions + comments enabled'
+    );
+    mod.emit('setQuestionFlags', topic, question.id, { reactions_enabled: true, comments_enabled: true }, token);
+    await enabledUpdate;
+
+    // ...then the discussion is locked, which should close all of them.
+    const lockedState = waitForEvent(mod, 'discussionState', (s) => s.locked === true);
+    mod.emit('setLocked', topic, true, token);
+    await lockedState;
+
+    const commentAck = await emitWithAck(
+      participant, 'addResponseComment', topic, responseId, 'sneaking in', 'user-c', 'Critic');
+    assert.equal(commentAck.added, false, 'comment must be rejected while locked');
+
+    participant.emit('setResponseRating', topic, responseId, 'quality', 1, 'user-r');
+    participant.emit('toggleResponseReaction', topic, responseId, 'crux', 'user-r');
+
+    // Neither the rating nor the reaction should have been recorded for the user.
+    const mine = await emitWithAck(participant, 'getBrainstormState', topic, 'user-r');
+    assert.deepEqual(mine.ratings, {}, 'rating must be rejected while locked');
+    assert.deepEqual(mine.reactions, {}, 'reaction must be rejected while locked');
+  } finally {
+    mod.disconnect();
+    participant.disconnect();
+  }
+});
+
+test('Renaming updates stored comment pseudonyms, and comment tokens are namespaced', async () => {
+  const topic = uniqueTopic('brainstorm-rename');
+  const mod = await connectSocket();
+  const participant = await connectSocket();
+
+  try {
+    mod.emit('joinDiscussion', topic);
+    participant.emit('joinDiscussion', topic);
+    const token = await claimModerator(mod, topic);
+    const question = await addBrainstormQuestion(mod, topic, 'Rename test');
+
+    const ideaUpdate = waitForQuestions(mod, (qs) => qs[0] && qs[0].votes.length === 1, 'idea added');
+    participant.emit('vote', topic, question.id, 'An idea', 'user-idea', 'Ideator');
+    const responseId = (await ideaUpdate)[0].votes[0].id;
+
+    const enabledUpdate = waitForQuestions(mod, (qs) => qs[0] && qs[0].commentsEnabled === true, 'comments enabled');
+    mod.emit('setQuestionFlags', topic, question.id, { comments_enabled: true }, token);
+    await enabledUpdate;
+
+    const commentUpdate = waitForQuestions(
+      mod, (qs) => qs[0] && qs[0].votes[0] && (qs[0].votes[0].comments || []).length === 1, 'comment added');
+    await emitWithAck(participant, 'addResponseComment', topic, responseId, 'My take', 'user-c', 'Critic');
+    const comment = (await commentUpdate)[0].votes[0].comments[0];
+    assert.equal(comment.pseudonym, 'Critic');
+
+    // The comment token is namespaced (`comment:<id>`) so it can never equal a
+    // vote token of the same numeric id and de-anonymize the author.
+    const namespaced = crypto.createHash('sha256').update(`comment:${comment.id}:user-c`).digest('hex');
+    const collidingVoteToken = crypto.createHash('sha256').update(`${comment.id}:user-c`).digest('hex');
+    assert.equal(comment.ownerToken, namespaced);
+    assert.notEqual(comment.ownerToken, collidingVoteToken);
+
+    // Renaming the author updates the persisted comment pseudonym too.
+    const renamed = waitForQuestions(
+      mod,
+      (qs) => qs[0] && qs[0].votes[0] && (qs[0].votes[0].comments || [])[0] &&
+        qs[0].votes[0].comments[0].pseudonym === 'Reformed Critic',
+      'comment renamed'
+    );
+    participant.emit('updateDisplayName', topic, 'user-c', 'Reformed Critic');
+    await renamed;
+  } finally {
+    mod.disconnect();
+    participant.disconnect();
+  }
+});
+
+test('Brainstorm authors cannot rate or react to their own idea', async () => {
+  const topic = uniqueTopic('brainstorm-self');
+  const mod = await connectSocket();
+
+  try {
+    mod.emit('joinDiscussion', topic);
+    const token = await claimModerator(mod, topic);
+    const question = await addBrainstormQuestion(mod, topic, 'No self-rating');
+
+    const ideaUpdate = waitForQuestions(mod, (qs) => qs[0] && qs[0].votes.length === 1, 'idea added');
+    mod.emit('vote', topic, question.id, 'My own idea', 'user-self', 'Author');
+    const responseId = (await ideaUpdate)[0].votes[0].id;
+
+    const enabledUpdate = waitForQuestions(mod, (qs) => qs[0] && qs[0].reactionsEnabled === true, 'reactions enabled');
+    mod.emit('setQuestionFlags', topic, question.id, { reactions_enabled: true }, token);
+    await enabledUpdate;
+
+    // The author tries to rate and react to their own idea.
+    mod.emit('setResponseRating', topic, responseId, 'quality', 1, 'user-self');
+    mod.emit('toggleResponseReaction', topic, responseId, 'key-insight', 'user-self');
+
+    const mine = await emitWithAck(mod, 'getBrainstormState', topic, 'user-self');
+    assert.deepEqual(mine.ratings, {}, 'self-rating must be rejected');
+    assert.deepEqual(mine.reactions, {}, 'self-reaction must be rejected');
+  } finally {
+    mod.disconnect();
+  }
+});
+
+test('Brainstorm comment pseudonyms are sanitized before storage', async () => {
+  const topic = uniqueTopic('brainstorm-sanitize');
+  const mod = await connectSocket();
+  const participant = await connectSocket();
+
+  try {
+    mod.emit('joinDiscussion', topic);
+    participant.emit('joinDiscussion', topic);
+    const token = await claimModerator(mod, topic);
+    const question = await addBrainstormQuestion(mod, topic, 'Sanitize names');
+
+    const ideaUpdate = waitForQuestions(mod, (qs) => qs[0] && qs[0].votes.length === 1, 'idea added');
+    participant.emit('vote', topic, question.id, 'An idea', 'user-idea', 'Ideator');
+    const responseId = (await ideaUpdate)[0].votes[0].id;
+
+    const enabledUpdate = waitForQuestions(mod, (qs) => qs[0] && qs[0].commentsEnabled === true, 'comments enabled');
+    mod.emit('setQuestionFlags', topic, question.id, { comments_enabled: true }, token);
+    await enabledUpdate;
+
+    const oversized = 'x'.repeat(120);
+    const commentUpdate = waitForQuestions(
+      mod, (qs) => qs[0] && qs[0].votes[0] && (qs[0].votes[0].comments || []).length === 1, 'comment added');
+    await emitWithAck(participant, 'addResponseComment', topic, responseId, 'A point', 'user-c', `  ${oversized}  `);
+    const comment = (await commentUpdate)[0].votes[0].comments[0];
+
+    // Trimmed and capped to the same 40-char limit votes use.
+    assert.equal(comment.pseudonym, oversized.slice(0, 40));
+    assert.equal(comment.pseudonym.length, 40);
+  } finally {
+    mod.disconnect();
+    participant.disconnect();
+  }
+});
+
+test('Duplicating a discussion preserves brainstorm interaction flags', async () => {
+  const topic = uniqueTopic('brainstorm-dup');
+  const mod = await connectSocket();
+
+  try {
+    mod.emit('joinDiscussion', topic);
+    const token = await claimModerator(mod, topic);
+    const question = await addBrainstormQuestion(mod, topic, 'Carry flags');
+
+    // Enable reactions but hide them, and enable comments — all non-default.
+    const flaggedUpdate = waitForQuestions(
+      mod,
+      (qs) => qs[0] && qs[0].reactionsEnabled === true && qs[0].reactionsVisible === false && qs[0].commentsEnabled === true,
+      'flags set'
+    );
+    mod.emit('setQuestionFlags', topic, question.id,
+      { reactions_enabled: true, reactions_visible: false, comments_enabled: true }, token);
+    await flaggedUpdate;
+
+    const newTopic = uniqueTopic('brainstorm-dup-copy');
+    const dup = await jsonRequest('POST', '/api/duplicate-discussion', { originalTopic: topic, newTopic });
+    assert.equal(dup.status, 200);
+
+    // The duplicate must keep the same flags, not reset to defaults.
+    const copy = await connectSocket();
+    try {
+      const copyQuestions = waitForQuestions(
+        copy, (qs) => qs.length === 1 && qs[0].type === 'Brainstorm', 'copy questions');
+      copy.emit('joinDiscussion', dup.body.newTopic);
+      const q = (await copyQuestions)[0];
+      assert.equal(q.reactionsEnabled, true);
+      assert.equal(q.reactionsVisible, false);
+      assert.equal(q.commentsEnabled, true);
+    } finally {
+      copy.disconnect();
+    }
+  } finally {
+    mod.disconnect();
+  }
+});
+
+function claimModerator(socket, topic) {
+  return withTimeout(
+    new Promise((resolve, reject) => {
+      socket.emit('claimModerator', topic, (resp) => {
+        if (resp && resp.success) resolve(resp.token);
+        else reject(new Error('Failed to claim moderator'));
+      });
+    }),
+    5000,
+    'Timed out claiming moderator'
+  );
+}
+
+async function addBrainstormQuestion(socket, topic, text) {
+  const update = waitForQuestions(
+    socket,
+    (questions) => questions.some((q) => q.text === text && q.type === 'Brainstorm'),
+    'brainstorm question added'
+  );
+  socket.emit('addQuestion', topic, { text, type: 'Brainstorm', minValue: null, maxValue: null, options: [] });
+  const questions = await update;
+  return questions.find((q) => q.text === text);
+}
+
 async function jsonRequest(method, urlPath, body) {
   const response = await fetch(`${baseUrl}${urlPath}`, {
     method,
