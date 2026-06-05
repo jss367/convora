@@ -11,6 +11,9 @@ const AGREEMENT_OPTIONS = [
     'Strongly Agree',
 ];
 
+// No-first so the green/red bar reads the same direction as the agreement bar.
+const YES_NO_OPTIONS = ['No', 'Yes'];
+
 function formatPercent(value) {
     if (!Number.isFinite(value)) {
         return '0%';
@@ -258,7 +261,7 @@ const FacilitatorDashboard = ({ dashboard }) => {
                     title="Most Divisive Statements"
                     emptyText="No divisive agreement statements yet."
                     items={dashboard.mostDivisiveStatements}
-                    renderMeta={item => `${item.agreeCount} agree / ${item.disagreeCount} disagree / ${item.unsureCount} unsure`}
+                    renderMeta={item => item.detail}
                     renderScore={item => `Split ${formatPercent(item.divisiveScore)}`}
                 />
                 <FacilitatorSignalList
@@ -394,7 +397,7 @@ const RankedAgreementList = ({ title, items, metricLabel, metricKey }) => (
     <section className="bg-white shadow rounded-lg p-6">
         <h2 className="text-2xl font-bold mb-4 text-gray-800">{title}</h2>
         {items.length === 0 ? (
-            <p className="text-sm text-gray-500">No agreement responses yet.</p>
+            <p className="text-sm text-gray-500">No opinion responses yet.</p>
         ) : (
             <ol className="space-y-4">
                 {items.map(item => (
@@ -410,7 +413,11 @@ const RankedAgreementList = ({ title, items, metricLabel, metricKey }) => (
                                 {metricLabel}: {formatPercent(item[metricKey])}
                             </span>
                         </div>
-                        <AgreementBar optionCounts={item.optionCounts} total={item.responseCount} />
+                        {item.type === 'Yes/No' ? (
+                            <YesNoBar optionCounts={item.optionCounts} total={item.responseCount} />
+                        ) : (
+                            <AgreementBar optionCounts={item.optionCounts} total={item.responseCount} />
+                        )}
                     </li>
                 ))}
             </ol>
@@ -421,6 +428,7 @@ const RankedAgreementList = ({ title, items, metricLabel, metricKey }) => (
 const AgreementItemShape = PropTypes.shape({
     id: PropTypes.oneOfType([PropTypes.string, PropTypes.number]).isRequired,
     text: PropTypes.string.isRequired,
+    type: PropTypes.string,
     responseCount: PropTypes.number.isRequired,
     leadingPosition: PropTypes.string,
     consensusScore: PropTypes.number,
@@ -476,6 +484,48 @@ const AgreementBar = ({ optionCounts, total }) => {
 };
 
 AgreementBar.propTypes = {
+    optionCounts: PropTypes.objectOf(PropTypes.number).isRequired,
+    total: PropTypes.number.isRequired,
+};
+
+const YesNoBar = ({ optionCounts, total }) => {
+    if (!total) {
+        return null;
+    }
+
+    const colors = {
+        No: 'bg-red-500',
+        Yes: 'bg-green-500',
+    };
+
+    return (
+        <div className="mt-3">
+            <div className="flex w-full h-3 rounded-full overflow-hidden bg-gray-200">
+                {YES_NO_OPTIONS.map(option => {
+                    const count = optionCounts[option] || 0;
+                    if (count === 0) {
+                        return null;
+                    }
+                    return (
+                        <div
+                            key={option}
+                            className={colors[option]}
+                            style={{ width: `${(count / total) * 100}%` }}
+                            title={`${option}: ${count}`}
+                        />
+                    );
+                })}
+            </div>
+            <div className="flex flex-wrap gap-x-3 gap-y-1 mt-2 text-xs text-gray-500">
+                {YES_NO_OPTIONS.map(option => (
+                    <span key={option}>{option}: {optionCounts[option] || 0}</span>
+                ))}
+            </div>
+        </div>
+    );
+};
+
+YesNoBar.propTypes = {
     optionCounts: PropTypes.objectOf(PropTypes.number).isRequired,
     total: PropTypes.number.isRequired,
 };
@@ -588,6 +638,10 @@ const QuestionSummary = ({ question }) => (
 
         {question.type === 'Agreement' && (
             <AgreementBar optionCounts={question.optionCounts} total={question.responseCount} />
+        )}
+
+        {question.type === 'Yes/No' && (
+            <YesNoBar optionCounts={question.optionCounts} total={question.responseCount} />
         )}
 
         {question.type === 'Numerical' && (
