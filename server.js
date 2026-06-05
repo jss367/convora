@@ -1774,6 +1774,12 @@ async function migrateBrainstormInteractions() {
     )
   `);
 
+  // Carry existing reactions across the locally-valid → follows rename, and drop
+  // the removed locally-invalid rows, so reactions placed before this change
+  // don't strand under keys the catalog no longer renders. Idempotent.
+  await pool.query("UPDATE response_reactions SET reaction = 'follows' WHERE reaction = 'locally-valid'");
+  await pool.query("DELETE FROM response_reactions WHERE reaction = 'locally-invalid'");
+
   // Comments on a brainstorm idea. Unlike ratings/reactions these carry their
   // author's pseudonym, since they're conversation rather than an anonymous vote.
   await pool.query(`
