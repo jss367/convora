@@ -61,12 +61,30 @@ function parseOptions(options) {
 app.use(bodyParser.json());
 app.use(express.static(path.join(__dirname, 'dist')));
 
+// Emit the number of clients currently in a discussion room to everyone there.
+function emitPresence(topic) {
+  if (!topic) return;
+  const count = io.sockets.adapter.rooms.get(topic)?.size || 0;
+  io.to(topic).emit('presence', count);
+}
+
 // WebSocket handlers
 io.on('connection', (socket) => {
   console.log('New client connected');
 
   socket.on('joinDiscussion', async (topic) => {
+    // If this socket was viewing another discussion, leave it so presence
+    // counts stay accurate as the user navigates within the SPA.
+    const previousTopic = socket.data.topic;
+    if (previousTopic && previousTopic !== topic) {
+      socket.leave(previousTopic);
+      emitPresence(previousTopic);
+    }
+
     socket.join(topic);
+    socket.data.topic = topic;
+    emitPresence(topic);
+
     try {
       const questions = await getQuestions(topic);
       socket.emit('questions', questions);
@@ -74,6 +92,18 @@ io.on('connection', (socket) => {
       console.error('Error getting questions:', error);
       socket.emit('error', { message: 'Failed to get questions' });
     }
+  });
+
+  socket.on('leaveDiscussion', (topic) => {
+    // The client unmounted its discussion page; drop it from the room and
+    // recompute presence so the counter doesn't over-report lingering viewers.
+    const roomToLeave = topic || socket.data.topic;
+    if (!roomToLeave) return;
+    socket.leave(roomToLeave);
+    if (socket.data.topic === roomToLeave) {
+      socket.data.topic = null;
+    }
+    emitPresence(roomToLeave);
   });
 
   socket.on('addQuestion', async (topic, question) => {
@@ -104,6 +134,17 @@ io.on('connection', (socket) => {
     }
   });
 
+  socket.on('toggleResponseVote', async (topic, responseId, userId) => {
+    try {
+      await toggleResponseVote(topic, responseId, userId);
+      const questions = await getQuestions(topic);
+      io.to(topic).emit('questions', questions);
+    } catch (error) {
+      console.error('Error toggling response vote:', error);
+      socket.emit('error', { message: 'Failed to upvote response' });
+    }
+  });
+
   socket.on('deleteVote', async (topic, voteId, userId) => {
     try {
       await deleteVote(voteId, userId);
@@ -117,6 +158,9 @@ io.on('connection', (socket) => {
 
   socket.on('disconnect', () => {
     console.log('Client disconnected');
+    // The socket has already left its rooms by now, so the count reflects the
+    // remaining participants.
+    emitPresence(socket.data.topic);
   });
 });
 
@@ -173,7 +217,9 @@ async function getQuestions(topic) {
           'id', v.id,
           'value', v.value,
           'userId', v.user_id,
-          'pseudonym', v.pseudonym
+          'pseudonym', v.pseudonym,
+          'upvotes', (SELECT COUNT(*) FROM response_votes rv WHERE rv.response_id = v.id),
+          'upvoters', (SELECT COALESCE(json_agg(rv.user_id), '[]'::json) FROM response_votes rv WHERE rv.response_id = v.id)
         ) ORDER BY v.id
       ) FILTER (WHERE v.id IS NOT NULL), '[]'::json) as votes
     FROM questions q
@@ -248,6 +294,25 @@ async function migrateAddPseudonymColumn() {
   console.log('Pseudonym column migration completed');
 }
 
+// Table for upvotes on individual open-ended responses. One row per
+// (response, user); a response is identified by its votes.id. Idempotent.
+async function migrateResponseVotesTable() {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS response_votes (
+        id SERIAL PRIMARY KEY,
+        response_id INTEGER NOT NULL REFERENCES votes(id) ON DELETE CASCADE,
+        user_id TEXT NOT NULL,
+        UNIQUE (response_id, user_id)
+      )
+    `);
+    console.log('response_votes table migration completed');
+  } catch (e) {
+    console.error('Error creating response_votes table:', e);
+    throw e;
+  }
+}
+
 async function addVote(questionId, vote, userId, pseudonym) {
   console.log('Adding vote:', questionId, vote, userId, pseudonym);
   const client = await pool.connect();
@@ -316,6 +381,42 @@ async function addVote(questionId, vote, userId, pseudonym) {
     throw e;
   } finally {
     client.release();
+  }
+}
+
+// Toggle a user's upvote on an open-ended response. Adds the upvote if absent,
+// removes it if already present.
+async function toggleResponseVote(topic, responseId, userId) {
+  // Confirm the response belongs to the room's discussion before mutating it.
+  // Without the topic join a client in one room could toggle a vote on a
+  // response id that lives in another discussion. Also fetch the owner so we
+  // can reject self-upvotes below.
+  const ownerResult = await pool.query(
+    `SELECT v.user_id
+     FROM votes v
+     JOIN questions q ON v.question_id = q.id
+     JOIN discussions d ON q.discussion_id = d.id
+     WHERE v.id = $1 AND d.topic = $2`,
+    [responseId, topic]
+  );
+  if (ownerResult.rows.length === 0) {
+    return;
+  }
+  // Reject self-upvotes: the UI disables the button for your own response, but
+  // the event can still be emitted from the console, so enforce it server-side.
+  if (ownerResult.rows[0].user_id === userId) {
+    console.log('Ignoring self-upvote on response', responseId);
+    return;
+  }
+  const deleteResult = await pool.query(
+    'DELETE FROM response_votes WHERE response_id = $1 AND user_id = $2',
+    [responseId, userId]
+  );
+  if (deleteResult.rowCount === 0) {
+    await pool.query(
+      'INSERT INTO response_votes (response_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+      [responseId, userId]
+    );
   }
 }
 
@@ -412,11 +513,13 @@ async function initSchema() {
 const PORT = process.env.PORT || 3001;
 
 // Create the schema on a fresh deploy, then run required migrations before
-// accepting connections so that no client can query a column that doesn't
-// exist yet (e.g. votes.pseudonym). Order matters: create tables first, then
-// migrate the existing/just-created schema, then start listening.
+// accepting connections so that no client can query a column or table that
+// doesn't exist yet (e.g. votes.pseudonym, or the response_votes table that
+// getQuestions selects from on the first join). Order matters: create tables
+// first, then run all migrations against the existing/just-created schema, then
+// start listening.
 initSchema()
-  .then(() => migrateAddPseudonymColumn())
+  .then(() => Promise.all([migrateAddPseudonymColumn(), migrateResponseVotesTable()]))
   .then(() => {
     server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
   })
