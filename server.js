@@ -574,11 +574,15 @@ function buildSummary(discussion, questions, synthesis) {
     };
   });
 
-  const agreementSummaries = questionSummaries.filter(summary => summary.type === 'Agreement' && summary.decidedCount >= 2);
-  const topConsensus = [...agreementSummaries]
+  // Agreement and Yes/No are both single-choice opinion prompts and carry the
+  // same consensus/divisive scores, so both feed the Top Consensus / Top
+  // Divisive rankings. Each item carries its `type` so the renderer picks the
+  // matching bar (five-point vs binary).
+  const opinionSummaries = questionSummaries.filter(summary => (summary.type === 'Agreement' || summary.type === 'Yes/No') && summary.decidedCount >= 2);
+  const topConsensus = [...opinionSummaries]
     .sort((a, b) => b.consensusScore - a.consensusScore || b.responseCount - a.responseCount)
     .slice(0, 5);
-  const topDivisive = [...agreementSummaries]
+  const topDivisive = [...opinionSummaries]
     .sort((a, b) => b.divisiveScore - a.divisiveScore || b.responseCount - a.responseCount)
     .slice(0, 5);
   const facilitatorDashboard = buildFacilitatorDashboard(questionSummaries, [...participantMap.values()]);

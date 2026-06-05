@@ -397,7 +397,7 @@ const RankedAgreementList = ({ title, items, metricLabel, metricKey }) => (
     <section className="bg-white shadow rounded-lg p-6">
         <h2 className="text-2xl font-bold mb-4 text-gray-800">{title}</h2>
         {items.length === 0 ? (
-            <p className="text-sm text-gray-500">No agreement responses yet.</p>
+            <p className="text-sm text-gray-500">No opinion responses yet.</p>
         ) : (
             <ol className="space-y-4">
                 {items.map(item => (
@@ -413,7 +413,11 @@ const RankedAgreementList = ({ title, items, metricLabel, metricKey }) => (
                                 {metricLabel}: {formatPercent(item[metricKey])}
                             </span>
                         </div>
-                        <AgreementBar optionCounts={item.optionCounts} total={item.responseCount} />
+                        {item.type === 'Yes/No' ? (
+                            <YesNoBar optionCounts={item.optionCounts} total={item.responseCount} />
+                        ) : (
+                            <AgreementBar optionCounts={item.optionCounts} total={item.responseCount} />
+                        )}
                     </li>
                 ))}
             </ol>
@@ -424,6 +428,7 @@ const RankedAgreementList = ({ title, items, metricLabel, metricKey }) => (
 const AgreementItemShape = PropTypes.shape({
     id: PropTypes.oneOfType([PropTypes.string, PropTypes.number]).isRequired,
     text: PropTypes.string.isRequired,
+    type: PropTypes.string,
     responseCount: PropTypes.number.isRequired,
     leadingPosition: PropTypes.string,
     consensusScore: PropTypes.number,
