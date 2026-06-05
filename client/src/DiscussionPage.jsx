@@ -112,7 +112,7 @@ const DiscussionPage = () => {
     const [presence, setPresence] = useState(0);
     const [copied, setCopied] = useState(false);
     const [adminToken, setAdminToken] = useState(null);
-    const [discussionState, setDiscussionState] = useState({ locked: false, hasModerator: false });
+    const [discussionState, setDiscussionState] = useState({ locked: false, moderatorOnly: false, hasModerator: false });
     const [similarPrompt, setSimilarPrompt] = useState(null);
     const [adminLinkCopied, setAdminLinkCopied] = useState(false);
     // Id of the question a moderator is currently editing inline (null when none).
@@ -131,7 +131,7 @@ const DiscussionPage = () => {
     const [myBrainstorm, setMyBrainstorm] = useState({ ratings: {}, reactions: {} });
 
     const isAdmin = !!adminToken;
-    const { locked } = discussionState;
+    const { locked, moderatorOnly } = discussionState;
     const discussionTitle = discussion?.topic || topic;
 
     const joinUrl = typeof window !== 'undefined'
@@ -378,6 +378,10 @@ const DiscussionPage = () => {
         socket.emit('setLocked', discussionSlug, !locked, adminToken);
     };
 
+    const handleToggleModeratorOnly = () => {
+        socket.emit('setModeratorOnly', discussionSlug, !moderatorOnly, adminToken);
+    };
+
     const handleDeleteQuestion = (questionId) => {
         socket.emit('deleteQuestion', discussionSlug, questionId, adminToken);
     };
@@ -615,12 +619,14 @@ const DiscussionPage = () => {
     const submitQuestion = (question, force) => {
         try {
             setError(null);
-            socket.emit('addQuestion', discussionSlug, question, force, (resp) => {
+            socket.emit('addQuestion', discussionSlug, question, force, adminToken, (resp) => {
                 if (resp && resp.added) {
                     setNewQuestion('');
                     setQuestionType(QuestionTypes.AGREEMENT);
                     setMinValue(0);
                     setMaxValue(100);
+                } else if (resp && resp.reason === 'moderator_only') {
+                    setError('Only the moderator can add questions right now.');
                 }
             });
         } catch (error) {
@@ -1103,6 +1109,15 @@ const DiscussionPage = () => {
                             {locked ? 'Unlock discussion' : 'Lock discussion'}
                         </button>
                         <button
+                            onClick={handleToggleModeratorOnly}
+                            className="px-3 py-1 rounded bg-white border border-indigo-300 text-indigo-700 hover:bg-indigo-100"
+                            title={moderatorOnly
+                                ? 'Anyone can add questions'
+                                : 'Only you can add questions; everyone can still vote'}
+                        >
+                            {moderatorOnly ? 'Open questions to everyone' : 'Only I can add questions'}
+                        </button>
+                        <button
                             onClick={handleCopyAdminLink}
                             className="px-3 py-1 rounded bg-white border border-indigo-300 text-indigo-700 hover:bg-indigo-100"
                             title="Anyone with this link becomes a moderator"
@@ -1224,7 +1239,16 @@ const DiscussionPage = () => {
                 </div>
             )}
 
-            {!locked && (
+            {/* When the moderator has restricted question-asking, let participants
+                know why they can't add one (voting stays open). Hidden from the
+                moderator, who keeps the form and the toggle. */}
+            {!locked && moderatorOnly && !isAdmin && (
+                <div className="mb-8 bg-indigo-50 border border-indigo-200 text-indigo-800 rounded-md p-3 text-center">
+                    Only the moderator can add questions right now. You can still vote on the ones below.
+                </div>
+            )}
+
+            {!locked && (!moderatorOnly || isAdmin) && (
             <div className="bg-white shadow-lg rounded-lg p-6 mb-8">
                 <input
                     type="text"
