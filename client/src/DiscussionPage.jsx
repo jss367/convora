@@ -1,5 +1,5 @@
 import PropTypes from 'prop-types';
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import io from 'socket.io-client';
 import { QRCodeSVG } from 'qrcode.react';
@@ -32,8 +32,25 @@ const THEMES = [
 const THEME_KEYS = THEMES.map((t) => t.key);
 const DEFAULT_THEME = 'indigo';
 
+// The floating "Scan to join" QR the moderator can pop up. It starts large so
+// it's readable across a room and can be drag-resized by the moderator to fit
+// whatever screen they're presenting on.
+const MIN_JOIN_QR_SIZE = 140;
+const DEFAULT_JOIN_QR_SIZE = 300;
+
+// Largest square the QR panel can grow to without overflowing the viewport
+// (leaves a margin for the panel's padding/caption and screen edges).
+const maxJoinQrSize = () => {
+    if (typeof window === 'undefined') return DEFAULT_JOIN_QR_SIZE;
+    return Math.max(MIN_JOIN_QR_SIZE, Math.min(window.innerWidth, window.innerHeight) - 120);
+};
+
+// Clamp a QR size to the range the current viewport can accommodate.
+const clampJoinQrSize = (size) => Math.min(maxJoinQrSize(), Math.max(MIN_JOIN_QR_SIZE, size));
+
 const QuestionTypes = {
     AGREEMENT: 'Agreement',
+    YES_NO: 'Yes/No',
     NUMERICAL: 'Numerical',
     OPEN_ENDED: 'Open Ended',
     BRAINSTORM: 'Brainstorm'
@@ -41,7 +58,8 @@ const QuestionTypes = {
 
 // Shown under the type picker so creators understand what each type does.
 const QuestionTypeDescriptions = {
-    [QuestionTypes.AGREEMENT]: 'Each participant picks one option from Strongly Agree to Strongly Disagree.',
+    [QuestionTypes.AGREEMENT]: 'Each participant picks one option on the five-point scale from Strongly Agree to Strongly Disagree.',
+    [QuestionTypes.YES_NO]: 'Each participant picks a simple Yes or No — a binary alternative to the five-point agreement scale.',
     [QuestionTypes.NUMERICAL]: 'Each participant submits a single number on a slider between your min and max.',
     [QuestionTypes.OPEN_ENDED]: 'Each participant gives one free-text response, which they can edit later. One answer per person.',
     [QuestionTypes.BRAINSTORM]: 'Each participant can add as many separate ideas as they want, and remove their own. Many answers per person.'
@@ -53,6 +71,13 @@ const VoteOptions = {
     UNSURE: 'Unsure',
     DISAGREE: 'Disagree',
     STRONGLY_DISAGREE: 'Strongly Disagree',
+};
+
+// The two choices for a Yes/No question. Listed Yes-first so the green/red
+// divergence bar reads left-to-right the same way the agreement bar does.
+const YesNoOptions = {
+    YES: 'Yes',
+    NO: 'No',
 };
 
 const SortOptions = {
@@ -87,11 +112,14 @@ const AGREEMENT_SHORT = {
 const EPISTEMIC_REACTIONS = [
     { key: 'changed-mind', label: 'Changed my mind', emoji: '🔁' },
     { key: 'crux', label: 'Crux', emoji: '🎯' },
-    { key: 'locally-valid', label: 'Locally valid', emoji: '✅' },
-    { key: 'locally-invalid', label: 'Locally invalid', emoji: '❌' },
+    { key: 'follows', label: 'Follows', emoji: '✅' },
     { key: 'citation-needed', label: 'Citation needed', emoji: '📚' },
     { key: 'key-insight', label: 'Key insight', emoji: '💡' },
 ];
+
+// All catalog keys, used as the fallback active set before the server's
+// discussionState (which carries the discussion's chosen subset) arrives.
+const ALL_REACTION_KEYS = EPISTEMIC_REACTIONS.map(r => r.key);
 
 // In production the client is served by the same server it talks to, so we
 // default to a same-origin connection. Set VITE_SOCKET_URL only when the
@@ -126,7 +154,11 @@ const DiscussionPage = () => {
     const [presence, setPresence] = useState(0);
     const [copied, setCopied] = useState(false);
     const [adminToken, setAdminToken] = useState(null);
-    const [discussionState, setDiscussionState] = useState({ locked: false, hasModerator: false, theme: DEFAULT_THEME });
+    const [discussionState, setDiscussionState] = useState({
+        locked: false, hasModerator: false, theme: DEFAULT_THEME,
+        reactionsEnabled: false, reactionsVisible: true, commentsEnabled: false,
+        reactionKeys: ALL_REACTION_KEYS,
+    });
     const [similarPrompt, setSimilarPrompt] = useState(null);
     const [adminLinkCopied, setAdminLinkCopied] = useState(false);
     // Id of the question a moderator is currently editing inline (null when none).
@@ -138,6 +170,10 @@ const DiscussionPage = () => {
     const [participants, setParticipants] = useState([]);
     const [showParticipants, setShowParticipants] = useState(false);
     const [showJoinQr, setShowJoinQr] = useState(false);
+    const [joinQrSize, setJoinQrSize] = useState(DEFAULT_JOIN_QR_SIZE);
+    // Holds the in-flight resize drag (start pointer + start size + latest size)
+    // so the move/end handlers don't depend on stale render-time closures.
+    const joinQrDragRef = useRef(null);
     // This user's own brainstorm ratings/reactions, kept separately from the
     // (aggregate-only, unattributable) broadcast so we can highlight their
     // selections. Only this user mutates it, so optimistic updates are safe; we
@@ -147,6 +183,10 @@ const DiscussionPage = () => {
     const isAdmin = !!adminToken;
     const { locked } = discussionState;
     const theme = THEME_KEYS.includes(discussionState.theme) ? discussionState.theme : DEFAULT_THEME;
+    // Which epistemic reactions are active for this session (creator-configurable,
+    // a subset of the catalog). Falls back to the full catalog until the server's
+    // discussionState arrives.
+    const activeReactionKeys = discussionState.reactionKeys || ALL_REACTION_KEYS;
     const discussionTitle = discussion?.topic || topic;
 
     const joinUrl = typeof window !== 'undefined'
@@ -330,9 +370,12 @@ const DiscussionPage = () => {
     useEffect(() => {
         try {
             setShowJoinQr(localStorage.getItem(`convora_show_join_qr_${discussionSlug}`) === 'true');
+            const storedSize = parseInt(localStorage.getItem(`convora_join_qr_size_${discussionSlug}`), 10);
+            setJoinQrSize(clampJoinQrSize(Number.isFinite(storedSize) ? storedSize : DEFAULT_JOIN_QR_SIZE));
         } catch (e) {
             console.warn('Failed to read QR visibility:', e);
             setShowJoinQr(false);
+            setJoinQrSize(clampJoinQrSize(DEFAULT_JOIN_QR_SIZE));
         }
     }, [discussionSlug]);
 
@@ -347,6 +390,99 @@ const DiscussionPage = () => {
             return next;
         });
     };
+
+    const handleJoinQrResizeStart = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        joinQrDragRef.current = { startX: e.clientX, startY: e.clientY, startSize: joinQrSize, latest: joinQrSize };
+        try {
+            e.currentTarget.setPointerCapture(e.pointerId);
+        } catch {
+            // setPointerCapture isn't critical; drag still works via the bound handlers.
+        }
+    };
+
+    const handleJoinQrResizeMove = (e) => {
+        const drag = joinQrDragRef.current;
+        if (!drag) return;
+        // Panel is anchored bottom-left, so dragging the handle right (+x) or up
+        // (-y) grows it; average the two axes so the corner tracks the pointer.
+        const delta = ((e.clientX - drag.startX) - (e.clientY - drag.startY)) / 2;
+        const next = Math.round(clampJoinQrSize(drag.startSize + delta));
+        drag.latest = next;
+        setJoinQrSize(next);
+    };
+
+    const persistJoinQrSize = (size) => {
+        try {
+            localStorage.setItem(`convora_join_qr_size_${discussionSlug}`, String(size));
+        } catch (err) {
+            console.warn('Failed to store QR size:', err);
+        }
+    };
+
+    const handleJoinQrResizeEnd = (e) => {
+        const drag = joinQrDragRef.current;
+        if (!drag) return;
+        joinQrDragRef.current = null;
+        try {
+            e.currentTarget.releasePointerCapture(e.pointerId);
+        } catch {
+            // Ignore — capture may not have been set.
+        }
+        persistJoinQrSize(drag.latest);
+    };
+
+    // Keyboard support for the resize handle so the advertised slider role is
+    // actually operable for keyboard/assistive-tech users (arrows step, Home/End jump).
+    const handleJoinQrResizeKeyDown = (e) => {
+        const step = 20;
+        let next;
+        switch (e.key) {
+            case 'ArrowRight':
+            case 'ArrowUp':
+                next = joinQrSize + step;
+                break;
+            case 'ArrowLeft':
+            case 'ArrowDown':
+                next = joinQrSize - step;
+                break;
+            case 'Home':
+                next = MIN_JOIN_QR_SIZE;
+                break;
+            case 'End':
+                next = maxJoinQrSize();
+                break;
+            default:
+                return;
+        }
+        e.preventDefault();
+        next = Math.round(clampJoinQrSize(next));
+        setJoinQrSize(next);
+        persistJoinQrSize(next);
+    };
+
+    // Re-clamp the open QR panel when the viewport shrinks (moving the browser
+    // between displays, rotating a tablet) so the fixed bottom-left panel and its
+    // resize handle can't drift off-screen. clampJoinQrSize bounds to
+    // [MIN, maxJoinQrSize()], so this only ever shrinks — it never auto-grows the
+    // moderator's chosen size on a larger viewport.
+    useEffect(() => {
+        if (!showJoinQr) return;
+        const handleResize = () => {
+            setJoinQrSize(prev => {
+                const next = clampJoinQrSize(prev);
+                if (next !== prev) persistJoinQrSize(next);
+                return next;
+            });
+        };
+        // Clamp immediately on becoming visible: if the viewport shrank while the
+        // panel was hidden, the stored size would otherwise render off-screen
+        // until the next resize event fires.
+        handleResize();
+        window.addEventListener('resize', handleResize);
+        return () => window.removeEventListener('resize', handleResize);
+    }, [showJoinQr, discussionSlug]);
 
     // Push a changed broadcast name to the server so it retroactively renames
     // this browser's already-submitted responses (otherwise prior responses keep
@@ -728,8 +864,14 @@ const DiscussionPage = () => {
         socket.emit('moderatorDeleteResponseComment', topic, commentId, adminToken);
     };
 
-    const handleSetQuestionFlags = (questionId, flags) => {
-        socket.emit('setQuestionFlags', topic, questionId, flags, adminToken);
+    const handleSetDiscussionFlags = (flags) => {
+        socket.emit('setDiscussionFlags', topic, flags, adminToken);
+    };
+
+    // Set the active epistemic reactions for the whole session. The server
+    // re-broadcasts discussionState, so we don't update local state optimistically.
+    const handleSetReactionKeys = (keys) => {
+        socket.emit('setReactionKeys', topic, keys, adminToken);
     };
 
     const sortQuestions = (questions) => {
@@ -747,12 +889,22 @@ const DiscussionPage = () => {
         }
     };
 
+    // Only Agreement and Yes/No are opinion prompts; the agreement sorts ignore
+    // other types so an Open Ended / Brainstorm answer that happens to read
+    // "Yes", "No", "Agree", etc. can't mis-rank a non-opinion question.
+    const isOpinionQuestion = (question) =>
+        question?.type === QuestionTypes.AGREEMENT || question?.type === QuestionTypes.YES_NO;
+
+    // Yes/No votes count toward the same agreement/disagreement sorts as the
+    // five-point scale: Yes reads as agreement, No as disagreement.
     const getAgreementCount = (question) => {
-        return (question.votes || []).filter(v => v.value === VoteOptions.STRONGLY_AGREE || v.value === VoteOptions.AGREE).length;
+        if (!isOpinionQuestion(question)) return 0;
+        return (question.votes || []).filter(v => v.value === VoteOptions.STRONGLY_AGREE || v.value === VoteOptions.AGREE || v.value === YesNoOptions.YES).length;
     };
 
     const getDisagreementCount = (question) => {
-        return (question.votes || []).filter(v => v.value === VoteOptions.STRONGLY_DISAGREE || v.value === VoteOptions.DISAGREE).length;
+        if (!isOpinionQuestion(question)) return 0;
+        return (question.votes || []).filter(v => v.value === VoteOptions.STRONGLY_DISAGREE || v.value === VoteOptions.DISAGREE || v.value === YesNoOptions.NO).length;
     };
 
     const getControversyScore = (question) => {
@@ -794,6 +946,32 @@ const DiscussionPage = () => {
                         {!locked && (
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                 {Object.values(VoteOptions).map((option) => (
+                                    <div key={option} className="flex items-center justify-between bg-gray-100 p-3 rounded-md">
+                                        <span className="font-medium">
+                                            {option}: {question.votes ? question.votes.filter(v => v.value === option).length : 0}
+                                        </span>
+                                        <button
+                                            onClick={() => handleVote(question.id, option)}
+                                            className={`px-4 py-2 rounded-md transition duration-300 ${userVote && userVote.value === option
+                                                ? 'bg-primary text-white hover:bg-opacity-90'
+                                                : 'bg-secondary text-white hover:bg-opacity-90'
+                                                }`}
+                                        >
+                                            {userVote && userVote.value === option ? 'Undo Vote' : 'Vote'}
+                                        </button>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+                );
+            case QuestionTypes.YES_NO:
+                return (
+                    <div>
+                        <YesNoResults question={question} />
+                        {!locked && (
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                {Object.values(YesNoOptions).map((option) => (
                                     <div key={option} className="flex items-center justify-between bg-gray-100 p-3 rounded-md">
                                         <span className="font-medium">
                                             {option}: {question.votes ? question.votes.filter(v => v.value === option).length : 0}
@@ -868,7 +1046,7 @@ const DiscussionPage = () => {
                     locked={locked}
                     isAdmin={isAdmin}
                     myBrainstorm={myBrainstorm}
-                    onSetFlags={handleSetQuestionFlags}
+                    activeReactionKeys={activeReactionKeys}
                     onSetRating={handleSetRating}
                     onToggleReaction={handleToggleReaction}
                     onAddComment={handleAddComment}
@@ -1185,6 +1363,65 @@ const DiscussionPage = () => {
                                 />
                             ))}
                         </div>
+                        {/* Discussion-wide brainstorm phasing: these apply to
+                            every brainstorm prompt at once (read silently, then
+                            open reactions, then open comments). */}
+                        <span className="w-px self-stretch bg-indigo-200" aria-hidden="true" />
+                        <span className="text-indigo-700">Brainstorms:</span>
+                        <button
+                            onClick={() => handleSetDiscussionFlags({ reactions_enabled: !discussionState.reactionsEnabled })}
+                            className="px-3 py-1 rounded bg-white border border-indigo-300 text-indigo-700 hover:bg-indigo-100"
+                        >
+                            {discussionState.reactionsEnabled ? 'Disable reactions' : 'Enable reactions'}
+                        </button>
+                        {discussionState.reactionsEnabled && (
+                            <button
+                                onClick={() => handleSetDiscussionFlags({ reactions_visible: !discussionState.reactionsVisible })}
+                                className="px-3 py-1 rounded bg-white border border-indigo-300 text-indigo-700 hover:bg-indigo-100"
+                            >
+                                {discussionState.reactionsVisible ? 'Hide reactions' : 'Show reactions'}
+                            </button>
+                        )}
+                        <button
+                            onClick={() => handleSetDiscussionFlags({ comments_enabled: !discussionState.commentsEnabled })}
+                            className="px-3 py-1 rounded bg-white border border-indigo-300 text-indigo-700 hover:bg-indigo-100"
+                        >
+                            {discussionState.commentsEnabled ? 'Disable comments' : 'Enable comments'}
+                        </button>
+                        {/* Creator-configurable reaction set (whole session): which
+                            epistemic reactions participants may use. Discussion-wide,
+                            so it lives here alongside the other brainstorm toggles. */}
+                        {discussionState.reactionsEnabled && (
+                            <div className="w-full flex flex-wrap items-center gap-1 mt-1 border-t border-indigo-200 pt-2 text-xs">
+                                <span className="text-indigo-700">Reaction set (whole session):</span>
+                                {EPISTEMIC_REACTIONS.map(r => {
+                                    const on = activeReactionKeys.includes(r.key);
+                                    return (
+                                        <button
+                                            key={r.key}
+                                            type="button"
+                                            // Toggling rebuilds the active list in catalog order; the
+                                            // last remaining reaction can't be removed (the server
+                                            // ignores an empty set, so guard the UI to match).
+                                            onClick={() => {
+                                                const next = on
+                                                    ? activeReactionKeys.filter(k => k !== r.key)
+                                                    : EPISTEMIC_REACTIONS.map(c => c.key)
+                                                        .filter(k => k === r.key || activeReactionKeys.includes(k));
+                                                if (next.length === 0) return;
+                                                handleSetReactionKeys(next);
+                                            }}
+                                            title={on ? `Hide "${r.label}"` : `Show "${r.label}"`}
+                                            className={`px-2 py-0.5 rounded-full border ${on
+                                                ? 'bg-indigo-100 border-indigo-400 text-indigo-800'
+                                                : 'bg-white border-gray-300 text-gray-400 line-through'}`}
+                                        >
+                                            <span className="mr-1">{r.emoji}</span>{r.label}
+                                        </button>
+                                    );
+                                })}
+                            </div>
+                        )}
                     </div>
                 ) : !discussionState.hasModerator ? (
                     <button
@@ -1246,12 +1483,37 @@ const DiscussionPage = () => {
             )}
 
             {isAdmin && showJoinQr && (
-                <div className="fixed bottom-4 left-4 z-40 w-44 rounded-md border border-gray-200 bg-white p-3 text-center shadow-xl">
+                <div
+                    className="fixed bottom-4 left-4 z-40 rounded-md border border-gray-200 bg-white p-3 text-center shadow-xl"
+                    style={{ width: joinQrSize + 24 }}
+                >
                     <div className="flex justify-center">
-                        <QRCodeSVG value={joinUrl} size={140} includeMargin />
+                        <QRCodeSVG value={joinUrl} size={joinQrSize} includeMargin />
                     </div>
                     <div className="mt-2 text-xs font-semibold uppercase tracking-wide text-gray-500">Scan to join</div>
                     <div className="mt-1 truncate text-sm font-semibold text-gray-800" title={discussionTitle}>{discussionTitle}</div>
+                    {/* Drag this corner to resize the QR for the room/screen. */}
+                    <div
+                        onPointerDown={handleJoinQrResizeStart}
+                        onPointerMove={handleJoinQrResizeMove}
+                        onPointerUp={handleJoinQrResizeEnd}
+                        onPointerCancel={handleJoinQrResizeEnd}
+                        onKeyDown={handleJoinQrResizeKeyDown}
+                        tabIndex={0}
+                        role="slider"
+                        aria-label="Resize join QR code"
+                        aria-valuemin={MIN_JOIN_QR_SIZE}
+                        aria-valuemax={maxJoinQrSize()}
+                        aria-valuenow={joinQrSize}
+                        title="Drag to resize"
+                        className="absolute -right-2 -top-2 flex h-7 w-7 cursor-nesw-resize touch-none items-center justify-center rounded-full border border-gray-300 bg-white text-gray-400 shadow hover:text-gray-600 focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                    >
+                        <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M14 2 2 14" />
+                            <path d="M14 8v6H8" />
+                            <path d="M2 8V2h6" />
+                        </svg>
+                    </div>
                 </div>
             )}
 
@@ -1726,6 +1988,74 @@ AgreementResults.propTypes = {
     }).isRequired,
 };
 
+// Stacked divergence bar + summary for a Yes/No question — the binary sibling of
+// AgreementResults. Yes is green, No is red, mirroring the agreement scale.
+const YesNoResults = ({ question }) => {
+    const votes = question.votes || [];
+    const total = votes.length;
+
+    if (total === 0) {
+        return <p className="text-sm text-gray-500 mb-4">No votes yet — be the first to weigh in.</p>;
+    }
+
+    const yesCount = votes.filter(v => v.value === YesNoOptions.YES).length;
+    const noCount = votes.filter(v => v.value === YesNoOptions.NO).length;
+    const yesPct = Math.round((yesCount / total) * 100);
+    const noPct = Math.round((noCount / total) * 100);
+
+    // Divisive when the room is split roughly evenly; consensus when one side
+    // clearly dominates. Mirrors the thresholds used for agreement questions.
+    let badge = null;
+    if (total >= 2) {
+        const split = Math.min(yesCount, noCount) / total; // 0..0.5
+        if (split >= 0.4) {
+            badge = <span className="px-2 py-0.5 text-xs font-semibold rounded-full bg-amber-100 text-amber-800">Divisive</span>;
+        } else if (split <= 0.15) {
+            badge = <span className="px-2 py-0.5 text-xs font-semibold rounded-full bg-emerald-100 text-emerald-800">Consensus</span>;
+        }
+    }
+
+    const segments = [
+        { key: YesNoOptions.NO, label: 'No', count: noCount, bar: 'bg-red-500', dot: 'bg-red-500' },
+        { key: YesNoOptions.YES, label: 'Yes', count: yesCount, bar: 'bg-green-500', dot: 'bg-green-500' },
+    ];
+
+    return (
+        <div className="mb-4">
+            <div className="flex items-center justify-between mb-2">
+                <span className="text-sm text-gray-600">
+                    {total} {total === 1 ? 'vote' : 'votes'} · {yesPct}% yes · {noPct}% no
+                </span>
+                {badge}
+            </div>
+            <div className="flex w-full h-4 rounded-full overflow-hidden bg-gray-200">
+                {segments.map(seg => seg.count > 0 && (
+                    <div
+                        key={seg.key}
+                        className={seg.bar}
+                        style={{ width: `${(seg.count / total) * 100}%` }}
+                        title={`${seg.label}: ${seg.count}`}
+                    />
+                ))}
+            </div>
+            <div className="flex flex-wrap gap-x-4 gap-y-1 mt-2">
+                {segments.map(seg => (
+                    <span key={seg.key} className="flex items-center text-xs text-gray-600">
+                        <span className={`inline-block w-2.5 h-2.5 rounded-full mr-1 ${seg.dot}`} />
+                        {seg.label}: {seg.count}
+                    </span>
+                ))}
+            </div>
+        </div>
+    );
+};
+
+YesNoResults.propTypes = {
+    question: PropTypes.shape({
+        votes: PropTypes.array,
+    }).isRequired,
+};
+
 // Compact agreement-distribution bar for a single brainstorm idea. Shows how the
 // room splits without naming anyone — the whole point of the agreement axis.
 const AgreementMiniBar = ({ counts }) => {
@@ -1760,7 +2090,7 @@ AgreementMiniBar.propTypes = {
 // aggregates; only this user's own selections (myRating/myReactions) are known
 // to the client, so nothing reveals who voted which way.
 const BrainstormIdea = ({
-    vote, isOwn, isAdmin, ownedCommentIds, reactionsActive, commentsEnabled, locked,
+    vote, isOwn, isAdmin, ownedCommentIds, reactionsActive, activeReactionKeys, commentsEnabled, locked,
     myRating, myReactions, onDeleteVote, onModeratorDelete, onSetRating, onToggleReaction,
     onAddComment, onDeleteComment, onModeratorDeleteComment,
 }) => {
@@ -1842,7 +2172,7 @@ const BrainstormIdea = ({
 
                     {reactionsActive && (
                         <div className="flex flex-wrap gap-1 mt-2">
-                            {EPISTEMIC_REACTIONS.map(r => {
+                            {EPISTEMIC_REACTIONS.filter(r => activeReactionKeys.includes(r.key)).map(r => {
                                 const count = (vote.reactionCounts || {})[r.key] || 0;
                                 const active = myReactions.includes(r.key);
                                 return (
@@ -1930,6 +2260,7 @@ BrainstormIdea.propTypes = {
     ownedCommentIds: PropTypes.instanceOf(Set).isRequired,
     reactionsActive: PropTypes.bool,
     commentsEnabled: PropTypes.bool,
+    activeReactionKeys: PropTypes.array.isRequired,
     locked: PropTypes.bool,
     myRating: PropTypes.object,
     myReactions: PropTypes.array,
@@ -1948,11 +2279,14 @@ BrainstormIdea.propTypes = {
 // evaluating them.
 const BrainstormQuestion = ({
     question, ownedVoteIds, ownedCommentIds, handleVote, handleDeleteVote, locked, isAdmin, myBrainstorm,
-    onSetFlags, onSetRating, onToggleReaction, onAddComment, onDeleteComment,
+    activeReactionKeys, onSetRating, onToggleReaction, onAddComment, onDeleteComment,
     onModeratorDeleteVote, onModeratorDeleteComment,
 }) => {
     const [idea, setIdea] = useState('');
     const votes = question.votes || [];
+    // Whether reactions/comments are available is set discussion-wide by the
+    // moderator (see the moderator bar in DiscussionPage); each question carries
+    // the resolved flags via getQuestions.
     const reactionsEnabled = question.reactionsEnabled;
     const reactionsVisible = question.reactionsVisible;
     const commentsEnabled = question.commentsEnabled;
@@ -1967,27 +2301,8 @@ const BrainstormQuestion = ({
         setIdea('');
     };
 
-    const modButton = 'px-2 py-1 rounded bg-white border border-indigo-300 text-indigo-700 hover:bg-indigo-100';
-
     return (
         <div>
-            {isAdmin && (
-                <div className="flex flex-wrap items-center gap-2 mb-4 bg-indigo-50 border border-indigo-100 rounded-md p-2 text-xs">
-                    <span className="font-semibold text-indigo-800">Moderator:</span>
-                    <button onClick={() => onSetFlags(question.id, { reactions_enabled: !reactionsEnabled })} className={modButton}>
-                        {reactionsEnabled ? 'Disable reactions' : 'Enable reactions'}
-                    </button>
-                    {reactionsEnabled && (
-                        <button onClick={() => onSetFlags(question.id, { reactions_visible: !reactionsVisible })} className={modButton}>
-                            {reactionsVisible ? 'Hide reactions' : 'Show reactions'}
-                        </button>
-                    )}
-                    <button onClick={() => onSetFlags(question.id, { comments_enabled: !commentsEnabled })} className={modButton}>
-                        {commentsEnabled ? 'Disable comments' : 'Enable comments'}
-                    </button>
-                </div>
-            )}
-
             {!locked && (
                 <>
                     <textarea
@@ -2028,6 +2343,7 @@ const BrainstormQuestion = ({
                                 isAdmin={isAdmin}
                                 ownedCommentIds={ownedCommentIds}
                                 reactionsActive={reactionsActive}
+                                activeReactionKeys={activeReactionKeys}
                                 commentsEnabled={commentsEnabled}
                                 locked={locked}
                                 myRating={myBrainstorm.ratings[vote.id] || {}}
@@ -2122,7 +2438,7 @@ BrainstormQuestion.propTypes = {
         ratings: PropTypes.object,
         reactions: PropTypes.object,
     }).isRequired,
-    onSetFlags: PropTypes.func.isRequired,
+    activeReactionKeys: PropTypes.array.isRequired,
     onSetRating: PropTypes.func.isRequired,
     onToggleReaction: PropTypes.func.isRequired,
     onAddComment: PropTypes.func.isRequired,
