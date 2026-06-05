@@ -11,24 +11,24 @@ The frontend is React and the backend is Node.js.
 ### Option A: Docker Postgres
 
 1. Start the local PostgreSQL container:
-   ```
+   ```bash
    npm run dev:db
    ```
 
 2. Build the React app (if changes were made to the frontend):
-   ```
+   ```bash
    npm run build
    ```
 
 3. Start the server against Docker Postgres:
-   ```
+   ```bash
    npm run dev:server:docker
    ```
 
 4. Access the application at `http://localhost:3001`
 
 5. Stop Docker Postgres when you are done:
-   ```
+   ```bash
    npm run dev:db:down
    ```
 
@@ -96,12 +96,12 @@ boots the real server on an ephemeral port, and verifies both HTTP and Socket.IO
 flows.
 
 Run the full harness:
-```
+```bash
 npm test
 ```
 
 Run against an already-running database:
-```
+```bash
 DATABASE_URL=postgresql://convora:convora@127.0.0.1:54330/convora_test npm run test:node
 ```
 
@@ -134,7 +134,7 @@ Push from a branch might make it a little easier to revert if it doesn't go well
 ## Other Notes
 
 The client and server are on the same domain, so I don't need to do things like this:
-```
+```javascript
 const socket = io(SOCKET_URL, {
     withCredentials: true,
 });

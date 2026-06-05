@@ -16,20 +16,20 @@ This is a React app with a Node.js backend. It uses WebSockets for real-time com
 
 Start Postgres with Docker Compose:
 
-```
+```bash
 npm run dev:db
 ```
 
 Run the backend against that database:
 
-```
+```bash
 npm run dev:server:docker
 ```
 
 Run the integration harness, which starts an isolated Docker Postgres and tests
 the real HTTP and Socket.IO paths:
 
-```
+```bash
 npm test
 ```
 
