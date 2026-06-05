@@ -2223,17 +2223,23 @@ const NumericalResults = ({ question, minValue, maxValue }) => {
                 {total} {total === 1 ? 'response' : 'responses'} · average <span className="font-semibold">{average.toFixed(1)}</span>
             </div>
             <div className="flex gap-1">
-                {/* Y-axis count labels */}
+                {/* Y-axis count labels. Each is anchored by its bottom edge at the
+                    tick's proportional height, then nudged vertically so it stays
+                    inside the box: the top tick hangs down from the top line, the
+                    baseline tick sits on the bottom, and middle ticks are centered. */}
                 <div className="relative w-6 h-16 text-[10px] leading-none text-gray-400">
-                    {yTicks.map(t => (
-                        <span
-                            key={t}
-                            className="absolute right-0 -translate-y-1/2"
-                            style={{ bottom: `${(t / tallestBin) * 100}%` }}
-                        >
-                            {t}
-                        </span>
-                    ))}
+                    {yTicks.map((t, idx) => {
+                        const nudge = idx === 0 ? 'translate-y-full' : t === 0 ? '' : 'translate-y-1/2';
+                        return (
+                            <span
+                                key={t}
+                                className={`absolute right-0 ${nudge}`}
+                                style={{ bottom: `${(t / tallestBin) * 100}%` }}
+                            >
+                                {t}
+                            </span>
+                        );
+                    })}
                 </div>
                 <div className="flex items-end gap-1 h-16 flex-1">
                     {bins.map((count, i) => (
