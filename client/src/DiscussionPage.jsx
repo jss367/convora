@@ -573,9 +573,17 @@ const DiscussionPage = () => {
         setAdminToken(token);
     }, [discussionSlug, canDemote]);
 
-    // The creator removed our moderator status: drop the stored token so the
-    // controls disappear. (The token is already invalid server-side.)
+    // A moderator we were granted was revoked: drop the stored token so the
+    // controls disappear. (That token is already invalid server-side.)
+    //
+    // Skip this when WE are the creator (canDemote): our credential is the
+    // discussion's admin_token, not a per-user grant. If the creator self-promotes
+    // (creating a dangling per-user grant on their own row) and then removes it,
+    // the server emits moderatorRevoked to their socket too — but only the
+    // per-user grant was deleted; the admin_token is still valid, so clearing it
+    // would wrongly strip the creator's controls after a reload.
     const handleModeratorRevoked = useCallback(() => {
+        if (canDemote) return;
         try {
             localStorage.removeItem(`convora_admin_${discussionSlug}`);
         } catch (e) {
@@ -583,7 +591,7 @@ const DiscussionPage = () => {
         }
         setAdminToken(null);
         setShowParticipants(false);
-    }, [discussionSlug]);
+    }, [discussionSlug, canDemote]);
 
     useEffect(() => {
         if (topic !== discussionSlug) return undefined;
