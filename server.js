@@ -1994,12 +1994,39 @@ async function getParticipants(topic) {
       ORDER BY MIN(v.created_at), v.user_id`,
     [slug]
   );
-  return result.rows.map((row) => ({
+  const participants = result.rows.map((row) => ({
     id: participantHandle(row.user_id),
     userId: row.user_id,
     pseudonym: row.pseudonym || 'Anonymous',
     isModerator: row.is_moderator === true,
   }));
+
+  // Include moderators who no longer have any votes — e.g. they were promoted
+  // after posting a Brainstorm idea, then deleted it. The list above is derived
+  // from votes, so without this they'd vanish from it while keeping a valid
+  // token, leaving the creator no row (and no way) to remove them. Append them
+  // after the voters so they can still be demoted.
+  const seen = new Set(participants.map((p) => p.userId));
+  const mods = await pool.query(
+    `SELECT m.user_id
+       FROM discussion_moderators m
+       JOIN discussions d ON m.discussion_id = d.id
+      WHERE d.slug = $1
+      ORDER BY m.id`,
+    [slug]
+  );
+  for (const row of mods.rows) {
+    if (!seen.has(row.user_id)) {
+      seen.add(row.user_id);
+      participants.push({
+        id: participantHandle(row.user_id),
+        userId: row.user_id,
+        pseudonym: 'Anonymous',
+        isModerator: true,
+      });
+    }
+  }
+  return participants;
 }
 
 // The moderator-facing view of getParticipants: opaque handle, display name,

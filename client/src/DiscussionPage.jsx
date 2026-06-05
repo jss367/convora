@@ -1,5 +1,5 @@
 import PropTypes from 'prop-types';
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import io from 'socket.io-client';
 import { QRCodeSVG } from 'qrcode.react';
@@ -112,6 +112,10 @@ const DiscussionPage = () => {
     const [presence, setPresence] = useState(0);
     const [copied, setCopied] = useState(false);
     const [adminToken, setAdminToken] = useState(null);
+    // Mirror of adminToken readable inside async callbacks, so an in-flight
+    // checkModerator ack can tell whether the token it verified is still current.
+    const adminTokenRef = useRef(adminToken);
+    useEffect(() => { adminTokenRef.current = adminToken; }, [adminToken]);
     const [discussionState, setDiscussionState] = useState({ locked: false, hasModerator: false });
     const [similarPrompt, setSimilarPrompt] = useState(null);
     const [adminLinkCopied, setAdminLinkCopied] = useState(false);
@@ -326,9 +330,15 @@ const DiscussionPage = () => {
         if (!adminToken) return;
         let cancelled = false;
         const verify = () => {
-            socket.emit('checkModerator', discussionSlug, adminToken, (resp) => {
+            // Remember which token this check is about. A re-promotion can deliver
+            // a fresh token (handleModeratorGranted) while this check is in flight;
+            // only clear if the token we verified is still the current one, so a
+            // stale "not a moderator" ack can't wipe the newly adopted token the
+            // server pushed only once.
+            const checked = adminToken;
+            socket.emit('checkModerator', discussionSlug, checked, (resp) => {
                 if (cancelled || !resp || !resp.ok) return;
-                if (resp.isModerator === false) {
+                if (resp.isModerator === false && adminTokenRef.current === checked) {
                     try {
                         localStorage.removeItem(`convora_admin_${discussionSlug}`);
                     } catch (e) {
