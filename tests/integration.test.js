@@ -995,6 +995,143 @@ test('Brainstorm comments can be added, listed with pseudonyms, and deleted', as
   }
 });
 
+test("a moderator can delete any participant's response (spam control)", async () => {
+  const topic = uniqueTopic('mod-delete-idea');
+  const mod = await connectSocket();
+  const participant = await connectSocket();
+
+  try {
+    mod.emit('joinDiscussion', topic);
+    participant.emit('joinDiscussion', topic);
+    const token = await claimModerator(mod, topic);
+    const question = await addBrainstormQuestion(mod, topic, 'Ideas?');
+
+    // A participant (not the moderator) posts the response.
+    const ideaUpdate = waitForQuestions(mod, (qs) => qs[0] && qs[0].votes.length === 1, 'idea added');
+    participant.emit('vote', topic, question.id, 'spam spam spam', 'spammer-1', 'Spammer');
+    const responseId = (await ideaUpdate)[0].votes[0].id;
+
+    // The moderator removes it even though they did not author it.
+    const deleteUpdate = waitForQuestions(mod, (qs) => qs[0] && qs[0].votes.length === 0, 'idea removed by moderator');
+    mod.emit('moderatorDeleteVote', topic, responseId, token);
+    assert.deepEqual((await deleteUpdate)[0].votes, []);
+  } finally {
+    mod.disconnect();
+    participant.disconnect();
+  }
+});
+
+test("a non-moderator cannot delete another participant's response", async () => {
+  const topic = uniqueTopic('mod-delete-deny');
+  const mod = await connectSocket();
+  const stranger = await connectSocket();
+
+  try {
+    mod.emit('joinDiscussion', topic);
+    stranger.emit('joinDiscussion', topic);
+    await claimModerator(mod, topic);
+    const question = await addBrainstormQuestion(mod, topic, 'Ideas?');
+
+    const ideaUpdate = waitForQuestions(mod, (qs) => qs[0] && qs[0].votes.length === 1, 'idea added');
+    mod.emit('vote', topic, question.id, 'keep me', 'author-1', 'Author');
+    const responseId = (await ideaUpdate)[0].votes[0].id;
+
+    // A stranger with a bogus token is rejected, not silently obeyed.
+    const denied = waitForEvent(stranger, 'error');
+    stranger.emit('moderatorDeleteVote', topic, responseId, 'bogus-token');
+    await denied;
+
+    // Re-joining re-sends the current state; the response is still there.
+    const refreshed = waitForQuestions(stranger, (qs) => qs[0] && qs[0].id === question.id, 'state refreshed');
+    stranger.emit('joinDiscussion', topic);
+    const votes = (await refreshed)[0].votes;
+    assert.equal(votes.length, 1);
+    assert.equal(votes[0].id, responseId);
+  } finally {
+    mod.disconnect();
+    stranger.disconnect();
+  }
+});
+
+test("a moderator can delete any participant's comment (spam control)", async () => {
+  const topic = uniqueTopic('mod-delete-comment');
+  const mod = await connectSocket();
+  const participant = await connectSocket();
+
+  try {
+    mod.emit('joinDiscussion', topic);
+    participant.emit('joinDiscussion', topic);
+    const token = await claimModerator(mod, topic);
+    const question = await addBrainstormQuestion(mod, topic, 'What should we try?');
+
+    const ideaUpdate = waitForQuestions(mod, (qs) => qs[0] && qs[0].votes.length === 1, 'idea added');
+    participant.emit('vote', topic, question.id, 'A real idea', 'user-idea', 'Planner');
+    const responseId = (await ideaUpdate)[0].votes[0].id;
+
+    const enabledUpdate = waitForQuestions(mod, (qs) => qs[0] && qs[0].commentsEnabled === true, 'comments enabled');
+    mod.emit('setQuestionFlags', topic, question.id, { comments_enabled: true }, token);
+    await enabledUpdate;
+
+    const commentUpdate = waitForQuestions(
+      mod,
+      (qs) => qs[0] && qs[0].votes[0] && (qs[0].votes[0].comments || []).length === 1,
+      'comment added'
+    );
+    const ack = await emitWithAck(
+      participant, 'addResponseComment', topic, responseId, 'buy now at spam.example', 'spammer-2', 'Spammer');
+    assert.equal(ack.added, true);
+    const comment = (await commentUpdate)[0].votes[0].comments[0];
+
+    // The moderator removes a comment they did not author.
+    const deleteUpdate = waitForQuestions(
+      mod,
+      (qs) => qs[0] && qs[0].votes[0] && (qs[0].votes[0].comments || []).length === 0,
+      'comment removed by moderator'
+    );
+    mod.emit('moderatorDeleteResponseComment', topic, comment.id, token);
+    assert.deepEqual((await deleteUpdate)[0].votes[0].comments, []);
+  } finally {
+    mod.disconnect();
+    participant.disconnect();
+  }
+});
+
+test('a moderator cannot delete a poll vote via moderatorDeleteVote (aggregate data)', async () => {
+  const topic = uniqueTopic('mod-delete-poll-deny');
+  const mod = await connectSocket();
+  const participant = await connectSocket();
+
+  try {
+    mod.emit('joinDiscussion', topic);
+    participant.emit('joinDiscussion', topic);
+    const token = await claimModerator(mod, topic);
+
+    // Agreement polls are aggregate data, not spammable free text. The
+    // moderator-delete feature is scoped to written responses, so the backend
+    // must refuse to remove a poll vote even with a valid token.
+    const questionAdded = waitForQuestions(mod, (qs) => qs.length === 1, 'poll added');
+    mod.emit('addQuestion', topic, { text: 'Agree?', type: 'Agreement', minValue: null, maxValue: null, options: [] });
+    const question = (await questionAdded)[0];
+
+    const voteUpdate = waitForQuestions(mod, (qs) => qs[0] && qs[0].votes.length === 1, 'poll vote recorded');
+    participant.emit('vote', topic, question.id, 'Agree', 'poll-voter', 'Voter');
+    const voteId = (await voteUpdate)[0].votes[0].id;
+
+    // The moderator targets the poll vote id directly, as if from the console.
+    // The handler always re-broadcasts questions after running, so waiting for
+    // that broadcast guarantees the (no-op) delete query has completed before
+    // we assert. The poll vote must still be there.
+    const afterDelete = waitForQuestions(mod, (qs) => qs[0] && qs[0].id === question.id, 'state after delete');
+    mod.emit('moderatorDeleteVote', topic, voteId, token);
+    const votes = (await afterDelete)[0].votes;
+    assert.equal(votes.length, 1);
+    assert.equal(votes[0].id, voteId);
+  } finally {
+    mod.disconnect();
+    participant.disconnect();
+  }
+});
+
 test('Brainstorm ratings, reactions, and comments are rejected once the discussion is locked', async () => {
   const topic = uniqueTopic('brainstorm-locked');
   const mod = await connectSocket();
@@ -1117,6 +1254,69 @@ test('Brainstorm authors cannot rate or react to their own idea', async () => {
   }
 });
 
+test('Brainstorm reactions can be narrowed to a creator-chosen set', async () => {
+  const topic = uniqueTopic('brainstorm-reactset');
+  const mod = await connectSocket();
+
+  try {
+    mod.emit('joinDiscussion', topic);
+    // A fresh discussion broadcasts the full default reaction catalog.
+    const initial = await waitForEvent(mod, 'discussionState', (s) => Array.isArray(s.reactionKeys));
+    assert.deepEqual(initial.reactionKeys, ['changed-mind', 'crux', 'follows', 'citation-needed', 'key-insight']);
+
+    const token = await claimModerator(mod, topic);
+    const question = await addBrainstormQuestion(mod, topic, 'Narrow the reactions');
+
+    const ideaUpdate = waitForQuestions(mod, (qs) => qs[0] && qs[0].votes.length === 1, 'idea added');
+    mod.emit('vote', topic, question.id, 'An idea', 'user-idea', 'Ideator');
+    const responseId = (await ideaUpdate)[0].votes[0].id;
+
+    // The creator narrows the active set (and passes a bogus key, which is dropped
+    // and the rest re-ordered to catalog order).
+    const narrowed = waitForEvent(
+      mod, 'discussionState', (s) => Array.isArray(s.reactionKeys) && s.reactionKeys.length === 1);
+    mod.emit('setReactionKeys', topic, ['bogus', 'crux'], token);
+    assert.deepEqual((await narrowed).reactionKeys, ['crux']);
+
+    const enabledUpdate = waitForQuestions(mod, (qs) => qs[0] && qs[0].reactionsEnabled === true, 'reactions enabled');
+    mod.emit('setQuestionFlags', topic, question.id, { reactions_enabled: true }, token);
+    await enabledUpdate;
+
+    // A reaction outside the active set is rejected; one inside is accepted.
+    const reactUpdate = waitForQuestions(
+      mod, (qs) => qs[0] && qs[0].votes[0] && (qs[0].votes[0].reactionCounts || {}).crux === 1, 'crux counted');
+    mod.emit('toggleResponseReaction', topic, responseId, 'key-insight', 'user-react');
+    mod.emit('toggleResponseReaction', topic, responseId, 'crux', 'user-react');
+    const counts = (await reactUpdate)[0].votes[0].reactionCounts;
+    assert.equal(counts.crux, 1);
+    assert.equal(counts['key-insight'], undefined, 'reaction outside the active set must be rejected');
+  } finally {
+    mod.disconnect();
+  }
+});
+
+test('Only a moderator can change the brainstorm reaction set', async () => {
+  const topic = uniqueTopic('brainstorm-reactset-auth');
+  const mod = await connectSocket();
+
+  try {
+    mod.emit('joinDiscussion', topic);
+    await claimModerator(mod, topic);
+
+    // A non-moderator attempt is rejected and leaves the set at its defaults.
+    const errored = waitForEvent(mod, 'error', (e) => /Not authorized/.test(e.message));
+    mod.emit('setReactionKeys', topic, ['crux'], 'bogus-token');
+    await errored;
+
+    // Re-joining re-broadcasts discussionState, confirming the set is untouched.
+    const state = waitForEvent(mod, 'discussionState', (s) => Array.isArray(s.reactionKeys));
+    mod.emit('joinDiscussion', topic);
+    assert.deepEqual((await state).reactionKeys, ['changed-mind', 'crux', 'follows', 'citation-needed', 'key-insight']);
+  } finally {
+    mod.disconnect();
+  }
+});
+
 test('Brainstorm comment pseudonyms are sanitized before storage', async () => {
   const topic = uniqueTopic('brainstorm-sanitize');
   const mod = await connectSocket();
@@ -1170,25 +1370,119 @@ test('Duplicating a discussion preserves brainstorm interaction flags', async ()
       { reactions_enabled: true, reactions_visible: false, comments_enabled: true }, token);
     await flaggedUpdate;
 
+    // Also narrow the session-level reaction set to a non-default subset.
+    const narrowed = waitForEvent(
+      mod, 'discussionState', (s) => Array.isArray(s.reactionKeys) && s.reactionKeys.length === 2);
+    mod.emit('setReactionKeys', topic, ['crux', 'follows'], token);
+    await narrowed;
+
     const newTopic = uniqueTopic('brainstorm-dup-copy');
     const dup = await jsonRequest('POST', '/api/duplicate-discussion', { originalTopic: topic, newTopic });
     assert.equal(dup.status, 200);
 
-    // The duplicate must keep the same flags, not reset to defaults.
+    // The duplicate must keep the same flags and reaction set, not reset to defaults.
     const copy = await connectSocket();
     try {
       const copyQuestions = waitForQuestions(
         copy, (qs) => qs.length === 1 && qs[0].type === 'Brainstorm', 'copy questions');
+      const copyState = waitForEvent(copy, 'discussionState', (s) => Array.isArray(s.reactionKeys));
       copy.emit('joinDiscussion', dup.body.newTopic);
       const q = (await copyQuestions)[0];
       assert.equal(q.reactionsEnabled, true);
       assert.equal(q.reactionsVisible, false);
       assert.equal(q.commentsEnabled, true);
+      assert.deepEqual((await copyState).reactionKeys, ['crux', 'follows']);
     } finally {
       copy.disconnect();
     }
   } finally {
     mod.disconnect();
+  }
+});
+
+test('a moderator can edit a question before anyone responds', async () => {
+  const topic = uniqueTopic('edit-question');
+  const mod = await connectSocket();
+
+  try {
+    mod.emit('joinDiscussion', topic);
+    const token = await claimModerator(mod, topic);
+
+    const added = waitForQuestions(mod, (qs) => qs.some((q) => q.text === 'Typoo?'), 'question added');
+    mod.emit('addQuestion', topic, { text: 'Typoo?', type: 'Agreement', minValue: null, maxValue: null, options: [] });
+    const question = (await added).find((q) => q.text === 'Typoo?');
+
+    // Edit both the wording and the type (to Numerical, so min/max are applied).
+    const editedUpdate = waitForQuestions(mod, (qs) => qs[0] && qs[0].text === 'Pick a budget', 'edit broadcast');
+    const ack = await emitWithAck(mod, 'editQuestion', topic, question.id,
+      { text: 'Pick a budget', type: 'Numerical', minValue: 0, maxValue: 10 }, token);
+    assert.equal(ack.updated, true);
+
+    const edited = (await editedUpdate)[0];
+    assert.equal(edited.text, 'Pick a budget');
+    assert.equal(edited.type, 'Numerical');
+    assert.equal(edited.minValue, 0);
+    assert.equal(edited.maxValue, 10);
+  } finally {
+    mod.disconnect();
+  }
+});
+
+test('editing a question is refused once it has responses', async () => {
+  const topic = uniqueTopic('edit-locked');
+  const mod = await connectSocket();
+  const participant = await connectSocket();
+
+  try {
+    mod.emit('joinDiscussion', topic);
+    participant.emit('joinDiscussion', topic);
+    const token = await claimModerator(mod, topic);
+
+    const added = waitForQuestions(mod, (qs) => qs.some((q) => q.text === 'Keep cars?'), 'question added');
+    mod.emit('addQuestion', topic, { text: 'Keep cars?', type: 'Agreement', minValue: null, maxValue: null, options: [] });
+    const question = (await added).find((q) => q.text === 'Keep cars?');
+
+    const voted = waitForQuestions(mod, (qs) => qs[0] && qs[0].votes.length === 1, 'vote recorded');
+    participant.emit('vote', topic, question.id, 'Agree', 'user-voter', 'Voter');
+    await voted;
+
+    const ack = await emitWithAck(mod, 'editQuestion', topic, question.id,
+      { text: 'Restrict cars?', type: 'Agreement' }, token);
+    assert.equal(ack.updated, false);
+    assert.equal(ack.reason, 'has_responses');
+
+    // The original wording must be untouched — the response was made against it.
+    const row = await pool.query('SELECT text FROM questions WHERE id = $1', [question.id]);
+    assert.equal(row.rows[0].text, 'Keep cars?');
+  } finally {
+    mod.disconnect();
+    participant.disconnect();
+  }
+});
+
+test('a non-moderator cannot edit a question', async () => {
+  const topic = uniqueTopic('edit-authz');
+  const mod = await connectSocket();
+  const stranger = await connectSocket();
+
+  try {
+    mod.emit('joinDiscussion', topic);
+    await claimModerator(mod, topic);
+
+    const added = waitForQuestions(mod, (qs) => qs.some((q) => q.text === 'Original?'), 'question added');
+    mod.emit('addQuestion', topic, { text: 'Original?', type: 'Agreement', minValue: null, maxValue: null, options: [] });
+    const question = (await added).find((q) => q.text === 'Original?');
+
+    const ack = await emitWithAck(stranger, 'editQuestion', topic, question.id,
+      { text: 'Hijacked?', type: 'Agreement' }, 'bogus-token');
+    assert.equal(ack.updated, false);
+    assert.equal(ack.reason, 'not_authorized');
+
+    const row = await pool.query('SELECT text FROM questions WHERE id = $1', [question.id]);
+    assert.equal(row.rows[0].text, 'Original?');
+  } finally {
+    mod.disconnect();
+    stranger.disconnect();
   }
 });
 

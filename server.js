@@ -710,11 +710,17 @@ function emitPresence(topic) {
 async function getDiscussionState(topic) {
   const slug = slugifyTopic(topic);
   const result = await pool.query(
-    'SELECT locked, admin_token IS NOT NULL AS has_moderator FROM discussions WHERE slug = $1',
+    'SELECT locked, reaction_keys, admin_token IS NOT NULL AS has_moderator FROM discussions WHERE slug = $1',
     [slug]
   );
-  if (result.rows.length === 0) return { locked: false, hasModerator: false };
-  return { locked: result.rows[0].locked === true, hasModerator: result.rows[0].has_moderator === true };
+  if (result.rows.length === 0) {
+    return { locked: false, hasModerator: false, reactionKeys: [...DEFAULT_REACTION_KEYS] };
+  }
+  return {
+    locked: result.rows[0].locked === true,
+    hasModerator: result.rows[0].has_moderator === true,
+    reactionKeys: resolveReactionKeys(result.rows[0].reaction_keys),
+  };
 }
 
 async function emitDiscussionState(topic) {
@@ -1027,6 +1033,80 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Moderator-only: edit a question's wording/type, allowed ONLY while it has no
+  // responses yet. Once anyone has answered, the wording is a contract their
+  // responses were made against, so editing is refused (delete + re-ask instead).
+  socket.on('editQuestion', async (topic, questionId, updates, token, ack) => {
+    const discussionSlug = slugifyTopic(topic);
+    const reply = (result) => { if (typeof ack === 'function') ack(result); };
+    try {
+      const discussionId = await verifyAdmin(discussionSlug, token);
+      if (!discussionId) {
+        socket.emit('error', { message: 'Not authorized to moderate this discussion.' });
+        reply({ updated: false, reason: 'not_authorized' });
+        return;
+      }
+
+      // Scope existence through discussion_id so a moderator of one discussion
+      // can't probe or edit another's questions by passing a foreign id.
+      const existing = await pool.query(
+        'SELECT id FROM questions WHERE id = $1 AND discussion_id = $2',
+        [questionId, discussionId]
+      );
+      if (existing.rows.length === 0) {
+        reply({ updated: false, reason: 'not_found' });
+        return;
+      }
+
+      const responses = await pool.query('SELECT 1 FROM votes WHERE question_id = $1 LIMIT 1', [questionId]);
+      if (responses.rows.length > 0) {
+        socket.emit('error', { message: 'This question already has responses and can no longer be edited.' });
+        reply({ updated: false, reason: 'has_responses' });
+        return;
+      }
+
+      // Validate the same way creation does: non-empty text, a known type, and
+      // (for Numerical) a valid min < max range.
+      const text = String(updates && updates.text != null ? updates.text : '').trim();
+      const type = updates && updates.type;
+      if (!text || !VALID_QUESTION_TYPES.has(type)) {
+        reply({ updated: false, reason: 'invalid' });
+        return;
+      }
+      let minValue = null;
+      let maxValue = null;
+      if (type === 'Numerical') {
+        minValue = parseInt(updates.minValue, 10);
+        maxValue = parseInt(updates.maxValue, 10);
+        if (!Number.isInteger(minValue) || !Number.isInteger(maxValue) || minValue >= maxValue) {
+          reply({ updated: false, reason: 'invalid' });
+          return;
+        }
+      }
+
+      // The NOT EXISTS guard closes the race between the response check above and
+      // this write: if a vote landed in between, no row is updated and we report
+      // it as having responses rather than silently editing an answered question.
+      const result = await pool.query(
+        `UPDATE questions SET text = $1, type = $2, min_value = $3, max_value = $4
+         WHERE id = $5 AND discussion_id = $6
+           AND NOT EXISTS (SELECT 1 FROM votes WHERE question_id = $5)`,
+        [text, type, minValue, maxValue, questionId, discussionId]
+      );
+      if (result.rowCount === 0) {
+        socket.emit('error', { message: 'This question already has responses and can no longer be edited.' });
+        reply({ updated: false, reason: 'has_responses' });
+        return;
+      }
+      io.to(discussionSlug).emit('questions', await getQuestions(discussionSlug));
+      reply({ updated: true });
+    } catch (error) {
+      console.error('Error editing question:', error);
+      socket.emit('error', { message: 'Failed to edit question' });
+      reply({ updated: false, reason: 'error' });
+    }
+  });
+
   socket.on('toggleResponseVote', async (topic, responseId, userId) => {
     const discussionSlug = slugifyTopic(topic);
     try {
@@ -1064,9 +1144,10 @@ io.on('connection', (socket) => {
   socket.on('toggleResponseReaction', async (topic, responseId, reaction, userId) => {
     const discussionSlug = slugifyTopic(topic);
     try {
-      if (!EPISTEMIC_REACTIONS.has(reaction)) return;
       const ctx = await getResponseContext(topic, responseId);
       if (!ctx || ctx.locked || ctx.type !== 'Brainstorm' || !ctx.reactionsEnabled || !ctx.reactionsVisible) return;
+      // Reject anything outside the set the creator has active for this session.
+      if (!ctx.reactionKeys.includes(reaction)) return;
       // No self-reactions on your own idea, same rationale as ratings.
       if (ctx.ownerId === userId) return;
       await toggleResponseReaction(responseId, userId, reaction);
@@ -1127,6 +1208,32 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Moderator-only: remove any participant's comment (spam control). Scoped
+  // through the discussion so a moderator of one discussion can't reach another
+  // discussion's comments. Mirrors the author-only deleteResponseComment above.
+  socket.on('moderatorDeleteResponseComment', async (topic, commentId, token) => {
+    const discussionSlug = slugifyTopic(topic);
+    try {
+      const discussionId = await verifyAdmin(discussionSlug, token);
+      if (!discussionId) {
+        socket.emit('error', { message: 'Not authorized to moderate this discussion.' });
+        return;
+      }
+      await pool.query(
+        `DELETE FROM response_comments c
+         USING votes v, questions q
+         WHERE c.id = $1
+           AND c.response_id = v.id AND v.question_id = q.id
+           AND q.discussion_id = $2`,
+        [commentId, discussionId]
+      );
+      io.to(discussionSlug).emit('questions', await getQuestions(discussionSlug));
+    } catch (error) {
+      console.error('Error deleting comment (moderator):', error);
+      socket.emit('error', { message: 'Failed to delete comment' });
+    }
+  });
+
   // Moderator-only: flip the per-question interaction flags (allow/disallow
   // reactions, reveal/hide reactions, allow/disallow comments). Only known
   // boolean flags are applied.
@@ -1160,6 +1267,32 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Moderator-only: choose which epistemic reactions are active for the whole
+  // discussion. The selection is stored as a subset of REACTION_CATALOG (keys
+  // outside it are dropped); an all-empty selection is ignored so a session is
+  // never left with reactions enabled but nothing to place. Broadcast via
+  // discussionState so every connected client re-renders the set live.
+  socket.on('setReactionKeys', async (topic, keys, token) => {
+    const discussionSlug = slugifyTopic(topic);
+    try {
+      const discussionId = await verifyAdmin(discussionSlug, token);
+      if (!discussionId) {
+        socket.emit('error', { message: 'Not authorized to moderate this discussion.' });
+        return;
+      }
+      const filtered = Array.isArray(keys) ? REACTION_CATALOG.filter(k => keys.includes(k)) : [];
+      if (filtered.length === 0) return;
+      await pool.query(
+        'UPDATE discussions SET reaction_keys = $1 WHERE id = $2',
+        [JSON.stringify(filtered), discussionId]
+      );
+      await emitDiscussionState(discussionSlug);
+    } catch (error) {
+      console.error('Error setting reaction keys:', error);
+      socket.emit('error', { message: 'Failed to update reactions' });
+    }
+  });
+
   // Return the requesting user's own ratings/reactions so the client can restore
   // its selected state after a reload or reconnect.
   socket.on('getBrainstormState', async (topic, userId, ack) => {
@@ -1181,6 +1314,44 @@ io.on('connection', (socket) => {
     } catch (error) {
       console.error('Error deleting vote:', error);
       socket.emit('error', { message: 'Failed to delete vote' });
+    }
+  });
+
+  // Moderator-only: remove any participant's response/idea (a votes row),
+  // regardless of who authored it (spam control). Scoped through the discussion
+  // so a moderator can't reach another discussion's responses by passing a
+  // foreign voteId. Dependent ratings/reactions/comments/upvotes cascade away
+  // via their ON DELETE CASCADE foreign keys on votes(id).
+  socket.on('moderatorDeleteVote', async (topic, voteId, token) => {
+    const discussionSlug = slugifyTopic(topic);
+    try {
+      const discussionId = await verifyAdmin(discussionSlug, token);
+      if (!discussionId) {
+        socket.emit('error', { message: 'Not authorized to moderate this discussion.' });
+        return;
+      }
+      // Scope deletes to written-response question types only. The feature
+      // exists to remove spammy free text (Open Ended responses, Brainstorm
+      // ideas), and the UI only surfaces the "Remove" control for those. Poll
+      // and scale votes (Agreement, Numerical) are aggregate data, not
+      // spammable free text — deleting one would silently distort the results,
+      // so we forbid it server-side even though every vote id is broadcast in
+      // getQuestions and a moderator could otherwise target a poll vote id
+      // directly from the console.
+      await pool.query(
+        `DELETE FROM votes
+         WHERE id = $1
+           AND question_id IN (
+             SELECT id FROM questions
+             WHERE discussion_id = $2
+               AND type IN ('Open Ended', 'Brainstorm')
+           )`,
+        [voteId, discussionId]
+      );
+      io.to(discussionSlug).emit('questions', await getQuestions(discussionSlug));
+    } catch (error) {
+      console.error('Error deleting response (moderator):', error);
+      socket.emit('error', { message: 'Failed to delete response' });
     }
   });
 
@@ -1383,17 +1554,37 @@ async function getQuestions(topic, { includeUserIds = false } = {}) {
   return questions;
 }
 
-// Curated set of epistemic reactions a participant can place on a brainstorm
-// idea. The keys are stable; the client owns their display labels. The server
-// keeps its own copy purely to reject anything outside the set.
-const EPISTEMIC_REACTIONS = new Set([
+// Curated catalog of epistemic reactions the system knows how to render. The
+// keys are stable and the client owns their display labels; the server keeps
+// this list purely as the validation allowlist (a key outside it is never
+// accepted). A discussion's creator may narrow which of these are active for
+// their session — see reaction_keys / resolveReactionKeys.
+const REACTION_CATALOG = [
   'changed-mind',
   'crux',
-  'locally-valid',
-  'locally-invalid',
+  'follows',
   'citation-needed',
   'key-insight',
-]);
+];
+
+// Reactions a discussion starts with before its creator customizes the set
+// (reaction_keys IS NULL) — currently the whole catalog.
+const DEFAULT_REACTION_KEYS = REACTION_CATALOG;
+
+// Resolve a discussion's stored reaction_keys (raw JSONB, possibly null) into an
+// ordered, validated list of active reaction keys. Null/empty/all-invalid falls
+// back to the defaults; otherwise the stored selection is filtered to the
+// catalog and re-ordered to match it, so every client renders the same order.
+function resolveReactionKeys(raw) {
+  if (!Array.isArray(raw)) return [...DEFAULT_REACTION_KEYS];
+  const selected = new Set(raw);
+  const resolved = REACTION_CATALOG.filter(k => selected.has(k));
+  return resolved.length > 0 ? resolved : [...DEFAULT_REACTION_KEYS];
+}
+
+// The question types a discussion supports. Mirrors QuestionTypes in
+// client/src/DiscussionPage.jsx — used to validate edits server-side.
+const VALID_QUESTION_TYPES = new Set(['Agreement', 'Numerical', 'Open Ended', 'Brainstorm']);
 
 // Enrich Brainstorm responses in place with aggregated interaction data:
 // quality up/down tallies, the agreement distribution, reaction counts, and
@@ -1744,6 +1935,10 @@ async function migrateBrainstormInteractions() {
   await pool.query('ALTER TABLE questions ADD COLUMN IF NOT EXISTS reactions_visible BOOLEAN NOT NULL DEFAULT TRUE');
   await pool.query('ALTER TABLE questions ADD COLUMN IF NOT EXISTS comments_enabled BOOLEAN NOT NULL DEFAULT FALSE');
 
+  // Which epistemic reactions are active for this discussion (a subset of
+  // REACTION_CATALOG). NULL means "the creator hasn't customized it" → defaults.
+  await pool.query('ALTER TABLE discussions ADD COLUMN IF NOT EXISTS reaction_keys JSONB');
+
   // One row per (response, user): that user's quality vote (-1/+1) and/or
   // agreement selection. Either axis may be null when only the other is set.
   // Always aggregated before broadcast, so individual votes stay unattributable.
@@ -1769,6 +1964,12 @@ async function migrateBrainstormInteractions() {
       UNIQUE (response_id, user_id, reaction)
     )
   `);
+
+  // Carry existing reactions across the locally-valid → follows rename, and drop
+  // the removed locally-invalid rows, so reactions placed before this change
+  // don't strand under keys the catalog no longer renders. Idempotent.
+  await pool.query("UPDATE response_reactions SET reaction = 'follows' WHERE reaction = 'locally-valid'");
+  await pool.query("DELETE FROM response_reactions WHERE reaction = 'locally-invalid'");
 
   // Comments on a brainstorm idea. Unlike ratings/reactions these carry their
   // author's pseudonym, since they're conversation rather than an anonymous vote.
@@ -2279,7 +2480,7 @@ async function toggleResponseVote(topic, responseId, userId) {
 async function getResponseContext(topic, responseId) {
   const slug = slugifyTopic(topic);
   const result = await pool.query(
-    `SELECT v.user_id, q.type, q.reactions_enabled, q.reactions_visible, q.comments_enabled, d.locked
+    `SELECT v.user_id, q.type, q.reactions_enabled, q.reactions_visible, q.comments_enabled, d.locked, d.reaction_keys
      FROM votes v
      JOIN questions q ON v.question_id = q.id
      JOIN discussions d ON q.discussion_id = d.id
@@ -2295,6 +2496,7 @@ async function getResponseContext(topic, responseId) {
     reactionsVisible: row.reactions_visible === true,
     commentsEnabled: row.comments_enabled === true,
     locked: row.locked === true,
+    reactionKeys: resolveReactionKeys(row.reaction_keys),
   };
 }
 
@@ -2669,6 +2871,14 @@ app.post('/api/duplicate-discussion', async (req, res) => {
       FROM questions
       WHERE discussion_id = $2
     `, [newDiscussionId, originalDiscussionId]);
+
+    // Carry the session-level reaction set (see reaction_keys) for the same
+    // reason as the per-question flags above: a duplicate should preserve the
+    // creator's chosen reactions, not silently reset to the defaults.
+    await client.query(
+      'UPDATE discussions SET reaction_keys = (SELECT reaction_keys FROM discussions WHERE id = $2) WHERE id = $1',
+      [newDiscussionId, originalDiscussionId]
+    );
 
     await client.query('COMMIT');
 

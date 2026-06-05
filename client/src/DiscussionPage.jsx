@@ -19,6 +19,22 @@ import { slugifyTopic } from './slugs';
 const VERSION = '0.1.8';
 console.log('Convora version:', VERSION);
 
+// The floating "Scan to join" QR the moderator can pop up. It starts large so
+// it's readable across a room and can be drag-resized by the moderator to fit
+// whatever screen they're presenting on.
+const MIN_JOIN_QR_SIZE = 140;
+const DEFAULT_JOIN_QR_SIZE = 300;
+
+// Largest square the QR panel can grow to without overflowing the viewport
+// (leaves a margin for the panel's padding/caption and screen edges).
+const maxJoinQrSize = () => {
+    if (typeof window === 'undefined') return DEFAULT_JOIN_QR_SIZE;
+    return Math.max(MIN_JOIN_QR_SIZE, Math.min(window.innerWidth, window.innerHeight) - 120);
+};
+
+// Clamp a QR size to the range the current viewport can accommodate.
+const clampJoinQrSize = (size) => Math.min(maxJoinQrSize(), Math.max(MIN_JOIN_QR_SIZE, size));
+
 const QuestionTypes = {
     AGREEMENT: 'Agreement',
     NUMERICAL: 'Numerical',
@@ -74,11 +90,14 @@ const AGREEMENT_SHORT = {
 const EPISTEMIC_REACTIONS = [
     { key: 'changed-mind', label: 'Changed my mind', emoji: '🔁' },
     { key: 'crux', label: 'Crux', emoji: '🎯' },
-    { key: 'locally-valid', label: 'Locally valid', emoji: '✅' },
-    { key: 'locally-invalid', label: 'Locally invalid', emoji: '❌' },
+    { key: 'follows', label: 'Follows', emoji: '✅' },
     { key: 'citation-needed', label: 'Citation needed', emoji: '📚' },
     { key: 'key-insight', label: 'Key insight', emoji: '💡' },
 ];
+
+// All catalog keys, used as the fallback active set before the server's
+// discussionState (which carries the discussion's chosen subset) arrives.
+const ALL_REACTION_KEYS = EPISTEMIC_REACTIONS.map(r => r.key);
 
 // In production the client is served by the same server it talks to, so we
 // default to a same-origin connection. Set VITE_SOCKET_URL only when the
@@ -109,6 +128,7 @@ const DiscussionPage = () => {
     const [newTopicName, setNewTopicName] = useState('');
     const [showDuplicateModal, setShowDuplicateModal] = useState(false);
     const [showShareModal, setShowShareModal] = useState(false);
+    const [showActionsMenu, setShowActionsMenu] = useState(false);
     const [presence, setPresence] = useState(0);
     const [copied, setCopied] = useState(false);
     const [adminToken, setAdminToken] = useState(null);
@@ -116,9 +136,11 @@ const DiscussionPage = () => {
     // checkModerator ack can tell whether the token it verified is still current.
     const adminTokenRef = useRef(adminToken);
     useEffect(() => { adminTokenRef.current = adminToken; }, [adminToken]);
-    const [discussionState, setDiscussionState] = useState({ locked: false, hasModerator: false });
+    const [discussionState, setDiscussionState] = useState({ locked: false, hasModerator: false, reactionKeys: ALL_REACTION_KEYS });
     const [similarPrompt, setSimilarPrompt] = useState(null);
     const [adminLinkCopied, setAdminLinkCopied] = useState(false);
+    // Id of the question a moderator is currently editing inline (null when none).
+    const [editingQuestionId, setEditingQuestionId] = useState(null);
     // Experimental "opinion groups" view, hidden behind a ?clusters=1 flag so it
     // can be evaluated on a real discussion without exposing it to everyone. Once
     // enabled it's remembered per browser so the link survives navigation.
@@ -131,6 +153,10 @@ const DiscussionPage = () => {
     // own row (acting on yourself tangles the creator's admin_token with a grant).
     const [selfHandle, setSelfHandle] = useState(null);
     const [showJoinQr, setShowJoinQr] = useState(false);
+    const [joinQrSize, setJoinQrSize] = useState(DEFAULT_JOIN_QR_SIZE);
+    // Holds the in-flight resize drag (start pointer + start size + latest size)
+    // so the move/end handlers don't depend on stale render-time closures.
+    const joinQrDragRef = useRef(null);
     // This user's own brainstorm ratings/reactions, kept separately from the
     // (aggregate-only, unattributable) broadcast so we can highlight their
     // selections. Only this user mutates it, so optimistic updates are safe; we
@@ -139,6 +165,10 @@ const DiscussionPage = () => {
 
     const isAdmin = !!adminToken;
     const { locked } = discussionState;
+    // Which epistemic reactions are active for this session (creator-configurable,
+    // a subset of the catalog). Falls back to the full catalog until the server's
+    // discussionState arrives.
+    const activeReactionKeys = discussionState.reactionKeys || ALL_REACTION_KEYS;
     const discussionTitle = discussion?.topic || topic;
 
     const joinUrl = typeof window !== 'undefined'
@@ -371,9 +401,12 @@ const DiscussionPage = () => {
     useEffect(() => {
         try {
             setShowJoinQr(localStorage.getItem(`convora_show_join_qr_${discussionSlug}`) === 'true');
+            const storedSize = parseInt(localStorage.getItem(`convora_join_qr_size_${discussionSlug}`), 10);
+            setJoinQrSize(clampJoinQrSize(Number.isFinite(storedSize) ? storedSize : DEFAULT_JOIN_QR_SIZE));
         } catch (e) {
             console.warn('Failed to read QR visibility:', e);
             setShowJoinQr(false);
+            setJoinQrSize(clampJoinQrSize(DEFAULT_JOIN_QR_SIZE));
         }
     }, [discussionSlug]);
 
@@ -388,6 +421,99 @@ const DiscussionPage = () => {
             return next;
         });
     };
+
+    const handleJoinQrResizeStart = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        joinQrDragRef.current = { startX: e.clientX, startY: e.clientY, startSize: joinQrSize, latest: joinQrSize };
+        try {
+            e.currentTarget.setPointerCapture(e.pointerId);
+        } catch {
+            // setPointerCapture isn't critical; drag still works via the bound handlers.
+        }
+    };
+
+    const handleJoinQrResizeMove = (e) => {
+        const drag = joinQrDragRef.current;
+        if (!drag) return;
+        // Panel is anchored bottom-left, so dragging the handle right (+x) or up
+        // (-y) grows it; average the two axes so the corner tracks the pointer.
+        const delta = ((e.clientX - drag.startX) - (e.clientY - drag.startY)) / 2;
+        const next = Math.round(clampJoinQrSize(drag.startSize + delta));
+        drag.latest = next;
+        setJoinQrSize(next);
+    };
+
+    const persistJoinQrSize = (size) => {
+        try {
+            localStorage.setItem(`convora_join_qr_size_${discussionSlug}`, String(size));
+        } catch (err) {
+            console.warn('Failed to store QR size:', err);
+        }
+    };
+
+    const handleJoinQrResizeEnd = (e) => {
+        const drag = joinQrDragRef.current;
+        if (!drag) return;
+        joinQrDragRef.current = null;
+        try {
+            e.currentTarget.releasePointerCapture(e.pointerId);
+        } catch {
+            // Ignore — capture may not have been set.
+        }
+        persistJoinQrSize(drag.latest);
+    };
+
+    // Keyboard support for the resize handle so the advertised slider role is
+    // actually operable for keyboard/assistive-tech users (arrows step, Home/End jump).
+    const handleJoinQrResizeKeyDown = (e) => {
+        const step = 20;
+        let next;
+        switch (e.key) {
+            case 'ArrowRight':
+            case 'ArrowUp':
+                next = joinQrSize + step;
+                break;
+            case 'ArrowLeft':
+            case 'ArrowDown':
+                next = joinQrSize - step;
+                break;
+            case 'Home':
+                next = MIN_JOIN_QR_SIZE;
+                break;
+            case 'End':
+                next = maxJoinQrSize();
+                break;
+            default:
+                return;
+        }
+        e.preventDefault();
+        next = Math.round(clampJoinQrSize(next));
+        setJoinQrSize(next);
+        persistJoinQrSize(next);
+    };
+
+    // Re-clamp the open QR panel when the viewport shrinks (moving the browser
+    // between displays, rotating a tablet) so the fixed bottom-left panel and its
+    // resize handle can't drift off-screen. clampJoinQrSize bounds to
+    // [MIN, maxJoinQrSize()], so this only ever shrinks — it never auto-grows the
+    // moderator's chosen size on a larger viewport.
+    useEffect(() => {
+        if (!showJoinQr) return;
+        const handleResize = () => {
+            setJoinQrSize(prev => {
+                const next = clampJoinQrSize(prev);
+                if (next !== prev) persistJoinQrSize(next);
+                return next;
+            });
+        };
+        // Clamp immediately on becoming visible: if the viewport shrank while the
+        // panel was hidden, the stored size would otherwise render off-screen
+        // until the next resize event fires.
+        handleResize();
+        window.addEventListener('resize', handleResize);
+        return () => window.removeEventListener('resize', handleResize);
+    }, [showJoinQr, discussionSlug]);
 
     // Push a changed broadcast name to the server so it retroactively renames
     // this browser's already-submitted responses (otherwise prior responses keep
@@ -440,6 +566,16 @@ const DiscussionPage = () => {
 
     const handleTogglePin = (questionId, pinned) => {
         socket.emit('setPinned', discussionSlug, questionId, !pinned, adminToken);
+    };
+
+    // Save a moderator's edit to a question. The server only accepts it while the
+    // question has no responses; on success it broadcasts fresh questions and we
+    // close the inline editor, otherwise the editor stays open to show the error.
+    const handleEditQuestion = (questionId, updates, onResult) => {
+        socket.emit('editQuestion', discussionSlug, questionId, updates, adminToken, (resp) => {
+            if (resp && resp.updated) setEditingQuestionId(null);
+            if (typeof onResult === 'function') onResult(resp);
+        });
     };
 
     const handleCopyAdminLink = async () => {
@@ -743,6 +879,12 @@ const DiscussionPage = () => {
         socket.emit('deleteVote', discussionSlug, voteId, userId);
     };
 
+    // Moderator-only: remove any participant's response/idea, regardless of
+    // owner (spam control). The server re-checks the admin token.
+    const handleModeratorDeleteVote = (questionId, voteId) => {
+        socket.emit('moderatorDeleteVote', discussionSlug, voteId, adminToken);
+    };
+
     const handleSliderChange = (questionId, value) => {
         setSliderValues(prev => ({ ...prev, [questionId]: value }));
     };
@@ -781,8 +923,19 @@ const DiscussionPage = () => {
         socket.emit('deleteResponseComment', topic, commentId, userId);
     };
 
+    // Moderator-only: remove any participant's comment, regardless of owner.
+    const handleModeratorDeleteComment = (commentId) => {
+        socket.emit('moderatorDeleteResponseComment', topic, commentId, adminToken);
+    };
+
     const handleSetQuestionFlags = (questionId, flags) => {
         socket.emit('setQuestionFlags', topic, questionId, flags, adminToken);
+    };
+
+    // Set the active epistemic reactions for the whole session. The server
+    // re-broadcasts discussionState, so we don't update local state optimistically.
+    const handleSetReactionKeys = (keys) => {
+        socket.emit('setReactionKeys', topic, keys, adminToken);
     };
 
     const sortQuestions = (questions) => {
@@ -909,7 +1062,7 @@ const DiscussionPage = () => {
                 );
             }
             case QuestionTypes.OPEN_ENDED: {
-                return <OpenEndedQuestion question={question} userVote={userVote} handleVote={handleVote} ownedVoteIds={ownedVoteIds} upvotedVoteIds={upvotedVoteIds} handleResponseVote={handleResponseVote} locked={locked} />;
+                return <OpenEndedQuestion question={question} userVote={userVote} handleVote={handleVote} ownedVoteIds={ownedVoteIds} upvotedVoteIds={upvotedVoteIds} handleResponseVote={handleResponseVote} locked={locked} isAdmin={isAdmin} onModeratorDeleteVote={handleModeratorDeleteVote} />;
             }
             case QuestionTypes.BRAINSTORM: {
                 return <BrainstormQuestion
@@ -921,11 +1074,15 @@ const DiscussionPage = () => {
                     locked={locked}
                     isAdmin={isAdmin}
                     myBrainstorm={myBrainstorm}
+                    activeReactionKeys={activeReactionKeys}
                     onSetFlags={handleSetQuestionFlags}
+                    onSetReactionKeys={handleSetReactionKeys}
                     onSetRating={handleSetRating}
                     onToggleReaction={handleToggleReaction}
                     onAddComment={handleAddComment}
                     onDeleteComment={handleDeleteComment}
+                    onModeratorDeleteVote={handleModeratorDeleteVote}
+                    onModeratorDeleteComment={handleModeratorDeleteComment}
                 />;
             }
 
@@ -1030,46 +1187,86 @@ const DiscussionPage = () => {
                 )}
             </div>
 
-            {/* Discussion actions */}
-            <div className="mb-4 flex flex-wrap gap-3">
+            {/* Discussion actions. Share is the one frequently-used action, so it
+                stays a solid primary button. View Summary / Opinion Groups are
+                view-oriented and get a quieter ghost style. The rare, one-off
+                actions (duplicate, exports) live in a "More" overflow menu so they
+                don't compete for attention with the things people actually reach
+                for during a session. */}
+            <div className="mb-4 flex flex-wrap items-center gap-3">
                 <button
                     onClick={() => setShowShareModal(true)}
                     className="bg-primary text-white py-2 px-4 rounded hover:bg-opacity-90 transition duration-300"
                 >
                     Share
                 </button>
-                <button
-                    onClick={() => setShowDuplicateModal(true)}
-                    className="bg-blue-500 text-white py-2 px-4 rounded hover:bg-blue-600 transition duration-300"
-                >
-                    Duplicate Discussion
-                </button>
                 <Link
                     to={`/discussion/${discussionSlug}/summary`}
-                    className="bg-gray-800 text-white py-2 px-4 rounded hover:bg-gray-700 transition duration-300"
+                    className="border border-gray-300 text-gray-700 py-2 px-4 rounded hover:bg-gray-100 transition duration-300"
                 >
                     View Summary
                 </Link>
                 {showClusters && (
                     <Link
                         to={`/discussion/${encodeURIComponent(topic)}/clusters`}
-                        className="bg-amber-600 text-white py-2 px-4 rounded hover:bg-amber-700 transition duration-300"
+                        className="border border-gray-300 text-gray-700 py-2 px-4 rounded hover:bg-gray-100 transition duration-300"
                     >
                         Opinion Groups
                     </Link>
                 )}
-                <a
-                    href={`/api/discussions/${encodeURIComponent(discussionSlug)}/export.csv`}
-                    className="bg-primary text-white py-2 px-4 rounded hover:bg-opacity-90 transition duration-300"
-                >
-                    Export CSV
-                </a>
-                <a
-                    href={`/api/discussions/${encodeURIComponent(discussionSlug)}/export.json`}
-                    className="bg-secondary text-white py-2 px-4 rounded hover:bg-opacity-90 transition duration-300"
-                >
-                    Export JSON
-                </a>
+                <div className="relative">
+                    <button
+                        type="button"
+                        onClick={() => setShowActionsMenu((open) => !open)}
+                        aria-haspopup="true"
+                        aria-expanded={showActionsMenu}
+                        className="border border-gray-300 text-gray-700 py-2 px-4 rounded hover:bg-gray-100 transition duration-300"
+                    >
+                        More ▾
+                    </button>
+                    {showActionsMenu && (
+                        <>
+                            {/* Invisible backdrop closes the menu on any outside click,
+                                matching how the modals below handle dismissal. */}
+                            <div
+                                className="fixed inset-0 z-10"
+                                onClick={() => setShowActionsMenu(false)}
+                            />
+                            <div
+                                role="menu"
+                                className="absolute left-0 mt-1 z-20 w-52 bg-white border border-gray-200 rounded shadow-lg py-1"
+                            >
+                                <button
+                                    type="button"
+                                    role="menuitem"
+                                    onClick={() => {
+                                        setShowActionsMenu(false);
+                                        setShowDuplicateModal(true);
+                                    }}
+                                    className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
+                                >
+                                    Duplicate Discussion
+                                </button>
+                                <a
+                                    role="menuitem"
+                                    href={`/api/discussions/${encodeURIComponent(discussionSlug)}/export.csv`}
+                                    onClick={() => setShowActionsMenu(false)}
+                                    className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
+                                >
+                                    Export CSV
+                                </a>
+                                <a
+                                    role="menuitem"
+                                    href={`/api/discussions/${encodeURIComponent(discussionSlug)}/export.json`}
+                                    onClick={() => setShowActionsMenu(false)}
+                                    className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
+                                >
+                                    Export JSON
+                                </a>
+                            </div>
+                        </>
+                    )}
+                </div>
             </div>
 
             {/* Duplicate Modal */}
@@ -1093,7 +1290,7 @@ const DiscussionPage = () => {
                             </button>
                             <button
                                 onClick={handleDuplicateDiscussion}
-                                className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600"
+                                className="px-4 py-2 bg-primary text-white rounded hover:bg-opacity-90"
                             >
                                 Duplicate
                             </button>
@@ -1108,13 +1305,19 @@ const DiscussionPage = () => {
                     className="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full flex items-center justify-center"
                     onClick={() => setShowShareModal(false)}
                 >
-                    <div className="bg-white p-6 rounded-lg shadow-xl text-center" onClick={(e) => e.stopPropagation()}>
-                        <h2 className="text-xl font-bold mb-4">Share this discussion</h2>
+                    <div className="bg-white p-6 rounded-lg shadow-xl text-center max-w-[95vw] max-h-[95vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+                        <h2 className="text-2xl font-bold mb-4">Share this discussion</h2>
                         <div className="flex justify-center mb-4">
-                            <QRCodeSVG value={shareUrl} size={180} includeMargin />
+                            <QRCodeSVG
+                                value={shareUrl}
+                                size={1024}
+                                includeMargin
+                                className="w-auto h-auto max-w-full"
+                                style={{ width: 'min(80vw, 70vh)', height: 'min(80vw, 70vh)' }}
+                            />
                         </div>
-                        <p className="text-sm text-gray-500 mb-2">Scan to join, or copy the link:</p>
-                        <div className="flex items-center gap-2 mb-4">
+                        <p className="text-base text-gray-500 mb-2">Scan to join, or copy the link:</p>
+                        <div className="flex items-center gap-2 mb-4 max-w-2xl mx-auto w-full">
                             <input
                                 type="text"
                                 readOnly
@@ -1254,12 +1457,37 @@ const DiscussionPage = () => {
             )}
 
             {isAdmin && showJoinQr && (
-                <div className="fixed bottom-4 left-4 z-40 w-44 rounded-md border border-gray-200 bg-white p-3 text-center shadow-xl">
+                <div
+                    className="fixed bottom-4 left-4 z-40 rounded-md border border-gray-200 bg-white p-3 text-center shadow-xl"
+                    style={{ width: joinQrSize + 24 }}
+                >
                     <div className="flex justify-center">
-                        <QRCodeSVG value={joinUrl} size={140} includeMargin />
+                        <QRCodeSVG value={joinUrl} size={joinQrSize} includeMargin />
                     </div>
                     <div className="mt-2 text-xs font-semibold uppercase tracking-wide text-gray-500">Scan to join</div>
                     <div className="mt-1 truncate text-sm font-semibold text-gray-800" title={discussionTitle}>{discussionTitle}</div>
+                    {/* Drag this corner to resize the QR for the room/screen. */}
+                    <div
+                        onPointerDown={handleJoinQrResizeStart}
+                        onPointerMove={handleJoinQrResizeMove}
+                        onPointerUp={handleJoinQrResizeEnd}
+                        onPointerCancel={handleJoinQrResizeEnd}
+                        onKeyDown={handleJoinQrResizeKeyDown}
+                        tabIndex={0}
+                        role="slider"
+                        aria-label="Resize join QR code"
+                        aria-valuemin={MIN_JOIN_QR_SIZE}
+                        aria-valuemax={maxJoinQrSize()}
+                        aria-valuenow={joinQrSize}
+                        title="Drag to resize"
+                        className="absolute -right-2 -top-2 flex h-7 w-7 cursor-nesw-resize touch-none items-center justify-center rounded-full border border-gray-300 bg-white text-gray-400 shadow hover:text-gray-600 focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                    >
+                        <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M14 2 2 14" />
+                            <path d="M14 8v6H8" />
+                            <path d="M2 8V2h6" />
+                        </svg>
+                    </div>
                 </div>
             )}
 
@@ -1374,8 +1602,21 @@ const DiscussionPage = () => {
             </div>
 
             {/* Questions list */}
-            {orderedQuestions.map((question) => (
+            {orderedQuestions.map((question) => {
+                // A question can only be edited before anyone has responded — once
+                // it has votes, its wording is locked in (matches the server guard).
+                const hasResponses = (question.votes?.length || 0) > 0;
+                const isEditing = editingQuestionId === question.id;
+                return (
                 <div key={question.id} className="bg-white shadow-lg rounded-lg p-6 mb-6">
+                    {isEditing ? (
+                        <QuestionEditor
+                            question={question}
+                            onSave={handleEditQuestion}
+                            onCancel={() => setEditingQuestionId(null)}
+                        />
+                    ) : (
+                    <>
                     <div className="flex justify-between items-start mb-4">
                         <h2 className="text-xl font-semibold">
                             {question.pinned && <span className="mr-1" title="Pinned">📌</span>}
@@ -1383,6 +1624,14 @@ const DiscussionPage = () => {
                         </h2>
                         {isAdmin && (
                             <div className="flex gap-2 ml-4 shrink-0">
+                                {!hasResponses && (
+                                    <button
+                                        onClick={() => setEditingQuestionId(question.id)}
+                                        className="text-xs px-2 py-1 rounded border border-gray-300 text-gray-600 hover:bg-gray-100"
+                                    >
+                                        Edit
+                                    </button>
+                                )}
                                 <button
                                     onClick={() => handleTogglePin(question.id, question.pinned)}
                                     className="text-xs px-2 py-1 rounded border border-gray-300 text-gray-600 hover:bg-gray-100"
@@ -1400,12 +1649,131 @@ const DiscussionPage = () => {
                     </div>
                     <p className="mb-4 text-sm text-gray-500">Type: {question.type}</p>
                     {renderVotingMechanism(question)}
+                    </>
+                    )}
                 </div>
-            ))}
+                );
+            })}
         </div>
     );
 };
-const OpenEndedQuestion = ({ question, userVote, handleVote, ownedVoteIds, upvotedVoteIds, handleResponseVote, locked }) => {
+
+// Inline moderator editor for a question's wording/type, mirroring the fields of
+// the "add question" form. Only mounted for questions with no responses yet; the
+// server enforces that same rule, so a stale view can't slip an edit through.
+const QuestionEditor = ({ question, onSave, onCancel }) => {
+    const [text, setText] = useState(question.text);
+    const [type, setType] = useState(question.type);
+    const [minValue, setMinValue] = useState(question.minValue ?? 0);
+    const [maxValue, setMaxValue] = useState(question.maxValue ?? 100);
+    const [error, setError] = useState(null);
+    const [saving, setSaving] = useState(false);
+
+    const handleSave = () => {
+        const trimmed = text.trim();
+        if (trimmed === '') {
+            setError('Question text cannot be empty.');
+            return;
+        }
+        const updates = { text: trimmed, type };
+        if (type === QuestionTypes.NUMERICAL) {
+            const min = parseInt(minValue, 10);
+            const max = parseInt(maxValue, 10);
+            if (!Number.isInteger(min) || !Number.isInteger(max) || min >= max) {
+                setError('Minimum value must be less than maximum value.');
+                return;
+            }
+            updates.minValue = min;
+            updates.maxValue = max;
+        }
+        setError(null);
+        setSaving(true);
+        onSave(question.id, updates, (resp) => {
+            setSaving(false);
+            if (!resp || !resp.updated) {
+                setError(
+                    resp && resp.reason === 'has_responses'
+                        ? 'This question already has responses and can no longer be edited.'
+                        : 'Failed to save changes. Please try again.'
+                );
+            }
+            // On success the parent unmounts this editor; nothing more to do here.
+        });
+    };
+
+    return (
+        <div>
+            <input
+                type="text"
+                value={text}
+                onChange={(e) => setText(e.target.value)}
+                placeholder="Enter a new question or statement"
+                className="w-full p-3 border border-gray-300 rounded-md mb-4 focus:outline-none focus:ring-2 focus:ring-primary"
+            />
+            <div className="mb-4">
+                <label className="block mb-2">Question Type:</label>
+                <select
+                    value={type}
+                    onChange={(e) => setType(e.target.value)}
+                    className="w-full p-3 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary"
+                >
+                    {Object.values(QuestionTypes).map(t => (
+                        <option key={t} value={t}>{t}</option>
+                    ))}
+                </select>
+                {QuestionTypeDescriptions[type] && (
+                    <p className="mt-2 text-sm text-gray-500">{QuestionTypeDescriptions[type]}</p>
+                )}
+            </div>
+            {type === QuestionTypes.NUMERICAL && (
+                <div className="mb-4 flex space-x-4">
+                    <div className="flex-1">
+                        <label className="block mb-2">Min Value:</label>
+                        <input
+                            type="number"
+                            value={minValue}
+                            onChange={(e) => setMinValue(e.target.value)}
+                            className="w-full p-3 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary"
+                        />
+                    </div>
+                    <div className="flex-1">
+                        <label className="block mb-2">Max Value:</label>
+                        <input
+                            type="number"
+                            value={maxValue}
+                            onChange={(e) => setMaxValue(e.target.value)}
+                            className="w-full p-3 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary"
+                        />
+                    </div>
+                </div>
+            )}
+            {error && <div className="text-red-500 mb-3 text-sm">{error}</div>}
+            <div className="flex gap-2">
+                <button
+                    onClick={handleSave}
+                    disabled={saving}
+                    className="px-4 py-2 bg-primary text-white rounded hover:bg-opacity-90 transition duration-300 disabled:opacity-50"
+                >
+                    {saving ? 'Saving…' : 'Save'}
+                </button>
+                <button
+                    onClick={onCancel}
+                    disabled={saving}
+                    className="px-4 py-2 rounded border border-gray-300 text-gray-600 hover:bg-gray-100 transition duration-300 disabled:opacity-50"
+                >
+                    Cancel
+                </button>
+            </div>
+        </div>
+    );
+};
+QuestionEditor.propTypes = {
+    question: PropTypes.object.isRequired,
+    onSave: PropTypes.func.isRequired,
+    onCancel: PropTypes.func.isRequired,
+};
+
+const OpenEndedQuestion = ({ question, userVote, handleVote, ownedVoteIds, upvotedVoteIds, handleResponseVote, locked, isAdmin, onModeratorDeleteVote }) => {
     const [response, setResponse] = useState(userVote ? userVote.value : '');
 
     useEffect(() => {
@@ -1472,9 +1840,20 @@ const OpenEndedQuestion = ({ question, userVote, handleVote, ownedVoteIds, upvot
                                         <span className="text-xs font-semibold">{upvotes}</span>
                                     </button>
                                     <div className="flex-1">
-                                        <div className="text-xs font-semibold text-gray-500 mb-1">
-                                            {vote.pseudonym || 'Anonymous'}
-                                            {isYou && ' (you)'}
+                                        <div className="flex items-start justify-between gap-2">
+                                            <div className="text-xs font-semibold text-gray-500 mb-1">
+                                                {vote.pseudonym || 'Anonymous'}
+                                                {isYou && ' (you)'}
+                                            </div>
+                                            {isAdmin && (
+                                                <button
+                                                    onClick={() => onModeratorDeleteVote(question.id, vote.id)}
+                                                    title="Remove this response (moderator)"
+                                                    className="text-xs text-red-500 hover:text-red-700 shrink-0"
+                                                >
+                                                    Remove
+                                                </button>
+                                            )}
                                         </div>
                                         <div className="text-gray-800 whitespace-pre-wrap">{vote.value}</div>
                                     </div>
@@ -1507,7 +1886,9 @@ OpenEndedQuestion.propTypes = {
     ownedVoteIds: PropTypes.instanceOf(Set).isRequired,
     upvotedVoteIds: PropTypes.instanceOf(Set).isRequired,
     handleResponseVote: PropTypes.func.isRequired,
-    locked: PropTypes.bool
+    locked: PropTypes.bool,
+    isAdmin: PropTypes.bool,
+    onModeratorDeleteVote: PropTypes.func
 };
 
 // Stacked divergence bar + summary for an Agreement question. Shows at a glance
@@ -1615,8 +1996,9 @@ AgreementMiniBar.propTypes = {
 // aggregates; only this user's own selections (myRating/myReactions) are known
 // to the client, so nothing reveals who voted which way.
 const BrainstormIdea = ({
-    vote, isOwn, ownedCommentIds, reactionsActive, commentsEnabled, locked,
-    myRating, myReactions, onDeleteVote, onSetRating, onToggleReaction, onAddComment, onDeleteComment,
+    vote, isOwn, isAdmin, ownedCommentIds, reactionsActive, activeReactionKeys, commentsEnabled, locked,
+    myRating, myReactions, onDeleteVote, onModeratorDelete, onSetRating, onToggleReaction,
+    onAddComment, onDeleteComment, onModeratorDeleteComment,
 }) => {
     const [comment, setComment] = useState('');
     const net = (vote.qualityUp || 0) - (vote.qualityDown || 0);
@@ -1661,12 +2043,13 @@ const BrainstormIdea = ({
                             {vote.value}
                             {isOwn && <span className="text-xs text-gray-500"> (You)</span>}
                         </span>
-                        {isOwn && (
+                        {(isOwn || isAdmin) && (
                             <button
-                                onClick={onDeleteVote}
+                                onClick={isOwn ? onDeleteVote : onModeratorDelete}
+                                title={isOwn ? undefined : 'Remove this idea (moderator)'}
                                 className="ml-2 text-sm text-red-500 hover:text-red-700 shrink-0"
                             >
-                                Delete
+                                {isOwn ? 'Delete' : 'Remove'}
                             </button>
                         )}
                     </div>
@@ -1695,7 +2078,7 @@ const BrainstormIdea = ({
 
                     {reactionsActive && (
                         <div className="flex flex-wrap gap-1 mt-2">
-                            {EPISTEMIC_REACTIONS.map(r => {
+                            {EPISTEMIC_REACTIONS.filter(r => activeReactionKeys.includes(r.key)).map(r => {
                                 const count = (vote.reactionCounts || {})[r.key] || 0;
                                 const active = myReactions.includes(r.key);
                                 return (
@@ -1727,12 +2110,13 @@ const BrainstormIdea = ({
                                                 <span className="font-semibold text-gray-600">{c.pseudonym || 'Anonymous'}:</span>{' '}
                                                 <span className="text-gray-800 whitespace-pre-wrap">{c.body}</span>
                                             </span>
-                                            {ownedCommentIds.has(c.id) && (
+                                            {(ownedCommentIds.has(c.id) || isAdmin) && (
                                                 <button
-                                                    onClick={() => onDeleteComment(c.id)}
+                                                    onClick={() => (ownedCommentIds.has(c.id) ? onDeleteComment(c.id) : onModeratorDeleteComment(c.id))}
+                                                    title={ownedCommentIds.has(c.id) ? undefined : 'Remove this comment (moderator)'}
                                                     className="text-xs text-red-500 hover:text-red-700 shrink-0"
                                                 >
-                                                    Delete
+                                                    {ownedCommentIds.has(c.id) ? 'Delete' : 'Remove'}
                                                 </button>
                                             )}
                                         </li>
@@ -1778,17 +2162,21 @@ BrainstormIdea.propTypes = {
         comments: PropTypes.array,
     }).isRequired,
     isOwn: PropTypes.bool,
+    isAdmin: PropTypes.bool,
     ownedCommentIds: PropTypes.instanceOf(Set).isRequired,
     reactionsActive: PropTypes.bool,
     commentsEnabled: PropTypes.bool,
+    activeReactionKeys: PropTypes.array.isRequired,
     locked: PropTypes.bool,
     myRating: PropTypes.object,
     myReactions: PropTypes.array,
     onDeleteVote: PropTypes.func.isRequired,
+    onModeratorDelete: PropTypes.func,
     onSetRating: PropTypes.func.isRequired,
     onToggleReaction: PropTypes.func.isRequired,
     onAddComment: PropTypes.func.isRequired,
     onDeleteComment: PropTypes.func.isRequired,
+    onModeratorDeleteComment: PropTypes.func,
 };
 
 // participant add any number of separate ideas and delete their own. The
@@ -1797,7 +2185,8 @@ BrainstormIdea.propTypes = {
 // evaluating them.
 const BrainstormQuestion = ({
     question, ownedVoteIds, ownedCommentIds, handleVote, handleDeleteVote, locked, isAdmin, myBrainstorm,
-    onSetFlags, onSetRating, onToggleReaction, onAddComment, onDeleteComment,
+    activeReactionKeys, onSetFlags, onSetReactionKeys, onSetRating, onToggleReaction, onAddComment, onDeleteComment,
+    onModeratorDeleteVote, onModeratorDeleteComment,
 }) => {
     const [idea, setIdea] = useState('');
     const votes = question.votes || [];
@@ -1833,6 +2222,37 @@ const BrainstormQuestion = ({
                     <button onClick={() => onSetFlags(question.id, { comments_enabled: !commentsEnabled })} className={modButton}>
                         {commentsEnabled ? 'Disable comments' : 'Enable comments'}
                     </button>
+                    {reactionsEnabled && (
+                        <div className="w-full flex flex-wrap items-center gap-1 mt-1 border-t border-indigo-100 pt-2">
+                            <span className="text-indigo-800">Reaction set (whole session):</span>
+                            {EPISTEMIC_REACTIONS.map(r => {
+                                const on = activeReactionKeys.includes(r.key);
+                                return (
+                                    <button
+                                        key={r.key}
+                                        type="button"
+                                        // Toggling rebuilds the active list in catalog order; the
+                                        // last remaining reaction can't be removed (the server
+                                        // ignores an empty set, so guard the UI to match).
+                                        onClick={() => {
+                                            const next = on
+                                                ? activeReactionKeys.filter(k => k !== r.key)
+                                                : EPISTEMIC_REACTIONS.map(c => c.key)
+                                                    .filter(k => k === r.key || activeReactionKeys.includes(k));
+                                            if (next.length === 0) return;
+                                            onSetReactionKeys(next);
+                                        }}
+                                        title={on ? `Hide "${r.label}"` : `Show "${r.label}"`}
+                                        className={`px-2 py-0.5 rounded-full border ${on
+                                            ? 'bg-indigo-100 border-indigo-400 text-indigo-800'
+                                            : 'bg-white border-gray-300 text-gray-400 line-through'}`}
+                                    >
+                                        <span className="mr-1">{r.emoji}</span>{r.label}
+                                    </button>
+                                );
+                            })}
+                        </div>
+                    )}
                 </div>
             )}
 
@@ -1873,17 +2293,21 @@ const BrainstormQuestion = ({
                                 // (the server no longer sends raw user ids); the
                                 // parent precomputes the sets of ids we own.
                                 isOwn={ownedVoteIds.has(vote.id)}
+                                isAdmin={isAdmin}
                                 ownedCommentIds={ownedCommentIds}
                                 reactionsActive={reactionsActive}
+                                activeReactionKeys={activeReactionKeys}
                                 commentsEnabled={commentsEnabled}
                                 locked={locked}
                                 myRating={myBrainstorm.ratings[vote.id] || {}}
                                 myReactions={myBrainstorm.reactions[vote.id] || []}
                                 onDeleteVote={() => handleDeleteVote(question.id, vote.id)}
+                                onModeratorDelete={() => onModeratorDeleteVote(question.id, vote.id)}
                                 onSetRating={onSetRating}
                                 onToggleReaction={onToggleReaction}
                                 onAddComment={onAddComment}
                                 onDeleteComment={onDeleteComment}
+                                onModeratorDeleteComment={onModeratorDeleteComment}
                             />
                         ))}
                     </ul>
@@ -1967,11 +2391,15 @@ BrainstormQuestion.propTypes = {
         ratings: PropTypes.object,
         reactions: PropTypes.object,
     }).isRequired,
+    activeReactionKeys: PropTypes.array.isRequired,
     onSetFlags: PropTypes.func.isRequired,
+    onSetReactionKeys: PropTypes.func.isRequired,
     onSetRating: PropTypes.func.isRequired,
     onToggleReaction: PropTypes.func.isRequired,
     onAddComment: PropTypes.func.isRequired,
     onDeleteComment: PropTypes.func.isRequired,
+    onModeratorDeleteVote: PropTypes.func,
+    onModeratorDeleteComment: PropTypes.func,
 };
 
 export default DiscussionPage;
