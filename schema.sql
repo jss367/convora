@@ -11,6 +11,9 @@ CREATE TABLE IF NOT EXISTS discussions (
   created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
 );
 
+-- discussions.topic is made unique by migrateUniqueDiscussionTopics() after
+-- any duplicate rows from older deployments have been collapsed.
+
 CREATE TABLE IF NOT EXISTS questions (
   id            SERIAL PRIMARY KEY,
   discussion_id INTEGER REFERENCES discussions(id),

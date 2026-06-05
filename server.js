@@ -129,11 +129,8 @@ app.use((req, res, next) => {
 app.post('/api/discussions', async (req, res) => {
   const { topic } = req.body;
   try {
-    const result = await pool.query(
-      'INSERT INTO discussions (topic) VALUES ($1) RETURNING id',
-      [topic]
-    );
-    res.json({ success: true, id: result.rows[0].id });
+    const id = await getOrCreateDiscussion(pool, topic);
+    res.json({ success: true, id });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Server error' });
@@ -159,6 +156,17 @@ app.get('/api/discussions/:id', async (req, res) => {
 });
 
 // Database functions
+async function getOrCreateDiscussion(db, topic) {
+  const result = await db.query(
+    `INSERT INTO discussions (topic)
+     VALUES ($1)
+     ON CONFLICT (topic) DO UPDATE SET topic = EXCLUDED.topic
+     RETURNING id`,
+    [topic]
+  );
+  return result.rows[0].id;
+}
+
 async function getQuestions(topic) {
   const query = `
     SELECT 
@@ -200,21 +208,7 @@ async function addQuestion(topic, question) {
   try {
     await client.query('BEGIN');
 
-    // Get or create discussion
-    let discussionId;
-    const discussionResult = await client.query(
-      'SELECT id FROM discussions WHERE topic = $1',
-      [topic]
-    );
-    if (discussionResult.rows.length === 0) {
-      const newDiscussionResult = await client.query(
-        'INSERT INTO discussions (topic) VALUES ($1) RETURNING id',
-        [topic]
-      );
-      discussionId = newDiscussionResult.rows[0].id;
-    } else {
-      discussionId = discussionResult.rows[0].id;
-    }
+    const discussionId = await getOrCreateDiscussion(client, topic);
 
     // Ensure options is a valid JSON array
     const optionsJson = JSON.stringify(Array.isArray(question.options) ? question.options : []);
@@ -246,6 +240,69 @@ async function addQuestion(topic, question) {
 async function migrateAddPseudonymColumn() {
   await pool.query('ALTER TABLE votes ADD COLUMN IF NOT EXISTS pseudonym TEXT');
   console.log('Pseudonym column migration completed');
+}
+
+// Older deployments could create duplicate discussions because several paths
+// performed SELECT-then-INSERT without a uniqueness guarantee. Collapse those
+// duplicates before adding the unique constraint.
+async function migrateUniqueDiscussionTopics() {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(`
+      WITH duplicate_topics AS (
+        SELECT topic, MIN(id) AS keep_id
+        FROM discussions
+        GROUP BY topic
+        HAVING COUNT(*) > 1
+      ),
+      moved_questions AS (
+        UPDATE questions q
+        SET discussion_id = duplicate_topics.keep_id
+        FROM duplicate_topics
+        JOIN discussions d
+          ON d.topic = duplicate_topics.topic
+         AND d.id <> duplicate_topics.keep_id
+        WHERE q.discussion_id = d.id
+        RETURNING q.id
+      )
+      DELETE FROM discussions d
+      USING duplicate_topics
+      WHERE d.topic = duplicate_topics.topic
+        AND d.id <> duplicate_topics.keep_id
+    `);
+    await client.query(`
+      DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1
+          FROM pg_constraint c
+          WHERE c.conrelid = 'discussions'::regclass
+            AND c.contype = 'u'
+            AND c.conkey = ARRAY(
+              SELECT a.attnum
+              FROM pg_attribute a
+              WHERE a.attrelid = 'discussions'::regclass
+                AND a.attname = 'topic'
+            )::smallint[]
+        ) THEN
+          CREATE UNIQUE INDEX IF NOT EXISTS discussions_topic_unique_idx
+            ON discussions(topic);
+          ALTER TABLE discussions
+            ADD CONSTRAINT discussions_topic_unique
+            UNIQUE USING INDEX discussions_topic_unique_idx;
+        END IF;
+      END $$;
+    `);
+    await client.query('COMMIT');
+    console.log('Discussion topic uniqueness migration completed');
+  } catch (e) {
+    await client.query('ROLLBACK');
+    console.error('Error migrating discussion topic uniqueness:', e);
+    throw e;
+  } finally {
+    client.release();
+  }
 }
 
 async function addVote(questionId, vote, userId, pseudonym) {
@@ -367,11 +424,21 @@ app.post('/api/duplicate-discussion', async (req, res) => {
 
     const originalDiscussionId = originalDiscussionResult.rows[0].id;
 
-    // Create new discussion
+    // Create new discussion. Duplicating into an existing topic would merge
+    // questions into that discussion, so treat the unique conflict as a user
+    // error instead.
     const newDiscussionResult = await client.query(
-      'INSERT INTO discussions (topic) VALUES ($1) RETURNING id',
+      `INSERT INTO discussions (topic)
+       VALUES ($1)
+       ON CONFLICT (topic) DO NOTHING
+       RETURNING id`,
       [newTopic]
     );
+
+    if (newDiscussionResult.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: 'Discussion topic already exists' });
+    }
 
     const newDiscussionId = newDiscussionResult.rows[0].id;
 
@@ -416,6 +483,7 @@ const PORT = process.env.PORT || 3001;
 // exist yet (e.g. votes.pseudonym). Order matters: create tables first, then
 // migrate the existing/just-created schema, then start listening.
 initSchema()
+  .then(() => migrateUniqueDiscussionTopics())
   .then(() => migrateAddPseudonymColumn())
   .then(() => {
     server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
