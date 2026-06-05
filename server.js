@@ -897,8 +897,12 @@ app.use((req, res, next) => {
 app.post('/api/discussions', async (req, res) => {
   const { topic } = req.body;
   try {
-    const id = await getOrCreateDiscussion(pool, topic);
-    res.json({ success: true, id });
+    // The creator becomes the moderator: createDiscussion mints an admin token
+    // and returns it when (and only when) this caller is the one establishing
+    // the discussion's moderator. The client persists it so the person who made
+    // the session lands as its moderator instead of racing others for the role.
+    const { id, adminToken } = await createDiscussion(topic);
+    res.json({ success: true, id, adminToken });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Server error' });
@@ -1137,6 +1141,43 @@ async function verifyAdmin(topic, token) {
     [topic, token]
   );
   return result.rows.length > 0 ? result.rows[0].id : null;
+}
+
+// Create a discussion (or look up the existing one) and, when it has no
+// moderator yet, make the creator its moderator by minting a fresh admin token.
+// Returns the discussion id plus an adminToken that is non-null ONLY when this
+// caller became the moderator. If a moderator already exists, adminToken is null
+// and the existing token is never disclosed — so re-creating an already-moderated
+// topic can't hand its controls to whoever re-submits it.
+// Shares claimModerator()'s advisory-lock + COALESCE upsert so the create-time
+// claim is race-safe against concurrent creates and lazy (question-post) creation.
+async function createDiscussion(topic) {
+  const token = crypto.randomBytes(16).toString('hex');
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [topic]);
+
+    const result = await client.query(
+      `INSERT INTO discussions (topic, admin_token)
+       VALUES ($1, $2)
+       ON CONFLICT (topic) DO UPDATE
+       SET admin_token = COALESCE(discussions.admin_token, EXCLUDED.admin_token)
+       RETURNING id, admin_token`,
+      [topic, token]
+    );
+
+    await client.query('COMMIT');
+    const row = result.rows[0];
+    // The stored token equals ours exactly when we just minted it (fresh row, or
+    // an existing row that had no moderator); otherwise a moderator already held it.
+    return { id: row.id, adminToken: row.admin_token === token ? token : null };
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    client.release();
+  }
 }
 
 // First-come moderator claim: assigns a fresh admin token only if the

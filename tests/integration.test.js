@@ -88,6 +88,40 @@ test('HTTP API creates and fetches discussions', async () => {
   assert.equal(fetchResponse.body.topic, topic);
 });
 
+test('creating a discussion makes the creator its moderator', async () => {
+  const topic = uniqueTopic('creator-mod');
+
+  const createResponse = await jsonRequest('POST', '/api/discussions', { topic });
+  assert.equal(createResponse.status, 200);
+  // The creator gets a moderator token back on the request that establishes it.
+  assert.match(createResponse.body.adminToken, /^[a-f0-9]{32}$/);
+
+  // The returned token is the discussion's stored admin token — i.e. it really
+  // grants moderation (verifyAdmin matches on this exact value).
+  const stored = await pool.query('SELECT admin_token FROM discussions WHERE topic = $1', [topic]);
+  assert.equal(stored.rows[0].admin_token, createResponse.body.adminToken);
+});
+
+test('re-creating an already-moderated discussion does not hand over moderation', async () => {
+  const topic = uniqueTopic('creator-mod-repeat');
+
+  const first = await jsonRequest('POST', '/api/discussions', { topic });
+  const firstToken = first.body.adminToken;
+  assert.match(firstToken, /^[a-f0-9]{32}$/);
+
+  // A second create for the same topic must NOT mint or disclose a token —
+  // otherwise anyone could seize moderation by re-submitting an existing topic.
+  const second = await jsonRequest('POST', '/api/discussions', { topic });
+  assert.equal(second.status, 200);
+  assert.equal(second.body.success, true);
+  assert.equal(second.body.id, first.body.id);
+  assert.equal(second.body.adminToken, null);
+
+  // The original moderator's token is untouched.
+  const stored = await pool.query('SELECT admin_token FROM discussions WHERE topic = $1', [topic]);
+  assert.equal(stored.rows[0].admin_token, firstToken);
+});
+
 test('Socket.IO adds questions and broadcasts votes with pseudonyms', async () => {
   const topic = uniqueTopic('socket');
   const author = await connectSocket();
