@@ -703,13 +703,21 @@ const DiscussionPage = () => {
         }
     };
 
+    // Only Agreement and Yes/No are opinion prompts; the agreement sorts ignore
+    // other types so an Open Ended / Brainstorm answer that happens to read
+    // "Yes", "No", "Agree", etc. can't mis-rank a non-opinion question.
+    const isOpinionQuestion = (question) =>
+        question?.type === QuestionTypes.AGREEMENT || question?.type === QuestionTypes.YES_NO;
+
     // Yes/No votes count toward the same agreement/disagreement sorts as the
     // five-point scale: Yes reads as agreement, No as disagreement.
     const getAgreementCount = (question) => {
+        if (!isOpinionQuestion(question)) return 0;
         return (question.votes || []).filter(v => v.value === VoteOptions.STRONGLY_AGREE || v.value === VoteOptions.AGREE || v.value === YesNoOptions.YES).length;
     };
 
     const getDisagreementCount = (question) => {
+        if (!isOpinionQuestion(question)) return 0;
         return (question.votes || []).filter(v => v.value === VoteOptions.STRONGLY_DISAGREE || v.value === VoteOptions.DISAGREE || v.value === YesNoOptions.NO).length;
     };
 
