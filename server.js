@@ -93,6 +93,18 @@ io.on('connection', (socket) => {
     }
   });
 
+  socket.on('leaveDiscussion', (topic) => {
+    // The client unmounted its discussion page; drop it from the room and
+    // recompute presence so the counter doesn't over-report lingering viewers.
+    const roomToLeave = topic || socket.data.topic;
+    if (!roomToLeave) return;
+    socket.leave(roomToLeave);
+    if (socket.data.topic === roomToLeave) {
+      socket.data.topic = null;
+    }
+    emitPresence(roomToLeave);
+  });
+
   socket.on('addQuestion', async (topic, question) => {
     console.log('Received addQuestion event');
     console.log('topic:', topic);
@@ -374,6 +386,19 @@ async function addVote(questionId, vote, userId, pseudonym) {
 // Toggle a user's upvote on an open-ended response. Adds the upvote if absent,
 // removes it if already present.
 async function toggleResponseVote(responseId, userId) {
+  // Reject self-upvotes: the UI disables the button for your own response, but
+  // the event can still be emitted from the console, so enforce it server-side.
+  const ownerResult = await pool.query(
+    'SELECT user_id FROM votes WHERE id = $1',
+    [responseId]
+  );
+  if (ownerResult.rows.length === 0) {
+    return;
+  }
+  if (ownerResult.rows[0].user_id === userId) {
+    console.log('Ignoring self-upvote on response', responseId);
+    return;
+  }
   const deleteResult = await pool.query(
     'DELETE FROM response_votes WHERE response_id = $1 AND user_id = $2',
     [responseId, userId]

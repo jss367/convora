@@ -157,6 +157,9 @@ const DiscussionPage = () => {
         socket.on('questions', handleQuestionsUpdate);
         socket.on('presence', setPresence);
         return () => {
+            // Leave the room so the server stops counting this client toward the
+            // discussion's presence once the page unmounts (e.g. navigating home).
+            socket.emit('leaveDiscussion', topic);
             socket.off('questions', handleQuestionsUpdate);
             socket.off('presence', setPresence);
         };
