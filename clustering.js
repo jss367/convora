@@ -51,26 +51,31 @@ function distSq(a, b) {
 //   matrix[i][j] = participant i's score on statement j (0 when they didn't vote)
 //   voted[i][j]  = whether participant i actually cast a vote on statement j
 function buildVoteMatrix(questions) {
-  const statements = questions
-    .filter(q => q.type === 'Agreement')
-    .map(q => ({ id: q.id, text: q.text }));
+  const agreementQuestions = questions.filter(q => q.type === 'Agreement');
 
   // userId -> Map(statementId -> score). votes arrive ordered by id, so a later
   // entry overwrites an earlier one and the latest vote wins.
   const byUser = new Map();
-  questions
-    .filter(q => q.type === 'Agreement')
-    .forEach(q => {
-      (q.votes || []).forEach(v => {
-        if (!v.userId || !(v.value in AGREEMENT_SCORES)) {
-          return;
-        }
-        if (!byUser.has(v.userId)) {
-          byUser.set(v.userId, new Map());
-        }
-        byUser.get(v.userId).set(q.id, AGREEMENT_SCORES[v.value]);
-      });
+  const votedStatementIds = new Set();
+  agreementQuestions.forEach(q => {
+    (q.votes || []).forEach(v => {
+      if (!v.userId || !(v.value in AGREEMENT_SCORES)) {
+        return;
+      }
+      if (!byUser.has(v.userId)) {
+        byUser.set(v.userId, new Map());
+      }
+      byUser.get(v.userId).set(q.id, AGREEMENT_SCORES[v.value]);
+      votedStatementIds.add(q.id);
     });
+  });
+
+  // Only statements that actually received at least one valid vote count: an
+  // empty Agreement question must not inflate the statement total (which gates
+  // eligibility) or add a dead all-zero dimension to the clustering.
+  const statements = agreementQuestions
+    .filter(q => votedStatementIds.has(q.id))
+    .map(q => ({ id: q.id, text: q.text }));
 
   const participants = [...byUser.keys()];
   const matrix = [];
