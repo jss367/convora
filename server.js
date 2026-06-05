@@ -73,6 +73,41 @@ function sanitizeFilename(value) {
     .slice(0, 80) || 'discussion';
 }
 
+function slugifyTopic(value) {
+  return String(value || 'discussion')
+    .trim()
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 80) || 'discussion';
+}
+
+function formatTopicTitle(value) {
+  const title = String(value || '').trim().replace(/\s+/g, ' ');
+  if (title) {
+    return title;
+  }
+  return 'Discussion';
+}
+
+function titleFromSlug(slug) {
+  return slugifyTopic(slug)
+    .split('-')
+    .filter(Boolean)
+    .map(part => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ') || 'Discussion';
+}
+
+function suffixSlug(baseSlug, suffix) {
+  if (suffix <= 1) {
+    return baseSlug;
+  }
+  const suffixText = `-${suffix}`;
+  return `${baseSlug.slice(0, 80 - suffixText.length)}${suffixText}`;
+}
+
 function escapeCsv(value) {
   if (value === null || value === undefined) {
     return '';
@@ -510,6 +545,7 @@ function buildSummary(discussion, questions, synthesis) {
     discussion: {
       id: discussion.id,
       topic: discussion.topic,
+      slug: discussion.slug,
       createdAt: discussion.created_at,
     },
     counts: {
@@ -650,10 +686,11 @@ function renderReportHtml(summary) {
 </html>`;
 }
 
-async function getDiscussionByTopic(topic) {
+async function getDiscussionBySlug(slug) {
+  const canonicalSlug = slugifyTopic(slug);
   const result = await pool.query(
-    'SELECT id, topic, created_at FROM discussions WHERE topic = $1 ORDER BY id DESC LIMIT 1',
-    [topic]
+    'SELECT id, topic, slug, created_at FROM discussions WHERE slug = $1 ORDER BY id DESC LIMIT 1',
+    [canonicalSlug]
   );
   return result.rows[0] || null;
 }
@@ -670,9 +707,10 @@ function emitPresence(topic) {
 
 // Read the lock state and whether a moderator has been claimed.
 async function getDiscussionState(topic) {
+  const slug = slugifyTopic(topic);
   const result = await pool.query(
-    'SELECT locked, admin_token IS NOT NULL AS has_moderator FROM discussions WHERE topic = $1',
-    [topic]
+    'SELECT locked, admin_token IS NOT NULL AS has_moderator FROM discussions WHERE slug = $1',
+    [slug]
   );
   if (result.rows.length === 0) return { locked: false, hasModerator: false };
   return { locked: result.rows[0].locked === true, hasModerator: result.rows[0].has_moderator === true };
@@ -687,22 +725,24 @@ io.on('connection', (socket) => {
   console.log('New client connected');
 
   socket.on('joinDiscussion', async (topic) => {
+    const discussionSlug = slugifyTopic(topic);
     // If this socket was viewing another discussion, leave it so presence
     // counts stay accurate as the user navigates within the SPA.
     const previousTopic = socket.data.topic;
-    if (previousTopic && previousTopic !== topic) {
+    if (previousTopic && previousTopic !== discussionSlug) {
       socket.leave(previousTopic);
       emitPresence(previousTopic);
     }
 
-    socket.join(topic);
-    socket.data.topic = topic;
-    emitPresence(topic);
+    socket.join(discussionSlug);
+    socket.data.topic = discussionSlug;
+    emitPresence(discussionSlug);
 
     try {
-      const questions = await getQuestions(topic);
+      socket.emit('discussion', await getDiscussionBySlug(discussionSlug));
+      const questions = await getQuestions(discussionSlug);
       socket.emit('questions', questions);
-      socket.emit('discussionState', await getDiscussionState(topic));
+      socket.emit('discussionState', await getDiscussionState(discussionSlug));
     } catch (error) {
       console.error('Error getting questions:', error);
       socket.emit('error', { message: 'Failed to get questions' });
@@ -736,8 +776,9 @@ io.on('connection', (socket) => {
   });
 
   socket.on('addQuestion', async (topic, question, force, ack) => {
+    const discussionSlug = slugifyTopic(topic);
     console.log('Received addQuestion event');
-    console.log('topic:', topic);
+    console.log('topic:', discussionSlug);
     console.log('question:', question);
 
     // Report the outcome back to the submitter so the client only clears its
@@ -748,7 +789,7 @@ io.on('connection', (socket) => {
     };
 
     try {
-      if (await isDiscussionLocked(topic)) {
+      if (await isDiscussionLocked(discussionSlug)) {
         socket.emit('error', { message: 'This discussion is locked.' });
         reply({ added: false, reason: 'locked' });
         return;
@@ -757,7 +798,7 @@ io.on('connection', (socket) => {
       // Surface a near-duplicate so the submitter can vote on the existing
       // statement instead — unless they explicitly chose to post anyway.
       if (!force) {
-        const similar = await findSimilarQuestion(topic, question.text);
+        const similar = await findSimilarQuestion(discussionSlug, question.text);
         if (similar) {
           socket.emit('similarQuestion', { candidate: similar, question });
           reply({ added: false, reason: 'similar' });
@@ -765,11 +806,12 @@ io.on('connection', (socket) => {
         }
       }
 
-      await addQuestion(topic, question);
+      await addQuestion(discussionSlug, question);
       console.log('Question added successfully');
-      const updatedQuestions = await getQuestions(topic);
+      const updatedQuestions = await getQuestions(discussionSlug);
       console.log('Retrieved updated questions:', updatedQuestions);
-      io.to(topic).emit('questions', updatedQuestions);
+      io.to(discussionSlug).emit('discussion', await getDiscussionBySlug(discussionSlug));
+      io.to(discussionSlug).emit('questions', updatedQuestions);
       reply({ added: true });
     } catch (error) {
       console.error('Error adding question:', error);
@@ -779,11 +821,12 @@ io.on('connection', (socket) => {
   });
 
   socket.on('vote', async (topic, questionId, vote, userId, pseudonym) => {
+    const discussionSlug = slugifyTopic(topic);
     try {
       // Verify the question actually belongs to this topic AND that the topic is
       // not locked. Without this, a client could bypass a locked discussion by
       // sending the locked question's id under some other (unlocked) topic.
-      const target = await getQuestionForTopic(topic, questionId);
+      const target = await getQuestionForTopic(discussionSlug, questionId);
       if (!target) {
         socket.emit('error', { message: 'Invalid question for this discussion.' });
         return;
@@ -793,8 +836,8 @@ io.on('connection', (socket) => {
         return;
       }
       await addVote(questionId, vote, userId, pseudonym);
-      const questions = await getQuestions(topic);
-      io.to(topic).emit('questions', questions);
+      const questions = await getQuestions(discussionSlug);
+      io.to(discussionSlug).emit('questions', questions);
     } catch (error) {
       console.error('Error handling vote:', error);
       socket.emit('error', { message: 'Failed to handle vote' });
@@ -803,11 +846,13 @@ io.on('connection', (socket) => {
 
   // First-come moderator claim. Replies via ack callback with the admin token.
   socket.on('claimModerator', async (topic, cb) => {
+    const discussionSlug = slugifyTopic(topic);
     try {
-      const token = await claimModerator(topic);
+      const token = await claimModerator(discussionSlug);
       if (token) {
         if (typeof cb === 'function') cb({ success: true, token });
-        await emitDiscussionState(topic);
+        io.to(discussionSlug).emit('discussion', await getDiscussionBySlug(discussionSlug));
+        await emitDiscussionState(discussionSlug);
       } else if (typeof cb === 'function') {
         cb({ success: false, error: 'already_claimed' });
       }
@@ -822,15 +867,16 @@ io.on('connection', (socket) => {
   // to promote. Raw user_ids are never sent to the client.
   socket.on('listParticipants', async (topic, token, cb) => {
     if (typeof cb !== 'function') return;
+    const discussionSlug = slugifyTopic(topic);
     try {
-      const discussionId = await verifyAdmin(topic, token);
+      const discussionId = await verifyAdmin(discussionSlug, token);
       if (!discussionId) {
         cb({ success: false, error: 'not_authorized' });
         return;
       }
       // canDemote tells the UI whether to offer "Remove" — only the creator may.
-      const canDemote = !!(await verifyCreator(topic, token));
-      cb({ success: true, participants: await listParticipants(topic), canDemote });
+      const canDemote = !!(await verifyCreator(discussionSlug, token));
+      cb({ success: true, participants: await listParticipants(discussionSlug), canDemote });
     } catch (error) {
       console.error('Error listing participants:', error);
       cb({ success: false, error: 'server_error' });
@@ -841,20 +887,21 @@ io.on('connection', (socket) => {
   // moderator. Mints them a personal token, delivers it live to their connected
   // sockets, and returns the refreshed participant list.
   socket.on('promoteModerator', async (topic, token, participantId, cb) => {
+    const discussionSlug = slugifyTopic(topic);
     try {
-      const discussionId = await verifyAdmin(topic, token);
+      const discussionId = await verifyAdmin(discussionSlug, token);
       if (!discussionId) {
         if (typeof cb === 'function') cb({ success: false, error: 'not_authorized' });
         return;
       }
-      const target = await resolveParticipant(topic, participantId);
+      const target = await resolveParticipant(discussionSlug, participantId);
       if (!target) {
         // The handle no longer maps to a participant (e.g. the list shifted).
         if (typeof cb === 'function') cb({ success: false, error: 'unknown_participant' });
         return;
       }
       const { token: grantedToken, inserted } = await promoteModerator(discussionId, target.userId);
-      const delivered = deliverModeratorToken(topic, target.userId, grantedToken);
+      const delivered = deliverModeratorToken(discussionSlug, target.userId, grantedToken);
       // A token can only reach a user via a live push (we never re-deliver from a
       // client-supplied id). If this call newly granted moderation but the user
       // isn't connected to receive it, roll the grant back rather than leaving
@@ -864,10 +911,10 @@ io.on('connection', (socket) => {
         if (typeof cb === 'function') cb({ success: false, error: 'participant_offline' });
         return;
       }
-      await emitDiscussionState(topic);
+      await emitDiscussionState(discussionSlug);
       if (typeof cb === 'function') {
-        const canDemote = !!(await verifyCreator(topic, token));
-        cb({ success: true, participants: await listParticipants(topic), canDemote });
+        const canDemote = !!(await verifyCreator(discussionSlug, token));
+        cb({ success: true, participants: await listParticipants(discussionSlug), canDemote });
       }
     } catch (error) {
       console.error('Error promoting moderator:', error);
@@ -881,22 +928,23 @@ io.on('connection', (socket) => {
   // deleted, so verifyAdmin rejects that token on the next action even if the
   // user is offline; the live moderatorRevoked push just updates their UI.
   socket.on('demoteModerator', async (topic, token, participantId, cb) => {
+    const discussionSlug = slugifyTopic(topic);
     try {
-      const discussionId = await verifyCreator(topic, token);
+      const discussionId = await verifyCreator(discussionSlug, token);
       if (!discussionId) {
         if (typeof cb === 'function') cb({ success: false, error: 'not_authorized' });
         return;
       }
-      const target = await resolveParticipant(topic, participantId);
+      const target = await resolveParticipant(discussionSlug, participantId);
       if (!target) {
         if (typeof cb === 'function') cb({ success: false, error: 'unknown_participant' });
         return;
       }
       await revokeModerator(discussionId, target.userId);
-      revokeModeratorToken(topic, target.userId);
-      await emitDiscussionState(topic);
+      revokeModeratorToken(discussionSlug, target.userId);
+      await emitDiscussionState(discussionSlug);
       if (typeof cb === 'function') {
-        cb({ success: true, participants: await listParticipants(topic), canDemote: true });
+        cb({ success: true, participants: await listParticipants(discussionSlug), canDemote: true });
       }
     } catch (error) {
       console.error('Error demoting moderator:', error);
@@ -912,7 +960,7 @@ io.on('connection', (socket) => {
   socket.on('checkModerator', async (topic, token, cb) => {
     if (typeof cb !== 'function') return;
     try {
-      const discussionId = await verifyAdmin(topic, token);
+      const discussionId = await verifyAdmin(slugifyTopic(topic), token);
       cb({ ok: true, isModerator: !!discussionId });
     } catch (error) {
       console.error('Error checking moderator status:', error);
@@ -921,8 +969,9 @@ io.on('connection', (socket) => {
   });
 
   socket.on('deleteQuestion', async (topic, questionId, token) => {
+    const discussionSlug = slugifyTopic(topic);
     try {
-      const discussionId = await verifyAdmin(topic, token);
+      const discussionId = await verifyAdmin(discussionSlug, token);
       if (!discussionId) {
         socket.emit('error', { message: 'Not authorized to moderate this discussion.' });
         return;
@@ -938,7 +987,7 @@ io.on('connection', (socket) => {
         [questionId, discussionId]
       );
       await pool.query('DELETE FROM questions WHERE id = $1 AND discussion_id = $2', [questionId, discussionId]);
-      io.to(topic).emit('questions', await getQuestions(topic));
+      io.to(discussionSlug).emit('questions', await getQuestions(discussionSlug));
     } catch (error) {
       console.error('Error deleting question:', error);
       socket.emit('error', { message: 'Failed to delete question' });
@@ -946,14 +995,15 @@ io.on('connection', (socket) => {
   });
 
   socket.on('setLocked', async (topic, locked, token) => {
+    const discussionSlug = slugifyTopic(topic);
     try {
-      const discussionId = await verifyAdmin(topic, token);
+      const discussionId = await verifyAdmin(discussionSlug, token);
       if (!discussionId) {
         socket.emit('error', { message: 'Not authorized to moderate this discussion.' });
         return;
       }
       await pool.query('UPDATE discussions SET locked = $1 WHERE id = $2', [!!locked, discussionId]);
-      await emitDiscussionState(topic);
+      await emitDiscussionState(discussionSlug);
     } catch (error) {
       console.error('Error setting lock state:', error);
       socket.emit('error', { message: 'Failed to update discussion' });
@@ -961,14 +1011,15 @@ io.on('connection', (socket) => {
   });
 
   socket.on('setPinned', async (topic, questionId, pinned, token) => {
+    const discussionSlug = slugifyTopic(topic);
     try {
-      const discussionId = await verifyAdmin(topic, token);
+      const discussionId = await verifyAdmin(discussionSlug, token);
       if (!discussionId) {
         socket.emit('error', { message: 'Not authorized to moderate this discussion.' });
         return;
       }
       await pool.query('UPDATE questions SET pinned = $1 WHERE id = $2 AND discussion_id = $3', [!!pinned, questionId, discussionId]);
-      io.to(topic).emit('questions', await getQuestions(topic));
+      io.to(discussionSlug).emit('questions', await getQuestions(discussionSlug));
     } catch (error) {
       console.error('Error setting pin state:', error);
       socket.emit('error', { message: 'Failed to update question' });
@@ -976,10 +1027,11 @@ io.on('connection', (socket) => {
   });
 
   socket.on('toggleResponseVote', async (topic, responseId, userId) => {
+    const discussionSlug = slugifyTopic(topic);
     try {
-      await toggleResponseVote(topic, responseId, userId);
-      const questions = await getQuestions(topic);
-      io.to(topic).emit('questions', questions);
+      await toggleResponseVote(discussionSlug, responseId, userId);
+      const questions = await getQuestions(discussionSlug);
+      io.to(discussionSlug).emit('questions', questions);
     } catch (error) {
       console.error('Error toggling response vote:', error);
       socket.emit('error', { message: 'Failed to upvote response' });
@@ -987,10 +1039,11 @@ io.on('connection', (socket) => {
   });
 
   socket.on('deleteVote', async (topic, voteId, userId) => {
+    const discussionSlug = slugifyTopic(topic);
     try {
       await deleteVote(voteId, userId);
-      const questions = await getQuestions(topic);
-      io.to(topic).emit('questions', questions);
+      const questions = await getQuestions(discussionSlug);
+      io.to(discussionSlug).emit('questions', questions);
     } catch (error) {
       console.error('Error deleting vote:', error);
       socket.emit('error', { message: 'Failed to delete vote' });
@@ -1003,6 +1056,7 @@ io.on('connection', (socket) => {
   // prior responses, breaking the privacy promise. Allowed even when the
   // discussion is locked: this is a display-name edit, not a new vote.
   socket.on('updateDisplayName', async (topic, userId, displayName) => {
+    const discussionSlug = slugifyTopic(topic);
     try {
       if (!topic || !userId) return;
       const pseudonym = sanitizePseudonym(displayName);
@@ -1011,11 +1065,11 @@ io.on('connection', (socket) => {
          WHERE user_id = $2
            AND question_id IN (
              SELECT id FROM questions
-             WHERE discussion_id = (SELECT id FROM discussions WHERE topic = $3)
+             WHERE discussion_id = (SELECT id FROM discussions WHERE slug = $3)
            )`,
-        [pseudonym, userId, topic]
+        [pseudonym, userId, discussionSlug]
       );
-      io.to(topic).emit('questions', await getQuestions(topic));
+      io.to(discussionSlug).emit('questions', await getQuestions(discussionSlug));
     } catch (error) {
       console.error('Error updating display name:', error);
       socket.emit('error', { message: 'Failed to update display name' });
@@ -1043,8 +1097,21 @@ app.post('/api/discussions', async (req, res) => {
     // and returns it when (and only when) this caller is the one establishing
     // the discussion's moderator. The client persists it so the person who made
     // the session lands as its moderator instead of racing others for the role.
-    const { id, adminToken } = await createDiscussion(topic);
-    res.json({ success: true, id, adminToken });
+    const discussion = await createDiscussion(topic);
+    res.json({ success: true, ...discussion });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.get('/api/discussions/resolve/:topic', async (req, res) => {
+  try {
+    const discussion = await resolveDiscussionRoute(req.params.topic);
+    if (!discussion) {
+      return res.status(404).json({ error: 'Discussion not found' });
+    }
+    res.json(discussion);
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Server error' });
@@ -1058,7 +1125,7 @@ app.get('/api/discussions/:id', async (req, res) => {
     // the discussion id is discoverable via GET /api/discussions, so returning
     // the moderator secret here would let anyone claim moderator controls.
     const result = await pool.query(
-      'SELECT id, topic, created_at, locked FROM discussions WHERE id = $1',
+      'SELECT id, topic, slug, created_at, locked FROM discussions WHERE id = $1',
       [id]
     );
     if (result.rows.length > 0) {
@@ -1073,18 +1140,34 @@ app.get('/api/discussions/:id', async (req, res) => {
 });
 
 // Database functions
-async function getOrCreateDiscussion(db, topic) {
-  const result = await db.query(
-    `INSERT INTO discussions (topic)
-     VALUES ($1)
-     ON CONFLICT (topic) DO UPDATE SET topic = EXCLUDED.topic
-     RETURNING id`,
-    [topic]
+async function resolveDiscussionRoute(routeTopic) {
+  const displayTopic = formatTopicTitle(routeTopic);
+  const slug = slugifyTopic(routeTopic);
+  const result = await pool.query(
+    `SELECT id, topic, slug, created_at
+       FROM discussions
+      WHERE topic = $1 OR slug = $2
+      ORDER BY CASE WHEN topic = $1 THEN 0 ELSE 1 END, id
+      LIMIT 1`,
+    [displayTopic, slug]
   );
-  return result.rows[0].id;
+  return result.rows[0] || null;
+}
+
+async function getOrCreateDiscussionForSlug(db, slug) {
+  const canonicalSlug = slugifyTopic(slug);
+  const result = await db.query(
+    `INSERT INTO discussions (topic, slug)
+     VALUES ($1, $2)
+     ON CONFLICT (slug) DO UPDATE SET slug = EXCLUDED.slug
+     RETURNING id, topic, slug`,
+    [titleFromSlug(canonicalSlug), canonicalSlug]
+  );
+  return result.rows[0];
 }
 
 async function getQuestions(topic, { includeUserIds = false } = {}) {
+  const slug = slugifyTopic(topic);
   const query = `
     SELECT 
       q.id, 
@@ -1109,12 +1192,12 @@ async function getQuestions(topic, { includeUserIds = false } = {}) {
     FROM questions q
     JOIN discussions d ON q.discussion_id = d.id
     LEFT JOIN votes v ON q.id = v.question_id
-    WHERE d.topic = $1
+    WHERE d.slug = $1
     GROUP BY q.id
     ORDER BY q.pinned DESC, q.id
   `;
 
-  const result = await pool.query(query, [topic]);
+  const result = await pool.query(query, [slug]);
   return result.rows.map(row => ({
     ...row,
     minValue: row.min_value,
@@ -1168,7 +1251,8 @@ async function addQuestion(topic, question) {
   try {
     await client.query('BEGIN');
 
-    const discussionId = await getOrCreateDiscussion(client, topic);
+    const discussion = await getOrCreateDiscussionForSlug(client, topic);
+    const discussionId = discussion.id;
 
     // Ensure options is a valid JSON array
     const optionsJson = JSON.stringify(Array.isArray(question.options) ? question.options : []);
@@ -1278,6 +1362,75 @@ async function migrateUniqueDiscussionTopics() {
   }
 }
 
+async function migrateDiscussionSlugs() {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('ALTER TABLE discussions ADD COLUMN IF NOT EXISTS slug TEXT');
+
+    const result = await client.query('SELECT id, topic, slug FROM discussions ORDER BY id');
+    const rows = result.rows
+      .map(row => ({
+        ...row,
+        baseSlug: getMigrationBaseSlug(row),
+        priority: isSlugShapedLegacyTitle(row.topic) ? 0 : 1,
+      }))
+      .sort((a, b) => a.priority - b.priority || a.id - b.id);
+    const usedSlugs = new Set();
+    const assignments = [];
+
+    for (const row of rows) {
+      let slug = row.baseSlug;
+      let suffix = 2;
+      while (usedSlugs.has(slug)) {
+        slug = suffixSlug(row.baseSlug, suffix);
+        suffix += 1;
+      }
+
+      usedSlugs.add(slug);
+      assignments.push({ id: row.id, currentSlug: row.slug, slug });
+    }
+
+    const changedAssignments = assignments.filter(row => row.currentSlug !== row.slug);
+    const tempPrefix = `__convora_slug_migration_${process.pid}_`;
+    for (const row of changedAssignments) {
+      await client.query('UPDATE discussions SET slug = $1 WHERE id = $2', [`${tempPrefix}${row.id}`, row.id]);
+    }
+
+    for (const row of changedAssignments) {
+      await client.query('UPDATE discussions SET slug = $1 WHERE id = $2', [row.slug, row.id]);
+    }
+
+    await client.query(`
+      UPDATE discussions
+      SET slug = id::text
+      WHERE slug IS NULL OR slug = ''
+    `);
+    await client.query('ALTER TABLE discussions ALTER COLUMN slug SET NOT NULL');
+    await client.query('CREATE UNIQUE INDEX IF NOT EXISTS discussions_slug_unique_idx ON discussions(slug)');
+    await client.query('COMMIT');
+    console.log('Discussion slug migration completed');
+  } catch (e) {
+    await client.query('ROLLBACK');
+    console.error('Error migrating discussion slugs:', e);
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+function isSlugShapedLegacyTitle(topic) {
+  const title = formatTopicTitle(topic);
+  return title === slugifyTopic(title);
+}
+
+function getMigrationBaseSlug(row) {
+  if (isSlugShapedLegacyTitle(row.topic)) {
+    return slugifyTopic(row.topic);
+  }
+  return row.slug ? slugifyTopic(row.slug) : slugifyTopic(row.topic);
+}
+
 // Table for upvotes on individual open-ended responses. One row per
 // (response, user); a response is identified by its votes.id. Idempotent.
 async function migrateResponseVotesTable() {
@@ -1336,10 +1489,11 @@ async function migrateModeratorsTable() {
 // discussion id when valid, or null otherwise.
 async function verifyAdmin(topic, token) {
   if (!token) return null;
+  const slug = slugifyTopic(topic);
   const result = await pool.query(
     `SELECT d.id
        FROM discussions d
-      WHERE d.topic = $1
+      WHERE d.slug = $1
         AND (
           d.admin_token = $2
           OR EXISTS (
@@ -1347,7 +1501,7 @@ async function verifyAdmin(topic, token) {
              WHERE m.discussion_id = d.id AND m.token = $2
           )
         )`,
-    [topic, token]
+    [slug, token]
   );
   return result.rows.length > 0 ? result.rows[0].id : null;
 }
@@ -1358,9 +1512,10 @@ async function verifyAdmin(topic, token) {
 // so promoted moderators can't revoke each other or the creator.
 async function verifyCreator(topic, token) {
   if (!token) return null;
+  const slug = slugifyTopic(topic);
   const result = await pool.query(
-    'SELECT id FROM discussions WHERE topic = $1 AND admin_token = $2',
-    [topic, token]
+    'SELECT id FROM discussions WHERE slug = $1 AND admin_token = $2',
+    [slug, token]
   );
   return result.rows.length > 0 ? result.rows[0].id : null;
 }
@@ -1374,26 +1529,66 @@ async function verifyCreator(topic, token) {
 // Shares claimModerator()'s advisory-lock + COALESCE upsert so the create-time
 // claim is race-safe against concurrent creates and lazy (question-post) creation.
 async function createDiscussion(topic) {
+  const displayTopic = formatTopicTitle(topic);
+  const baseSlug = slugifyTopic(displayTopic);
   const token = crypto.randomBytes(16).toString('hex');
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [topic]);
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [displayTopic]);
 
-    const result = await client.query(
-      `INSERT INTO discussions (topic, admin_token)
-       VALUES ($1, $2)
-       ON CONFLICT (topic) DO UPDATE
-       SET admin_token = COALESCE(discussions.admin_token, EXCLUDED.admin_token)
-       RETURNING id, admin_token`,
-      [topic, token]
+    const existing = await client.query(
+      'SELECT id, topic, slug, admin_token FROM discussions WHERE topic = $1 LIMIT 1',
+      [displayTopic]
     );
+    if (existing.rows.length > 0) {
+      const updated = await client.query(
+        `UPDATE discussions
+            SET admin_token = COALESCE(admin_token, $2)
+          WHERE id = $1
+          RETURNING id, topic, slug, admin_token`,
+        [existing.rows[0].id, token]
+      );
+      await client.query('COMMIT');
+      const row = updated.rows[0];
+      return {
+        id: row.id,
+        topic: row.topic,
+        slug: row.slug,
+        adminToken: row.admin_token === token ? token : null,
+      };
+    }
+
+    let row = null;
+    for (let suffix = 1; suffix <= 1000; suffix += 1) {
+      const slug = suffixSlug(baseSlug, suffix);
+      const result = await client.query(
+        `INSERT INTO discussions (topic, slug, admin_token)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (slug) DO NOTHING
+         RETURNING id, topic, slug, admin_token`,
+        [displayTopic, slug, token]
+      );
+
+      if (result.rows.length > 0) {
+        row = result.rows[0];
+        break;
+      }
+    }
+
+    if (!row) {
+      throw new Error(`Could not create a unique slug for discussion topic: ${displayTopic}`);
+    }
 
     await client.query('COMMIT');
-    const row = result.rows[0];
     // The stored token equals ours exactly when we just minted it (fresh row, or
     // an existing row that had no moderator); otherwise a moderator already held it.
-    return { id: row.id, adminToken: row.admin_token === token ? token : null };
+    return {
+      id: row.id,
+      topic: row.topic,
+      slug: row.slug,
+      adminToken: row.admin_token === token ? token : null,
+    };
   } catch (e) {
     await client.query('ROLLBACK');
     throw e;
@@ -1407,20 +1602,21 @@ async function createDiscussion(topic) {
 // The advisory lock serializes moderator claims for the same topic; the upsert
 // also keeps the claim race-safe against non-moderator topic creation paths.
 async function claimModerator(topic) {
+  const slug = slugifyTopic(topic);
   const token = crypto.randomBytes(16).toString('hex');
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [topic]);
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [slug]);
 
     const claim = await client.query(
-      `INSERT INTO discussions (topic, admin_token)
-       VALUES ($1, $2)
-       ON CONFLICT (topic) DO UPDATE
+      `INSERT INTO discussions (topic, slug, admin_token)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (slug) DO UPDATE
        SET admin_token = COALESCE(discussions.admin_token, EXCLUDED.admin_token)
        WHERE discussions.admin_token IS NULL
        RETURNING admin_token`,
-      [topic, token]
+      [titleFromSlug(slug), slug, token]
     );
 
     await client.query('COMMIT');
@@ -1447,6 +1643,7 @@ function participantHandle(userId) {
 // accounts and presence is anonymous). Ordered by first activity for a stable
 // display order. Returns rows of { id, userId, pseudonym, isModerator }.
 async function getParticipants(topic) {
+  const slug = slugifyTopic(topic);
   const result = await pool.query(
     `SELECT v.user_id,
             MIN(v.created_at) AS first_seen,
@@ -1457,10 +1654,10 @@ async function getParticipants(topic) {
        JOIN discussions d ON q.discussion_id = d.id
        LEFT JOIN discussion_moderators m
               ON m.discussion_id = d.id AND m.user_id = v.user_id
-      WHERE d.topic = $1 AND v.user_id IS NOT NULL
+      WHERE d.slug = $1 AND v.user_id IS NOT NULL
       GROUP BY v.user_id
       ORDER BY MIN(v.created_at), v.user_id`,
-    [topic]
+    [slug]
   );
   return result.rows.map((row) => ({
     id: participantHandle(row.user_id),
@@ -1546,7 +1743,8 @@ function revokeModeratorToken(topic, userId) {
 
 // Whether voting is currently closed for a discussion.
 async function isDiscussionLocked(topic) {
-  const result = await pool.query('SELECT locked FROM discussions WHERE topic = $1', [topic]);
+  const slug = slugifyTopic(topic);
+  const result = await pool.query('SELECT locked FROM discussions WHERE slug = $1', [slug]);
   return result.rows.length > 0 ? result.rows[0].locked === true : false;
 }
 
@@ -1555,12 +1753,13 @@ async function isDiscussionLocked(topic) {
 // topic, so callers can reject mismatched/forged questionIds. The join on
 // topic means a question id from a different discussion never matches.
 async function getQuestionForTopic(topic, questionId) {
+  const slug = slugifyTopic(topic);
   const result = await pool.query(
     `SELECT q.id, d.locked
      FROM questions q
      JOIN discussions d ON q.discussion_id = d.id
-     WHERE d.topic = $1 AND q.id = $2`,
-    [topic, questionId]
+     WHERE d.slug = $1 AND q.id = $2`,
+    [slug, questionId]
   );
   if (result.rows.length === 0) return null;
   return { id: result.rows[0].id, locked: result.rows[0].locked === true };
@@ -1571,15 +1770,16 @@ async function getQuestionForTopic(topic, questionId) {
 const SIMILARITY_THRESHOLD = 0.5;
 async function findSimilarQuestion(topic, text) {
   if (!text) return null;
+  const slug = slugifyTopic(topic);
   try {
     const result = await pool.query(
       `SELECT q.text, similarity(q.text, $2) AS sim
        FROM questions q
        JOIN discussions d ON q.discussion_id = d.id
-       WHERE d.topic = $1 AND similarity(q.text, $2) > $3
+       WHERE d.slug = $1 AND similarity(q.text, $2) > $3
        ORDER BY sim DESC
        LIMIT 1`,
-      [topic, text, SIMILARITY_THRESHOLD]
+      [slug, text, SIMILARITY_THRESHOLD]
     );
     return result.rows.length > 0 ? result.rows[0].text : null;
   } catch (e) {
@@ -1681,13 +1881,14 @@ async function toggleResponseVote(topic, responseId, userId) {
   // Without the topic join a client in one room could toggle a vote on a
   // response id that lives in another discussion. Also fetch the owner so we
   // can reject self-upvotes below.
+  const slug = slugifyTopic(topic);
   const ownerResult = await pool.query(
     `SELECT v.user_id
      FROM votes v
      JOIN questions q ON v.question_id = q.id
      JOIN discussions d ON q.discussion_id = d.id
-     WHERE v.id = $1 AND d.topic = $2`,
-    [responseId, topic]
+     WHERE v.id = $1 AND d.slug = $2`,
+    [responseId, slug]
   );
   if (ownerResult.rows.length === 0) {
     return;
@@ -1724,7 +1925,7 @@ async function deleteVote(voteId, userId) {
 app.get('/api/discussions', async (req, res) => {
   try {
     const result = await pool.query(
-      'SELECT id, topic, created_at FROM discussions ORDER BY created_at DESC'
+      'SELECT id, topic, slug, created_at FROM discussions ORDER BY created_at DESC'
     );
     res.json(result.rows);
   } catch (err) {
@@ -1734,7 +1935,7 @@ app.get('/api/discussions', async (req, res) => {
 });
 
 async function getDiscussionSummary(topic, options = {}) {
-  const discussion = await getDiscussionByTopic(topic);
+  const discussion = await getDiscussionBySlug(topic);
   if (!discussion) {
     return null;
   }
@@ -1838,7 +2039,7 @@ app.get('/api/discussions/:topic/report.html', async (req, res) => {
 
 app.get('/api/discussions/:topic/export.csv', async (req, res) => {
   try {
-    const discussion = await getDiscussionByTopic(req.params.topic);
+    const discussion = await getDiscussionBySlug(req.params.topic);
     if (!discussion) {
       return res.status(404).json({ error: 'Discussion not found' });
     }
@@ -1913,8 +2114,8 @@ app.post('/api/duplicate-discussion', async (req, res) => {
 
     // Get the original discussion
     const originalDiscussionResult = await client.query(
-      'SELECT id FROM discussions WHERE topic = $1',
-      [originalTopic]
+      'SELECT id FROM discussions WHERE slug = $1',
+      [slugifyTopic(originalTopic)]
     );
 
     if (originalDiscussionResult.rows.length === 0) {
@@ -1923,27 +2124,48 @@ app.post('/api/duplicate-discussion', async (req, res) => {
 
     const originalDiscussionId = originalDiscussionResult.rows[0].id;
 
-    // Create new discussion, minting an admin token so the person duplicating
-    // lands as its moderator (same creator-is-moderator rule as POST
-    // /api/discussions). The row is always brand new here — a topic conflict is
-    // rejected below — so this never overwrites an existing moderator.
-    // Duplicating into an existing topic would merge questions into that
-    // discussion, so treat the unique conflict as a user error instead.
-    const newAdminToken = crypto.randomBytes(16).toString('hex');
-    const newDiscussionResult = await client.query(
-      `INSERT INTO discussions (topic, admin_token)
-       VALUES ($1, $2)
-       ON CONFLICT (topic) DO NOTHING
-       RETURNING id`,
-      [newTopic, newAdminToken]
+    // Create new discussion. Duplicating into an existing topic would merge
+    // questions into that discussion, so treat the unique conflict as a user
+    // error instead.
+    // Mint an admin token so the person duplicating lands as its moderator
+    // (same creator-is-moderator rule as POST /api/discussions). Slug
+    // collisions get a suffix, but exact topic duplicates are rejected.
+    const displayNewTopic = formatTopicTitle(newTopic);
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [displayNewTopic]);
+    const existingNewTopic = await client.query(
+      'SELECT id FROM discussions WHERE topic = $1 LIMIT 1',
+      [displayNewTopic]
     );
-
-    if (newDiscussionResult.rows.length === 0) {
+    if (existingNewTopic.rows.length > 0) {
       await client.query('ROLLBACK');
       return res.status(409).json({ error: 'Discussion topic already exists' });
     }
 
-    const newDiscussionId = newDiscussionResult.rows[0].id;
+    const newAdminToken = crypto.randomBytes(16).toString('hex');
+    const baseNewSlug = slugifyTopic(displayNewTopic);
+    let newDiscussion = null;
+    for (let suffix = 1; suffix <= 1000; suffix += 1) {
+      const newSlug = suffixSlug(baseNewSlug, suffix);
+      const newDiscussionResult = await client.query(
+        `INSERT INTO discussions (topic, slug, admin_token)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (slug) DO NOTHING
+         RETURNING id, topic, slug`,
+        [displayNewTopic, newSlug, newAdminToken]
+      );
+
+      if (newDiscussionResult.rows.length > 0) {
+        newDiscussion = newDiscussionResult.rows[0];
+        break;
+      }
+    }
+
+    if (!newDiscussion) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: 'Could not create a unique discussion slug' });
+    }
+
+    const newDiscussionId = newDiscussion.id;
 
     // Copy questions from original to new discussion
     await client.query(`
@@ -1955,7 +2177,12 @@ app.post('/api/duplicate-discussion', async (req, res) => {
 
     await client.query('COMMIT');
 
-    res.json({ success: true, newTopic, adminToken: newAdminToken });
+    res.json({
+      success: true,
+      newTopic: newDiscussion.topic,
+      newSlug: newDiscussion.slug,
+      adminToken: newAdminToken,
+    });
   } catch (error) {
     await client.query('ROLLBACK');
     console.error('Error duplicating discussion:', error);
@@ -1990,6 +2217,7 @@ const PORT = process.env.PORT || 3001;
 initSchema()
   .then(() => migrateModerationAndDedup())
   .then(() => migrateUniqueDiscussionTopics())
+  .then(() => migrateDiscussionSlugs())
   .then(() => Promise.all([migrateAddPseudonymColumn(), migrateResponseVotesTable(), migrateModeratorsTable()]))
   .then(() => {
     server.listen(PORT, () => console.log(`Server running on port ${PORT}`));

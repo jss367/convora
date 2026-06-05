@@ -13,6 +13,7 @@ import {
     NameModes,
     MAX_CUSTOM_NAME_LENGTH,
 } from './identity';
+import { slugifyTopic } from './slugs';
 
 const VERSION = '0.1.8';
 console.log('Convora version:', VERSION);
@@ -70,6 +71,8 @@ const socket = io(SOCKET_URL);
 const DiscussionPage = () => {
     const { topic } = useParams();
     const navigate = useNavigate();
+    const discussionSlug = slugifyTopic(topic);
+    const [discussion, setDiscussion] = useState(null);
     const [questions, setQuestions] = useState([]);
     const [newQuestion, setNewQuestion] = useState('');
     const [questionType, setQuestionType] = useState(QuestionTypes.AGREEMENT);
@@ -98,13 +101,14 @@ const DiscussionPage = () => {
 
     const isAdmin = !!adminToken;
     const { locked } = discussionState;
+    const discussionTitle = discussion?.topic || topic;
 
     const joinUrl = typeof window !== 'undefined'
-        ? `${window.location.origin}${window.location.pathname}`
+        ? `${window.location.origin}/discussion/${discussionSlug}`
         : '';
     const shareUrl = joinUrl;
     const adminUrl = typeof window !== 'undefined' && adminToken
-        ? `${window.location.origin}${window.location.pathname}?admin=${adminToken}`
+        ? `${window.location.origin}/discussion/${discussionSlug}?admin=${adminToken}`
         : '';
 
     const handleCopyLink = async () => {
@@ -123,6 +127,38 @@ const DiscussionPage = () => {
         // reloads) together with the chosen display name, both in localStorage.
         setIdentity(getIdentity());
     }, []);
+
+    useEffect(() => {
+        if (topic === discussionSlug) return undefined;
+
+        let cancelled = false;
+        const search = typeof window !== 'undefined' ? window.location.search : '';
+        const fallback = `/discussion/${discussionSlug}${search}`;
+
+        const resolveRoute = async () => {
+            try {
+                const response = await fetch(`/api/discussions/resolve/${encodeURIComponent(topic)}`);
+                if (response.ok) {
+                    const data = await response.json();
+                    if (!cancelled && data?.slug) {
+                        navigate(`/discussion/${data.slug}${search}`, { replace: true });
+                        return;
+                    }
+                }
+            } catch (error) {
+                console.warn('Failed to resolve discussion route:', error);
+            }
+
+            if (!cancelled) {
+                navigate(fallback, { replace: true });
+            }
+        };
+
+        resolveRoute();
+        return () => {
+            cancelled = true;
+        };
+    }, [topic, discussionSlug, navigate]);
 
     // The stable id used for vote ownership, and the name shown to everyone else
     // (derived from the chosen mode: pseudonym, anonymous, or a typed-in name).
@@ -145,7 +181,7 @@ const DiscussionPage = () => {
         if (!userId) {
             setOwnedVoteIds(new Set());
             setUpvotedVoteIds(new Set());
-            return;
+            return undefined;
         }
         let cancelled = false;
         const compute = async () => {
@@ -183,7 +219,8 @@ const DiscussionPage = () => {
     // (shared admin link) takes precedence and is then persisted and stripped
     // from the URL; otherwise fall back to a previously stored token.
     useEffect(() => {
-        const storageKey = `convora_admin_${topic}`;
+        if (topic !== discussionSlug) return;
+        const storageKey = `convora_admin_${discussionSlug}`;
         try {
             const params = new URLSearchParams(window.location.search);
             const fromUrl = params.get('admin');
@@ -195,11 +232,22 @@ const DiscussionPage = () => {
                 window.history.replaceState({}, '', `${window.location.pathname}${query ? `?${query}` : ''}`);
                 return;
             }
-            setAdminToken(localStorage.getItem(storageKey));
+
+            const legacyKeys = [
+                `convora_admin_${topic}`,
+                discussion?.topic ? `convora_admin_${discussion.topic}` : null,
+            ].filter(key => key && key !== storageKey);
+            const storedToken = localStorage.getItem(storageKey)
+                || legacyKeys.map(key => localStorage.getItem(key)).find(Boolean)
+                || null;
+            if (storedToken) {
+                localStorage.setItem(storageKey, storedToken);
+            }
+            setAdminToken(storedToken);
         } catch (e) {
             console.warn('Failed to read admin token:', e);
         }
-    }, [topic]);
+    }, [discussion?.topic, discussionSlug, topic]);
 
     // Validate any adopted moderator token with the server. A token revoked
     // while this user was offline (so they never got moderatorRevoked) would
@@ -213,11 +261,11 @@ const DiscussionPage = () => {
         if (!adminToken) return;
         let cancelled = false;
         const verify = () => {
-            socket.emit('checkModerator', topic, adminToken, (resp) => {
+            socket.emit('checkModerator', discussionSlug, adminToken, (resp) => {
                 if (cancelled || !resp || !resp.ok) return;
                 if (resp.isModerator === false) {
                     try {
-                        localStorage.removeItem(`convora_admin_${topic}`);
+                        localStorage.removeItem(`convora_admin_${discussionSlug}`);
                     } catch (e) {
                         console.warn('Failed to clear admin token:', e);
                     }
@@ -228,22 +276,22 @@ const DiscussionPage = () => {
         verify();
         socket.on('connect', verify);
         return () => { cancelled = true; socket.off('connect', verify); };
-    }, [topic, adminToken]);
+    }, [discussionSlug, adminToken]);
 
     useEffect(() => {
         try {
-            setShowJoinQr(localStorage.getItem(`convora_show_join_qr_${topic}`) === 'true');
+            setShowJoinQr(localStorage.getItem(`convora_show_join_qr_${discussionSlug}`) === 'true');
         } catch (e) {
             console.warn('Failed to read QR visibility:', e);
             setShowJoinQr(false);
         }
-    }, [topic]);
+    }, [discussionSlug]);
 
     const handleToggleJoinQr = () => {
         setShowJoinQr(prev => {
             const next = !prev;
             try {
-                localStorage.setItem(`convora_show_join_qr_${topic}`, String(next));
+                localStorage.setItem(`convora_show_join_qr_${discussionSlug}`, String(next));
             } catch (e) {
                 console.warn('Failed to store QR visibility:', e);
             }
@@ -257,7 +305,7 @@ const DiscussionPage = () => {
     const applyIdentity = (updatedIdentity) => {
         setIdentity(updatedIdentity);
         if (updatedIdentity?.userId) {
-            socket.emit('updateDisplayName', topic, updatedIdentity.userId, getDisplayName(updatedIdentity));
+            socket.emit('updateDisplayName', discussionSlug, updatedIdentity.userId, getDisplayName(updatedIdentity));
         }
     };
 
@@ -278,10 +326,10 @@ const DiscussionPage = () => {
     };
 
     const handleClaimModerator = () => {
-        socket.emit('claimModerator', topic, (resp) => {
+        socket.emit('claimModerator', discussionSlug, (resp) => {
             if (resp && resp.success) {
                 try {
-                    localStorage.setItem(`convora_admin_${topic}`, resp.token);
+                    localStorage.setItem(`convora_admin_${discussionSlug}`, resp.token);
                 } catch (e) {
                     console.warn('Failed to store admin token:', e);
                 }
@@ -293,15 +341,15 @@ const DiscussionPage = () => {
     };
 
     const handleToggleLock = () => {
-        socket.emit('setLocked', topic, !locked, adminToken);
+        socket.emit('setLocked', discussionSlug, !locked, adminToken);
     };
 
     const handleDeleteQuestion = (questionId) => {
-        socket.emit('deleteQuestion', topic, questionId, adminToken);
+        socket.emit('deleteQuestion', discussionSlug, questionId, adminToken);
     };
 
     const handleTogglePin = (questionId, pinned) => {
-        socket.emit('setPinned', topic, questionId, !pinned, adminToken);
+        socket.emit('setPinned', discussionSlug, questionId, !pinned, adminToken);
     };
 
     const handleCopyAdminLink = async () => {
@@ -319,7 +367,7 @@ const DiscussionPage = () => {
     // handles + pseudonyms, never raw user ids.
     const refreshParticipants = useCallback(() => {
         if (!adminToken) return;
-        socket.emit('listParticipants', topic, adminToken, (resp) => {
+        socket.emit('listParticipants', discussionSlug, adminToken, (resp) => {
             if (resp && resp.success) {
                 setParticipants(resp.participants);
                 setCanDemote(!!resp.canDemote);
@@ -327,7 +375,7 @@ const DiscussionPage = () => {
                 setError('You are no longer a moderator of this discussion.');
             }
         });
-    }, [topic, adminToken]);
+    }, [discussionSlug, adminToken]);
 
     const handleToggleParticipants = () => {
         const next = !showParticipants;
@@ -338,7 +386,7 @@ const DiscussionPage = () => {
     // Promote a participant to moderator. The server delivers them their own
     // token live and returns the refreshed list.
     const handlePromoteParticipant = (participantId) => {
-        socket.emit('promoteModerator', topic, adminToken, participantId, (resp) => {
+        socket.emit('promoteModerator', discussionSlug, adminToken, participantId, (resp) => {
             if (resp && resp.success) {
                 setParticipants(resp.participants);
                 setCanDemote(!!resp.canDemote);
@@ -353,7 +401,7 @@ const DiscussionPage = () => {
     // Remove a participant's moderator status. Creator-only; the server pushes a
     // moderatorRevoked event to that user so their controls disappear live.
     const handleDemoteParticipant = (participantId) => {
-        socket.emit('demoteModerator', topic, adminToken, participantId, (resp) => {
+        socket.emit('demoteModerator', discussionSlug, adminToken, participantId, (resp) => {
             if (resp && resp.success) {
                 setParticipants(resp.participants);
                 setCanDemote(!!resp.canDemote);
@@ -377,22 +425,19 @@ const DiscussionPage = () => {
                 headers: {
                     'Content-Type': 'application/json',
                 },
-                body: JSON.stringify({ originalTopic: topic, newTopic: newTopicName }),
+                body: JSON.stringify({ originalTopic: discussionSlug, newTopic: newTopicName }),
             });
 
             if (response.ok) {
                 const result = await response.json();
-                // The duplicate's creator is its moderator: persist the returned
-                // token under the per-topic key DiscussionPage reads on mount, so
-                // they arrive already holding moderator controls.
                 if (result.adminToken) {
                     try {
-                        localStorage.setItem(`convora_admin_${result.newTopic}`, result.adminToken);
+                        localStorage.setItem(`convora_admin_${result.newSlug}`, result.adminToken);
                     } catch (e) {
                         console.warn('Failed to store admin token:', e);
                     }
                 }
-                navigate(`/discussion/${result.newTopic}`);
+                navigate(`/discussion/${result.newSlug}`);
             } else {
                 const errorData = await response.json();
                 setError(`Failed to duplicate discussion: ${errorData.error}`);
@@ -445,33 +490,35 @@ const DiscussionPage = () => {
 
     // Adopt a moderator token the server pushes to us — either because another
     // moderator just promoted this user, or because a previously promoted user
-    // (re)connected. Persist it under the same per-topic key the create/share
+    // (re)connected. Persist it under the same per-slug key the create/share
     // flows use so the controls light up immediately and survive reloads.
     const handleModeratorGranted = useCallback(({ token }) => {
         if (!token) return;
         try {
-            localStorage.setItem(`convora_admin_${topic}`, token);
+            localStorage.setItem(`convora_admin_${discussionSlug}`, token);
         } catch (e) {
             console.warn('Failed to store admin token:', e);
         }
         setAdminToken(token);
-    }, [topic]);
+    }, [discussionSlug]);
 
     // The creator removed our moderator status: drop the stored token so the
     // controls disappear. (The token is already invalid server-side.)
     const handleModeratorRevoked = useCallback(() => {
         try {
-            localStorage.removeItem(`convora_admin_${topic}`);
+            localStorage.removeItem(`convora_admin_${discussionSlug}`);
         } catch (e) {
             console.warn('Failed to clear admin token:', e);
         }
         setAdminToken(null);
         setShowParticipants(false);
-    }, [topic]);
+    }, [discussionSlug]);
 
     useEffect(() => {
-        console.log('Current topic:', topic);
-        socket.emit('joinDiscussion', topic);
+        if (topic !== discussionSlug) return undefined;
+        console.log('Current topic:', discussionSlug);
+        socket.emit('joinDiscussion', discussionSlug);
+        socket.on('discussion', setDiscussion);
         socket.on('questions', handleQuestionsUpdate);
         socket.on('presence', setPresence);
         socket.on('discussionState', setDiscussionState);
@@ -481,7 +528,8 @@ const DiscussionPage = () => {
         return () => {
             // Leave the room so the server stops counting this client toward the
             // discussion's presence once the page unmounts (e.g. navigating home).
-            socket.emit('leaveDiscussion', topic);
+            socket.emit('leaveDiscussion', discussionSlug);
+            socket.off('discussion', setDiscussion);
             socket.off('questions', handleQuestionsUpdate);
             socket.off('presence', setPresence);
             socket.off('discussionState', setDiscussionState);
@@ -489,18 +537,18 @@ const DiscussionPage = () => {
             socket.off('moderatorGranted', handleModeratorGranted);
             socket.off('moderatorRevoked', handleModeratorRevoked);
         };
-    }, [topic, handleQuestionsUpdate, handleModeratorGranted, handleModeratorRevoked]);
+    }, [topic, discussionSlug, handleQuestionsUpdate, handleModeratorGranted, handleModeratorRevoked]);
 
     // Tell the server which persistent user this socket is, so it can route
     // moderator grants to us. Re-sent after any reconnect so a promoted user
     // doesn't silently lose their controls on a network blip.
     useEffect(() => {
-        if (!userId) return;
-        const identify = () => socket.emit('identify', topic, userId);
+        if (!userId || topic !== discussionSlug) return undefined;
+        const identify = () => socket.emit('identify', discussionSlug, userId);
         identify();
         socket.on('connect', identify);
         return () => socket.off('connect', identify);
-    }, [topic, userId]);
+    }, [topic, discussionSlug, userId]);
 
     const handleAddQuestion = () => {
         console.log('Inside handleAddQuestion');
@@ -543,7 +591,7 @@ const DiscussionPage = () => {
     const submitQuestion = (question, force) => {
         try {
             setError(null);
-            socket.emit('addQuestion', topic, question, force, (resp) => {
+            socket.emit('addQuestion', discussionSlug, question, force, (resp) => {
                 if (resp && resp.added) {
                     setNewQuestion('');
                     setQuestionType(QuestionTypes.AGREEMENT);
@@ -566,7 +614,7 @@ const DiscussionPage = () => {
 
     const handleVote = (questionId, value) => {
         console.log('Voting:', questionId, value);
-        socket.emit('vote', topic, questionId, value, userId, displayName);
+        socket.emit('vote', discussionSlug, questionId, value, userId, displayName);
         setSliderValues(prev => ({ ...prev, [questionId]: undefined }));
     };
 
@@ -574,7 +622,7 @@ const DiscussionPage = () => {
     // (a participant can only delete their own).
     const handleDeleteVote = (questionId, voteId) => {
         console.log('Deleting vote:', questionId, voteId);
-        socket.emit('deleteVote', topic, voteId, userId);
+        socket.emit('deleteVote', discussionSlug, voteId, userId);
     };
 
     const handleSliderChange = (questionId, value) => {
@@ -582,7 +630,7 @@ const DiscussionPage = () => {
     };
 
     const handleResponseVote = (responseId) => {
-        socket.emit('toggleResponseVote', topic, responseId, userId);
+        socket.emit('toggleResponseVote', discussionSlug, responseId, userId);
     };
 
     const sortQuestions = (questions) => {
@@ -730,7 +778,7 @@ const DiscussionPage = () => {
 
     return (
         <div className="max-w-4xl mx-auto mt-10 px-4">
-            <h1 className="text-4xl font-bold mb-2 text-center text-gray-800">Discussion: {topic}</h1>
+            <h1 className="text-4xl font-bold mb-2 text-center text-gray-800">Discussion: {discussionTitle}</h1>
 
             {/* Participant identity + live presence */}
             <div className="mb-8 text-center text-sm text-gray-600">
@@ -831,19 +879,19 @@ const DiscussionPage = () => {
                     Duplicate Discussion
                 </button>
                 <Link
-                    to={`/discussion/${topic}/summary`}
+                    to={`/discussion/${discussionSlug}/summary`}
                     className="bg-gray-800 text-white py-2 px-4 rounded hover:bg-gray-700 transition duration-300"
                 >
                     View Summary
                 </Link>
                 <a
-                    href={`/api/discussions/${encodeURIComponent(topic)}/export.csv`}
+                    href={`/api/discussions/${encodeURIComponent(discussionSlug)}/export.csv`}
                     className="bg-primary text-white py-2 px-4 rounded hover:bg-opacity-90 transition duration-300"
                 >
                     Export CSV
                 </a>
                 <a
-                    href={`/api/discussions/${encodeURIComponent(topic)}/export.json`}
+                    href={`/api/discussions/${encodeURIComponent(discussionSlug)}/export.json`}
                     className="bg-secondary text-white py-2 px-4 rounded hover:bg-opacity-90 transition duration-300"
                 >
                     Export JSON
@@ -1023,7 +1071,7 @@ const DiscussionPage = () => {
                         <QRCodeSVG value={joinUrl} size={140} includeMargin />
                     </div>
                     <div className="mt-2 text-xs font-semibold uppercase tracking-wide text-gray-500">Scan to join</div>
-                    <div className="mt-1 truncate text-sm font-semibold text-gray-800" title={topic}>{topic}</div>
+                    <div className="mt-1 truncate text-sm font-semibold text-gray-800" title={discussionTitle}>{discussionTitle}</div>
                 </div>
             )}
 
