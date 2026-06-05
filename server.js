@@ -1220,8 +1220,8 @@ async function addVote(questionId, vote, userId, pseudonym) {
 
     if (questionType === 'Brainstorm') {
       await client.query(
-        'INSERT INTO votes (question_id, user_id, value) VALUES ($1, $2, $3)',
-        [questionId, userId, vote]
+        'INSERT INTO votes (question_id, user_id, value, pseudonym) VALUES ($1, $2, $3, $4)',
+        [questionId, userId, vote, pseudonym]
       );
       await client.query('COMMIT');
       console.log('Brainstorm idea added successfully');
