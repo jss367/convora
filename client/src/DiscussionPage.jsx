@@ -1,5 +1,5 @@
 import PropTypes from 'prop-types';
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import io from 'socket.io-client';
 import { QRCodeSVG } from 'qrcode.react';
@@ -17,6 +17,22 @@ import { slugifyTopic } from './slugs';
 
 const VERSION = '0.1.8';
 console.log('Convora version:', VERSION);
+
+// The floating "Scan to join" QR the moderator can pop up. It starts large so
+// it's readable across a room and can be drag-resized by the moderator to fit
+// whatever screen they're presenting on.
+const MIN_JOIN_QR_SIZE = 140;
+const DEFAULT_JOIN_QR_SIZE = 300;
+
+// Largest square the QR panel can grow to without overflowing the viewport
+// (leaves a margin for the panel's padding/caption and screen edges).
+const maxJoinQrSize = () => {
+    if (typeof window === 'undefined') return DEFAULT_JOIN_QR_SIZE;
+    return Math.max(MIN_JOIN_QR_SIZE, Math.min(window.innerWidth, window.innerHeight) - 120);
+};
+
+// Clamp a QR size to the range the current viewport can accommodate.
+const clampJoinQrSize = (size) => Math.min(maxJoinQrSize(), Math.max(MIN_JOIN_QR_SIZE, size));
 
 const QuestionTypes = {
     AGREEMENT: 'Agreement',
@@ -127,6 +143,10 @@ const DiscussionPage = () => {
     const [participants, setParticipants] = useState([]);
     const [showParticipants, setShowParticipants] = useState(false);
     const [showJoinQr, setShowJoinQr] = useState(false);
+    const [joinQrSize, setJoinQrSize] = useState(DEFAULT_JOIN_QR_SIZE);
+    // Holds the in-flight resize drag (start pointer + start size + latest size)
+    // so the move/end handlers don't depend on stale render-time closures.
+    const joinQrDragRef = useRef(null);
     // This user's own brainstorm ratings/reactions, kept separately from the
     // (aggregate-only, unattributable) broadcast so we can highlight their
     // selections. Only this user mutates it, so optimistic updates are safe; we
@@ -322,9 +342,12 @@ const DiscussionPage = () => {
     useEffect(() => {
         try {
             setShowJoinQr(localStorage.getItem(`convora_show_join_qr_${discussionSlug}`) === 'true');
+            const storedSize = parseInt(localStorage.getItem(`convora_join_qr_size_${discussionSlug}`), 10);
+            setJoinQrSize(clampJoinQrSize(Number.isFinite(storedSize) ? storedSize : DEFAULT_JOIN_QR_SIZE));
         } catch (e) {
             console.warn('Failed to read QR visibility:', e);
             setShowJoinQr(false);
+            setJoinQrSize(clampJoinQrSize(DEFAULT_JOIN_QR_SIZE));
         }
     }, [discussionSlug]);
 
@@ -339,6 +362,99 @@ const DiscussionPage = () => {
             return next;
         });
     };
+
+    const handleJoinQrResizeStart = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        joinQrDragRef.current = { startX: e.clientX, startY: e.clientY, startSize: joinQrSize, latest: joinQrSize };
+        try {
+            e.currentTarget.setPointerCapture(e.pointerId);
+        } catch {
+            // setPointerCapture isn't critical; drag still works via the bound handlers.
+        }
+    };
+
+    const handleJoinQrResizeMove = (e) => {
+        const drag = joinQrDragRef.current;
+        if (!drag) return;
+        // Panel is anchored bottom-left, so dragging the handle right (+x) or up
+        // (-y) grows it; average the two axes so the corner tracks the pointer.
+        const delta = ((e.clientX - drag.startX) - (e.clientY - drag.startY)) / 2;
+        const next = Math.round(clampJoinQrSize(drag.startSize + delta));
+        drag.latest = next;
+        setJoinQrSize(next);
+    };
+
+    const persistJoinQrSize = (size) => {
+        try {
+            localStorage.setItem(`convora_join_qr_size_${discussionSlug}`, String(size));
+        } catch (err) {
+            console.warn('Failed to store QR size:', err);
+        }
+    };
+
+    const handleJoinQrResizeEnd = (e) => {
+        const drag = joinQrDragRef.current;
+        if (!drag) return;
+        joinQrDragRef.current = null;
+        try {
+            e.currentTarget.releasePointerCapture(e.pointerId);
+        } catch {
+            // Ignore — capture may not have been set.
+        }
+        persistJoinQrSize(drag.latest);
+    };
+
+    // Keyboard support for the resize handle so the advertised slider role is
+    // actually operable for keyboard/assistive-tech users (arrows step, Home/End jump).
+    const handleJoinQrResizeKeyDown = (e) => {
+        const step = 20;
+        let next;
+        switch (e.key) {
+            case 'ArrowRight':
+            case 'ArrowUp':
+                next = joinQrSize + step;
+                break;
+            case 'ArrowLeft':
+            case 'ArrowDown':
+                next = joinQrSize - step;
+                break;
+            case 'Home':
+                next = MIN_JOIN_QR_SIZE;
+                break;
+            case 'End':
+                next = maxJoinQrSize();
+                break;
+            default:
+                return;
+        }
+        e.preventDefault();
+        next = Math.round(clampJoinQrSize(next));
+        setJoinQrSize(next);
+        persistJoinQrSize(next);
+    };
+
+    // Re-clamp the open QR panel when the viewport shrinks (moving the browser
+    // between displays, rotating a tablet) so the fixed bottom-left panel and its
+    // resize handle can't drift off-screen. clampJoinQrSize bounds to
+    // [MIN, maxJoinQrSize()], so this only ever shrinks — it never auto-grows the
+    // moderator's chosen size on a larger viewport.
+    useEffect(() => {
+        if (!showJoinQr) return;
+        const handleResize = () => {
+            setJoinQrSize(prev => {
+                const next = clampJoinQrSize(prev);
+                if (next !== prev) persistJoinQrSize(next);
+                return next;
+            });
+        };
+        // Clamp immediately on becoming visible: if the viewport shrank while the
+        // panel was hidden, the stored size would otherwise render off-screen
+        // until the next resize event fires.
+        handleResize();
+        window.addEventListener('resize', handleResize);
+        return () => window.removeEventListener('resize', handleResize);
+    }, [showJoinQr, discussionSlug]);
 
     // Push a changed broadcast name to the server so it retroactively renames
     // this browser's already-submitted responses (otherwise prior responses keep
@@ -1210,12 +1326,37 @@ const DiscussionPage = () => {
             )}
 
             {isAdmin && showJoinQr && (
-                <div className="fixed bottom-4 left-4 z-40 w-44 rounded-md border border-gray-200 bg-white p-3 text-center shadow-xl">
+                <div
+                    className="fixed bottom-4 left-4 z-40 rounded-md border border-gray-200 bg-white p-3 text-center shadow-xl"
+                    style={{ width: joinQrSize + 24 }}
+                >
                     <div className="flex justify-center">
-                        <QRCodeSVG value={joinUrl} size={140} includeMargin />
+                        <QRCodeSVG value={joinUrl} size={joinQrSize} includeMargin />
                     </div>
                     <div className="mt-2 text-xs font-semibold uppercase tracking-wide text-gray-500">Scan to join</div>
                     <div className="mt-1 truncate text-sm font-semibold text-gray-800" title={discussionTitle}>{discussionTitle}</div>
+                    {/* Drag this corner to resize the QR for the room/screen. */}
+                    <div
+                        onPointerDown={handleJoinQrResizeStart}
+                        onPointerMove={handleJoinQrResizeMove}
+                        onPointerUp={handleJoinQrResizeEnd}
+                        onPointerCancel={handleJoinQrResizeEnd}
+                        onKeyDown={handleJoinQrResizeKeyDown}
+                        tabIndex={0}
+                        role="slider"
+                        aria-label="Resize join QR code"
+                        aria-valuemin={MIN_JOIN_QR_SIZE}
+                        aria-valuemax={maxJoinQrSize()}
+                        aria-valuenow={joinQrSize}
+                        title="Drag to resize"
+                        className="absolute -right-2 -top-2 flex h-7 w-7 cursor-nesw-resize touch-none items-center justify-center rounded-full border border-gray-300 bg-white text-gray-400 shadow hover:text-gray-600 focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                    >
+                        <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M14 2 2 14" />
+                            <path d="M14 8v6H8" />
+                            <path d="M2 8V2h6" />
+                        </svg>
+                    </div>
                 </div>
             )}
 
