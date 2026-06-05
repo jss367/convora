@@ -238,31 +238,6 @@ async function addQuestion(topic, question) {
   }
 }
 
-// might get rid of this
-async function migrateOptionsToJson() {
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-
-    const result = await client.query('SELECT id, options FROM questions WHERE options IS NOT NULL');
-
-    for (const row of result.rows) {
-      const parsedOptions = parseOptions(row.options);
-      await client.query('UPDATE questions SET options = $1 WHERE id = $2', [JSON.stringify(parsedOptions), row.id]);
-    }
-
-    await client.query('COMMIT');
-    console.log('Migration completed successfully');
-  } catch (e) {
-    await client.query('ROLLBACK');
-    console.error('Error during migration:', e);
-  } finally {
-    client.release();
-  }
-}
-migrateOptionsToJson().catch(console.error);
-// might get rid of above
-
 async function addVote(questionId, vote, userId) {
   console.log('Adding vote:', questionId, vote, userId);
   const client = await pool.connect();
@@ -357,8 +332,7 @@ app.get('/api/discussions', async (req, res) => {
   }
 });
 
-// for some reason I'm getting duplicate forward slashes, so just throwing this hack in to fix it
-app.post(['/api/duplicate-discussion', '//api/duplicate-discussion'], async (req, res) => {
+app.post('/api/duplicate-discussion', async (req, res) => {
   const { originalTopic, newTopic } = req.body;
   console.log(`Attempting to duplicate discussion. Original: ${originalTopic}, New: ${newTopic}`);
 
