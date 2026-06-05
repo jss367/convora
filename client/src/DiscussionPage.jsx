@@ -3,7 +3,16 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import io from 'socket.io-client';
 import { QRCodeSVG } from 'qrcode.react';
-import { getIdentity, regeneratePseudonym } from './identity';
+import {
+    getIdentity,
+    regeneratePseudonym,
+    setNameMode,
+    setCustomName,
+    getDisplayName,
+    ownerToken,
+    NameModes,
+    MAX_CUSTOM_NAME_LENGTH,
+} from './identity';
 
 const VERSION = '0.1.8';
 console.log('Convora version:', VERSION);
@@ -69,8 +78,8 @@ const DiscussionPage = () => {
     const [sliderValues, setSliderValues] = useState({});
     const [sortOption, setSortOption] = useState(SortOptions.MOST_RECENT);
     const [showUnansweredOnly, setShowUnansweredOnly] = useState(false);
-    const [userId, setUserId] = useState(null);
-    const [pseudonym, setPseudonym] = useState('');
+    const [identity, setIdentity] = useState(null);
+    const [editingIdentity, setEditingIdentity] = useState(false);
     const [error, setError] = useState(null);
     const [newTopicName, setNewTopicName] = useState('');
     const [showDuplicateModal, setShowDuplicateModal] = useState(false);
@@ -109,11 +118,64 @@ const DiscussionPage = () => {
 
     useEffect(() => {
         // getIdentity() persists a stable userId (so vote de-duplication survives
-        // reloads) together with a friendly pseudonym, both in localStorage.
-        const identity = getIdentity();
-        setUserId(identity.userId);
-        setPseudonym(identity.pseudonym);
+        // reloads) together with the chosen display name, both in localStorage.
+        setIdentity(getIdentity());
     }, []);
+
+    // The stable id used for vote ownership, and the name shown to everyone else
+    // (derived from the chosen mode: pseudonym, anonymous, or a typed-in name).
+    const userId = identity?.userId || null;
+    const displayName = identity ? getDisplayName(identity) : '';
+
+    // The server no longer broadcasts raw user ids — each vote carries a
+    // per-response ownership token (sha256(voteId + ':' + userId)) instead, so
+    // socket observers can't correlate one browser's responses across prompts,
+    // nor group one anonymous participant's separate ideas within a single
+    // Brainstorm prompt (each idea is a distinct response with its own token).
+    // To recognize our OWN votes we recompute that token per response and keep
+    // the ids that match in Sets. The hash is async (Web Crypto), so during the
+    // brief gap before the effect populates them a vote simply won't match
+    // (treated as not-ours). ownedVoteIds: responses we authored. upvotedVoteIds:
+    // responses we've upvoted. Both keyed by the response (vote) id.
+    const [ownedVoteIds, setOwnedVoteIds] = useState(() => new Set());
+    const [upvotedVoteIds, setUpvotedVoteIds] = useState(() => new Set());
+    useEffect(() => {
+        if (!userId) {
+            setOwnedVoteIds(new Set());
+            setUpvotedVoteIds(new Set());
+            return;
+        }
+        let cancelled = false;
+        const compute = async () => {
+            const owned = new Set();
+            const upvoted = new Set();
+            const allVotes = (questions || []).flatMap(q =>
+                Array.isArray(q.votes) ? q.votes : []
+            );
+            await Promise.all(allVotes.map(async (vote) => {
+                if (vote == null || vote.id === undefined || vote.id === null) return;
+                const myToken = await ownerToken(vote.id, userId);
+                if (!myToken) return;
+                if (vote.ownerToken === myToken) owned.add(vote.id);
+                if (Array.isArray(vote.upvoterTokens) && vote.upvoterTokens.includes(myToken)) {
+                    upvoted.add(vote.id);
+                }
+            }));
+            if (!cancelled) {
+                setOwnedVoteIds(owned);
+                setUpvotedVoteIds(upvoted);
+            }
+        };
+        compute();
+        return () => { cancelled = true; };
+    }, [userId, questions]);
+
+    // True when `vote` belongs to this browser, matched via its per-response
+    // ownership token rather than a raw user id.
+    const isMyVote = useCallback((question, vote) => {
+        if (!vote || vote.id === undefined || vote.id === null) return false;
+        return ownedVoteIds.has(vote.id);
+    }, [ownedVoteIds]);
 
     // Adopt the moderator token for this topic: an ?admin=<token> URL param
     // (shared admin link) takes precedence and is then persisted and stripped
@@ -158,9 +220,30 @@ const DiscussionPage = () => {
         });
     };
 
+    // Push a changed broadcast name to the server so it retroactively renames
+    // this browser's already-submitted responses (otherwise prior responses keep
+    // the old name; switching to anonymous wouldn't actually hide them).
+    const applyIdentity = (updatedIdentity) => {
+        setIdentity(updatedIdentity);
+        if (updatedIdentity?.userId) {
+            socket.emit('updateDisplayName', topic, updatedIdentity.userId, getDisplayName(updatedIdentity));
+        }
+    };
+
     const handleRegeneratePseudonym = () => {
-        const updated = regeneratePseudonym();
-        setPseudonym(updated.pseudonym);
+        applyIdentity(regeneratePseudonym());
+    };
+
+    const handleSelectNameMode = (mode) => {
+        applyIdentity(setNameMode(mode));
+    };
+
+    const handleCustomNameChange = (name) => {
+        // Switch into custom mode as soon as the participant types so the live
+        // preview reflects what they're entering. setCustomName persists the
+        // text first; setNameMode then reads it back and flips the mode.
+        setCustomName(name);
+        applyIdentity(setNameMode(NameModes.CUSTOM));
     };
 
     const handleClaimModerator = () => {
@@ -421,7 +504,7 @@ const DiscussionPage = () => {
 
     const handleVote = (questionId, value) => {
         console.log('Voting:', questionId, value);
-        socket.emit('vote', topic, questionId, value, userId, pseudonym);
+        socket.emit('vote', topic, questionId, value, userId, displayName);
         setSliderValues(prev => ({ ...prev, [questionId]: undefined }));
     };
 
@@ -482,12 +565,12 @@ const DiscussionPage = () => {
             return questions;
         }
         return questions.filter(question =>
-            !question.votes || !question.votes.some(vote => vote.userId === userId)
+            !question.votes || !question.votes.some(vote => isMyVote(question, vote))
         );
     };
 
     const renderVotingMechanism = (question) => {
-        const userVote = question.votes ? question.votes.find(v => v.userId === userId) : null;
+        const userVote = question.votes ? question.votes.find(v => isMyVote(question, v)) : null;
 
         if (!question || typeof question !== 'object') {
             console.error('Invalid question object:', question);
@@ -564,10 +647,10 @@ const DiscussionPage = () => {
                 );
             }
             case QuestionTypes.OPEN_ENDED: {
-                return <OpenEndedQuestion question={question} userVote={userVote} handleVote={handleVote} userId={userId} handleResponseVote={handleResponseVote} locked={locked} />;
+                return <OpenEndedQuestion question={question} userVote={userVote} handleVote={handleVote} ownedVoteIds={ownedVoteIds} upvotedVoteIds={upvotedVoteIds} handleResponseVote={handleResponseVote} locked={locked} />;
             }
             case QuestionTypes.BRAINSTORM: {
-                return <BrainstormQuestion question={question} userId={userId} handleVote={handleVote} handleDeleteVote={handleDeleteVote} />;
+                return <BrainstormQuestion question={question} ownedVoteIds={ownedVoteIds} handleVote={handleVote} handleDeleteVote={handleDeleteVote} />;
             }
 
             default:
@@ -589,19 +672,86 @@ const DiscussionPage = () => {
 
             {/* Participant identity + live presence */}
             <div className="mb-8 text-center text-sm text-gray-600">
-                You are <span className="font-semibold text-gray-800">{pseudonym || '…'}</span>
-                <button
-                    onClick={handleRegeneratePseudonym}
-                    className="ml-2 text-primary hover:underline"
-                    title="Get a new pseudonym"
-                >
-                    (change)
-                </button>
-                <span className="mx-2 text-gray-300">·</span>
-                <span className="inline-flex items-center">
-                    <span className="inline-block w-2 h-2 rounded-full bg-green-500 mr-1.5" />
-                    {presence} {presence === 1 ? 'person' : 'people'} here now
-                </span>
+                <div>
+                    You are <span className="font-semibold text-gray-800">{displayName || '…'}</span>
+                    <button
+                        onClick={() => setEditingIdentity(v => !v)}
+                        className="ml-2 text-primary hover:underline"
+                        title="Choose how you appear to others"
+                    >
+                        (change)
+                    </button>
+                    <span className="mx-2 text-gray-300">·</span>
+                    <span className="inline-flex items-center">
+                        <span className="inline-block w-2 h-2 rounded-full bg-green-500 mr-1.5" />
+                        {presence} {presence === 1 ? 'person' : 'people'} here now
+                    </span>
+                </div>
+
+                {editingIdentity && identity && (
+                    <div className="mt-3 inline-block text-left bg-gray-50 border border-gray-200 rounded-lg p-4 space-y-2">
+                        <p className="text-xs text-gray-500 mb-1">How would you like to appear?</p>
+
+                        <label className="flex items-center gap-2 cursor-pointer">
+                            <input
+                                type="radio"
+                                name="nameMode"
+                                checked={identity.mode === NameModes.PSEUDONYM}
+                                onChange={() => handleSelectNameMode(NameModes.PSEUDONYM)}
+                            />
+                            <span>
+                                Pseudonym:{' '}
+                                <span className="font-semibold text-gray-800">{identity.pseudonym}</span>
+                            </span>
+                            <button
+                                type="button"
+                                onClick={handleRegeneratePseudonym}
+                                className="text-primary hover:underline"
+                                title="Get a new pseudonym"
+                            >
+                                (shuffle)
+                            </button>
+                        </label>
+
+                        <label className="flex items-center gap-2 cursor-pointer">
+                            <input
+                                type="radio"
+                                name="nameMode"
+                                checked={identity.mode === NameModes.ANONYMOUS}
+                                onChange={() => handleSelectNameMode(NameModes.ANONYMOUS)}
+                            />
+                            <span>Completely anonymous</span>
+                        </label>
+
+                        <label className="flex items-center gap-2 cursor-pointer">
+                            <input
+                                type="radio"
+                                name="nameMode"
+                                checked={identity.mode === NameModes.CUSTOM}
+                                onChange={() => handleSelectNameMode(NameModes.CUSTOM)}
+                            />
+                            <span>Enter your own name:</span>
+                            <input
+                                type="text"
+                                value={identity.customName}
+                                maxLength={MAX_CUSTOM_NAME_LENGTH}
+                                placeholder="Your name"
+                                onChange={(e) => handleCustomNameChange(e.target.value)}
+                                className="border border-gray-300 rounded px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+                            />
+                        </label>
+
+                        <div className="pt-1">
+                            <button
+                                type="button"
+                                onClick={() => setEditingIdentity(false)}
+                                className="text-primary hover:underline"
+                            >
+                                Done
+                            </button>
+                        </div>
+                    </div>
+                )}
             </div>
 
             {/* Discussion actions */}
@@ -947,7 +1097,7 @@ const DiscussionPage = () => {
         </div>
     );
 };
-const OpenEndedQuestion = ({ question, userVote, handleVote, userId, handleResponseVote, locked }) => {
+const OpenEndedQuestion = ({ question, userVote, handleVote, ownedVoteIds, upvotedVoteIds, handleResponseVote, locked }) => {
     const [response, setResponse] = useState(userVote ? userVote.value : '');
 
     useEffect(() => {
@@ -992,10 +1142,13 @@ const OpenEndedQuestion = ({ question, userVote, handleVote, userId, handleRespo
                     <h3 className="font-semibold mb-2">All Responses:</h3>
                     <ul className="space-y-2">
                         {sortedResponses.map((vote) => {
-                            const isYou = vote.userId === userVote?.userId;
+                            // Ownership is matched via the per-response token
+                            // (the server no longer sends raw user ids); the
+                            // parent precomputes the set of ids we own/upvoted.
+                            const isOwnResponse = ownedVoteIds.has(vote.id);
+                            const isYou = isOwnResponse;
                             const upvotes = vote.upvotes || 0;
-                            const hasUpvoted = Array.isArray(vote.upvoters) && vote.upvoters.includes(userId);
-                            const isOwnResponse = vote.userId === userId;
+                            const hasUpvoted = upvotedVoteIds.has(vote.id);
                             return (
                                 <li key={vote.id} className="bg-gray-50 rounded-md p-3 flex items-start gap-3">
                                     <button
@@ -1031,19 +1184,20 @@ OpenEndedQuestion.propTypes = {
     question: PropTypes.shape({
         id: PropTypes.oneOfType([PropTypes.string, PropTypes.number]).isRequired,
         votes: PropTypes.arrayOf(PropTypes.shape({
-            userId: PropTypes.string.isRequired,
+            ownerToken: PropTypes.string,
             value: PropTypes.string.isRequired,
             pseudonym: PropTypes.string,
             upvotes: PropTypes.number,
-            upvoters: PropTypes.array
+            upvoterTokens: PropTypes.array
         }))
     }).isRequired,
     userVote: PropTypes.shape({
-        userId: PropTypes.string.isRequired,
+        ownerToken: PropTypes.string,
         value: PropTypes.string
     }),
     handleVote: PropTypes.func.isRequired,
-    userId: PropTypes.string,
+    ownedVoteIds: PropTypes.instanceOf(Set).isRequired,
+    upvotedVoteIds: PropTypes.instanceOf(Set).isRequired,
     handleResponseVote: PropTypes.func.isRequired,
     locked: PropTypes.bool
 };
@@ -1121,7 +1275,7 @@ AgreementResults.propTypes = {
 
 // Unlike Open Ended (one editable response per person), Brainstorm lets each
 // participant add any number of separate ideas and delete their own.
-const BrainstormQuestion = ({ question, userId, handleVote, handleDeleteVote }) => {
+const BrainstormQuestion = ({ question, ownedVoteIds, handleVote, handleDeleteVote }) => {
     const [idea, setIdea] = useState('');
     const votes = question.votes || [];
 
@@ -1155,13 +1309,18 @@ const BrainstormQuestion = ({ question, userId, handleVote, handleDeleteVote }) 
                 <div className="mt-4">
                     <h3 className="font-semibold mb-2">All Ideas ({votes.length}):</h3>
                     <ul className="list-disc pl-5">
-                        {votes.map((vote) => (
+                        {votes.map((vote) => {
+                            // Ownership is matched via the per-response token
+                            // (the server no longer sends raw user ids); the
+                            // parent precomputes the set of ids we own.
+                            const isMine = ownedVoteIds.has(vote.id);
+                            return (
                             <li key={vote.id} className="mb-2 flex items-start justify-between">
                                 <span>
                                     {vote.value}
-                                    {vote.userId === userId && " (You)"}
+                                    {isMine && " (You)"}
                                 </span>
-                                {vote.userId === userId && (
+                                {isMine && (
                                     <button
                                         onClick={() => handleDeleteVote(question.id, vote.id)}
                                         className="ml-4 text-sm text-red-500 hover:text-red-700"
@@ -1170,7 +1329,8 @@ const BrainstormQuestion = ({ question, userId, handleVote, handleDeleteVote }) 
                                     </button>
                                 )}
                             </li>
-                        ))}
+                            );
+                        })}
                     </ul>
                 </div>
             )}
@@ -1235,11 +1395,11 @@ BrainstormQuestion.propTypes = {
         id: PropTypes.string.isRequired,
         votes: PropTypes.arrayOf(PropTypes.shape({
             id: PropTypes.oneOfType([PropTypes.string, PropTypes.number]).isRequired,
-            userId: PropTypes.string.isRequired,
+            ownerToken: PropTypes.string,
             value: PropTypes.string.isRequired
         }))
     }).isRequired,
-    userId: PropTypes.string,
+    ownedVoteIds: PropTypes.instanceOf(Set).isRequired,
     handleVote: PropTypes.func.isRequired,
     handleDeleteVote: PropTypes.func.isRequired
 };

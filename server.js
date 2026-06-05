@@ -949,6 +949,31 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Retroactively rename a participant's already-submitted responses when they
+  // change name mode, edit their custom name, or shuffle their pseudonym. Without
+  // this, switching to "Completely anonymous" would still show the old name on
+  // prior responses, breaking the privacy promise. Allowed even when the
+  // discussion is locked: this is a display-name edit, not a new vote.
+  socket.on('updateDisplayName', async (topic, userId, displayName) => {
+    try {
+      if (!topic || !userId) return;
+      const pseudonym = sanitizePseudonym(displayName);
+      await pool.query(
+        `UPDATE votes SET pseudonym = $1
+         WHERE user_id = $2
+           AND question_id IN (
+             SELECT id FROM questions
+             WHERE discussion_id = (SELECT id FROM discussions WHERE topic = $3)
+           )`,
+        [pseudonym, userId, topic]
+      );
+      io.to(topic).emit('questions', await getQuestions(topic));
+    } catch (error) {
+      console.error('Error updating display name:', error);
+      socket.emit('error', { message: 'Failed to update display name' });
+    }
+  });
+
   socket.on('disconnect', () => {
     console.log('Client disconnected');
     // The socket has already left its rooms by now, so the count reflects the
@@ -1011,7 +1036,7 @@ async function getOrCreateDiscussion(db, topic) {
   return result.rows[0].id;
 }
 
-async function getQuestions(topic) {
+async function getQuestions(topic, { includeUserIds = false } = {}) {
   const query = `
     SELECT 
       q.id, 
@@ -1046,8 +1071,44 @@ async function getQuestions(topic) {
     ...row,
     minValue: row.min_value,
     maxValue: row.max_value,
-    options: parseOptions(row.options)
+    options: parseOptions(row.options),
+    // Replace raw stable user ids on the wire with per-response ownership
+    // tokens so a socket observer can't correlate a participant's responses —
+    // not across prompts, and not even across multiple ideas in the same
+    // Brainstorm prompt. Each token is keyed by the vote's own row id, so one
+    // anonymous participant's separate ideas each carry a DIFFERENT token and
+    // can't be grouped. Each client recomputes the same token for its own votes
+    // (see ownerToken() in client/src/identity.js — the two MUST match).
+    votes: (Array.isArray(row.votes) ? row.votes : []).map(vote => {
+      // Internal callers (e.g. getDiscussionSummary) opt into keeping the raw
+      // stable user_id so they can count distinct participants correctly. This
+      // path is SERVER-SIDE ONLY and must never feed a socket/API response.
+      if (includeUserIds) return { ...vote };
+      const tokenized = {
+        ...vote,
+        ownerToken: ownerToken(vote.id, vote.userId),
+        upvoterTokens: (Array.isArray(vote.upvoters) ? vote.upvoters : [])
+          .map(uid => ownerToken(vote.id, uid)),
+      };
+      delete tokenized.userId;
+      delete tokenized.upvoters;
+      return tokenized;
+    }),
   }));
+}
+
+// Per-response, non-reversible ownership token broadcast in place of raw stable
+// user ids (see getQuestions). Definition: sha256(idPart + ':' + userId), hex,
+// where idPart is the vote's own row id. No server secret needed — userIds are
+// long random strings, and folding in the per-response id means the same
+// browser gets a different token for every response (so an anonymous
+// participant's multiple ideas in one prompt can't be grouped).
+//
+// IMPORTANT: must stay byte-for-byte identical to ownerToken() in
+// client/src/identity.js. Change one, change both.
+function ownerToken(idPart, userId) {
+  if (idPart === null || idPart === undefined || !userId) return null;
+  return crypto.createHash('sha256').update(`${idPart}:${userId}`).digest('hex');
 }
 
 async function addQuestion(topic, question) {
@@ -1452,7 +1513,18 @@ async function findSimilarQuestion(topic, text) {
   }
 }
 
+// Clients pick their own display name (a pseudonym, "Anonymous", or a typed-in
+// name), so clamp it defensively: a name is at most 40 chars and we never store
+// an empty string (let it fall back to the display layer's 'Anonymous').
+const MAX_PSEUDONYM_LENGTH = 40;
+function sanitizePseudonym(pseudonym) {
+  if (typeof pseudonym !== 'string') return null;
+  const trimmed = pseudonym.trim().slice(0, MAX_PSEUDONYM_LENGTH);
+  return trimmed || null;
+}
+
 async function addVote(questionId, vote, userId, pseudonym) {
+  pseudonym = sanitizePseudonym(pseudonym);
   console.log('Adding vote:', questionId, vote, userId, pseudonym);
   const client = await pool.connect();
   try {
@@ -1591,7 +1663,11 @@ async function getDiscussionSummary(topic, options = {}) {
     return null;
   }
 
-  const questions = await getQuestions(topic);
+  // Internal use: keep the raw stable user_id on each vote so buildSummary can
+  // count distinct participants (anonymous/duplicate display names must not
+  // collapse). buildFacilitatorDashboard re-keys to participant-N before any
+  // of this reaches a client, so the raw ids never leave the server.
+  const questions = await getQuestions(topic, { includeUserIds: true });
   const writtenResponses = questions
     .filter(question => question.type === 'Open Ended' || question.type === 'Brainstorm')
     .flatMap(question => (question.votes || [])
