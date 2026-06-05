@@ -153,20 +153,22 @@ export function regeneratePseudonym() {
     return updated;
 }
 
-// Per-question, non-reversible ownership token. The server broadcasts these
+// Per-response, non-reversible ownership token. The server broadcasts these
 // (instead of raw stable userIds) so a socket observer can't correlate one
-// browser's responses across prompts, while each client can still recognize its
-// OWN votes by recomputing the token. Definition: sha256(questionId + ':' +
-// userId), hex. There is no server secret — userIds are long random strings
-// (~80 bits), so tokens aren't brute-forceable, and folding in the questionId
-// gives the same browser a different token per prompt (breaks cross-prompt
-// correlation).
+// browser's responses — not across prompts, and not even across multiple ideas
+// in the same Brainstorm prompt — while each client can still recognize its OWN
+// votes by recomputing the token per response. Definition: sha256(idPart + ':' +
+// userId), hex, where idPart is the response's own row id. There is no server
+// secret — userIds are long random strings (~80 bits), so tokens aren't
+// brute-forceable, and folding in the per-response id gives the same browser a
+// different token for every response (breaks both cross-prompt correlation and
+// grouping of one anonymous participant's separate ideas within a prompt).
 //
 // IMPORTANT: this MUST stay byte-for-byte identical to the server-side
 // ownerToken() in server.js. If you change the formula, change it in both.
-export async function ownerToken(questionId, userId) {
-    if (questionId === null || questionId === undefined || !userId) return null;
-    const data = new TextEncoder().encode(`${questionId}:${userId}`);
+export async function ownerToken(idPart, userId) {
+    if (idPart === null || idPart === undefined || !userId) return null;
+    const data = new TextEncoder().encode(`${idPart}:${userId}`);
     const digest = await crypto.subtle.digest('SHA-256', data);
     return Array.from(new Uint8Array(digest))
         .map((b) => b.toString(16).padStart(2, '0'))

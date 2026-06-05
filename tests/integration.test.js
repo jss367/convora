@@ -136,12 +136,13 @@ test('Socket.IO adds questions and broadcasts votes with pseudonyms', async () =
     assert.equal(broadcastVote.pseudonym, 'Careful Tester');
     // The broadcast must NOT carry the raw stable userId — that would let a
     // socket observer correlate a participant's responses across prompts. It
-    // carries a per-question, non-reversible ownership token instead.
+    // carries a per-response, non-reversible ownership token instead, keyed by
+    // the vote's own row id.
     assert.equal('userId' in broadcastVote, false);
     assert.equal(broadcastVote.upvoters, undefined);
     const expectedToken = crypto
       .createHash('sha256')
-      .update(`${question.id}:user-1`)
+      .update(`${broadcastVote.id}:user-1`)
       .digest('hex');
     assert.equal(broadcastVote.ownerToken, expectedToken);
     assert.deepEqual(broadcastVote.upvoterTokens, []);
@@ -201,13 +202,14 @@ test('Socket.IO sanitizes display names: anonymous stores null, long names are c
   }
 });
 
-test('Socket.IO ownership tokens hide stable ids and differ per question', async () => {
+test('Socket.IO ownership tokens hide stable ids and differ per response', async () => {
   const topic = uniqueTopic('tokens');
   const author = await connectSocket();
   const voter = await connectSocket();
 
-  const tokenFor = (questionId, userId) =>
-    crypto.createHash('sha256').update(`${questionId}:${userId}`).digest('hex');
+  // Tokens are keyed by the response's own row id, not the question id.
+  const tokenFor = (voteId, userId) =>
+    crypto.createHash('sha256').update(`${voteId}:${userId}`).digest('hex');
 
   try {
     author.emit('joinDiscussion', topic);
@@ -242,14 +244,15 @@ test('Socket.IO ownership tokens hide stable ids and differ per question', async
     voter.emit('vote', topic, q2.id, 'answer two', 'same-browser', 'Same Browser');
     const vote2 = (await v2Update).find((q) => q.id === q2.id).votes[0];
 
-    // No raw ids leak, and the same browser gets a DIFFERENT token per prompt —
-    // so a socket observer can't correlate the two responses.
+    // No raw ids leak, and the same browser gets a DIFFERENT token per response
+    // (here, across two prompts) — so a socket observer can't correlate them.
+    // The token is self-matchable from the response's own id.
     assert.equal('userId' in vote1, false);
-    assert.equal(vote1.ownerToken, tokenFor(q1.id, 'same-browser'));
-    assert.equal(vote2.ownerToken, tokenFor(q2.id, 'same-browser'));
+    assert.equal(vote1.ownerToken, tokenFor(vote1.id, 'same-browser'));
+    assert.equal(vote2.ownerToken, tokenFor(vote2.id, 'same-browser'));
     assert.notEqual(vote1.ownerToken, vote2.ownerToken);
 
-    // Upvoter ids are likewise tokenized (and self-matchable per question).
+    // Upvoter ids are likewise tokenized per response (and self-matchable).
     const upUpdate = waitForQuestions(
       author,
       (qs) => qs.find((q) => q.id === q1.id)?.votes?.[0]?.upvotes === 1,
@@ -258,7 +261,63 @@ test('Socket.IO ownership tokens hide stable ids and differ per question', async
     author.emit('toggleResponseVote', topic, vote1.id, 'upvoter-x');
     const upvoted = (await upUpdate).find((q) => q.id === q1.id).votes[0];
     assert.equal(upvoted.upvoters, undefined);
-    assert.deepEqual(upvoted.upvoterTokens, [tokenFor(q1.id, 'upvoter-x')]);
+    assert.deepEqual(upvoted.upvoterTokens, [tokenFor(vote1.id, 'upvoter-x')]);
+  } finally {
+    author.disconnect();
+    voter.disconnect();
+  }
+});
+
+test("Socket.IO de-correlates one participant's multiple Brainstorm ideas", async () => {
+  const topic = uniqueTopic('brainstorm-tokens');
+  const author = await connectSocket();
+  const voter = await connectSocket();
+
+  const tokenFor = (voteId, userId) =>
+    crypto.createHash('sha256').update(`${voteId}:${userId}`).digest('hex');
+
+  try {
+    author.emit('joinDiscussion', topic);
+    voter.emit('joinDiscussion', topic);
+
+    const qUpdate = waitForQuestions(author, (qs) => qs.length === 1, 'brainstorm prompt');
+    author.emit('addQuestion', topic, {
+      text: 'Brainstorm anything', type: 'Brainstorm', minValue: null, maxValue: null, options: [],
+    });
+    const question = (await qUpdate)[0];
+
+    // The SAME anonymous browser submits two separate ideas to the same prompt.
+    const idea1Update = waitForQuestions(
+      author,
+      (qs) => qs[0]?.votes?.some((v) => v.value === 'idea one'),
+      'first idea'
+    );
+    voter.emit('vote', topic, question.id, 'idea one', 'one-browser', '   ');
+    await idea1Update;
+
+    const idea2Update = waitForQuestions(
+      author,
+      (qs) => qs[0]?.votes?.length === 2,
+      'second idea'
+    );
+    voter.emit('vote', topic, question.id, 'idea two', 'one-browser', '   ');
+    const votes = (await idea2Update)[0].votes;
+
+    const v1 = votes.find((v) => v.value === 'idea one');
+    const v2 = votes.find((v) => v.value === 'idea two');
+
+    // Both ideas are anonymous and come from the same browser, yet each carries
+    // a DIFFERENT ownerToken (keyed by the response's own id) — so a socket
+    // observer can't group them as one participant's. Under the old per-question
+    // scheme these tokens would have been identical.
+    assert.equal('userId' in v1, false);
+    assert.equal('userId' in v2, false);
+    assert.notEqual(v1.ownerToken, v2.ownerToken);
+
+    // Each token is still self-matchable from the response's id, so the author's
+    // own client can recognize both ideas as theirs.
+    assert.equal(v1.ownerToken, tokenFor(v1.id, 'one-browser'));
+    assert.equal(v2.ownerToken, tokenFor(v2.id, 'one-browser'));
   } finally {
     author.disconnect();
     voter.disconnect();

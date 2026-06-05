@@ -122,36 +122,54 @@ const DiscussionPage = () => {
     const displayName = identity ? getDisplayName(identity) : '';
 
     // The server no longer broadcasts raw user ids — each vote carries a
-    // per-question ownership token (sha256(questionId + ':' + userId)) instead,
-    // so socket observers can't correlate one browser's responses across
-    // prompts. To recognize our OWN votes we recompute that token for this
-    // browser per question. The hash is async (Web Crypto), so we keep the
-    // results in a Map<String(questionId), token>; during the brief gap before
-    // an effect populates it, a vote simply won't match (treated as not-ours).
-    const [myTokens, setMyTokens] = useState(() => new Map());
+    // per-response ownership token (sha256(voteId + ':' + userId)) instead, so
+    // socket observers can't correlate one browser's responses across prompts,
+    // nor group one anonymous participant's separate ideas within a single
+    // Brainstorm prompt (each idea is a distinct response with its own token).
+    // To recognize our OWN votes we recompute that token per response and keep
+    // the ids that match in Sets. The hash is async (Web Crypto), so during the
+    // brief gap before the effect populates them a vote simply won't match
+    // (treated as not-ours). ownedVoteIds: responses we authored. upvotedVoteIds:
+    // responses we've upvoted. Both keyed by the response (vote) id.
+    const [ownedVoteIds, setOwnedVoteIds] = useState(() => new Set());
+    const [upvotedVoteIds, setUpvotedVoteIds] = useState(() => new Set());
     useEffect(() => {
         if (!userId) {
-            setMyTokens(new Map());
+            setOwnedVoteIds(new Set());
+            setUpvotedVoteIds(new Set());
             return;
         }
         let cancelled = false;
         const compute = async () => {
-            const entries = await Promise.all(
-                (questions || []).map(async (q) => [String(q.id), await ownerToken(q.id, userId)])
+            const owned = new Set();
+            const upvoted = new Set();
+            const allVotes = (questions || []).flatMap(q =>
+                Array.isArray(q.votes) ? q.votes : []
             );
-            if (!cancelled) setMyTokens(new Map(entries));
+            await Promise.all(allVotes.map(async (vote) => {
+                if (vote == null || vote.id === undefined || vote.id === null) return;
+                const myToken = await ownerToken(vote.id, userId);
+                if (!myToken) return;
+                if (vote.ownerToken === myToken) owned.add(vote.id);
+                if (Array.isArray(vote.upvoterTokens) && vote.upvoterTokens.includes(myToken)) {
+                    upvoted.add(vote.id);
+                }
+            }));
+            if (!cancelled) {
+                setOwnedVoteIds(owned);
+                setUpvotedVoteIds(upvoted);
+            }
         };
         compute();
         return () => { cancelled = true; };
     }, [userId, questions]);
 
-    // True when `vote` belongs to this browser, matched via its per-question
+    // True when `vote` belongs to this browser, matched via its per-response
     // ownership token rather than a raw user id.
     const isMyVote = useCallback((question, vote) => {
-        if (!vote || !question) return false;
-        const myToken = myTokens.get(String(question.id));
-        return Boolean(myToken) && vote.ownerToken === myToken;
-    }, [myTokens]);
+        if (!vote || vote.id === undefined || vote.id === null) return false;
+        return ownedVoteIds.has(vote.id);
+    }, [ownedVoteIds]);
 
     // Adopt the moderator token for this topic: an ?admin=<token> URL param
     // (shared admin link) takes precedence and is then persisted and stripped
@@ -532,10 +550,10 @@ const DiscussionPage = () => {
                 );
             }
             case QuestionTypes.OPEN_ENDED: {
-                return <OpenEndedQuestion question={question} userVote={userVote} handleVote={handleVote} myToken={myTokens.get(String(question.id))} handleResponseVote={handleResponseVote} locked={locked} />;
+                return <OpenEndedQuestion question={question} userVote={userVote} handleVote={handleVote} ownedVoteIds={ownedVoteIds} upvotedVoteIds={upvotedVoteIds} handleResponseVote={handleResponseVote} locked={locked} />;
             }
             case QuestionTypes.BRAINSTORM: {
-                return <BrainstormQuestion question={question} myToken={myTokens.get(String(question.id))} handleVote={handleVote} handleDeleteVote={handleDeleteVote} />;
+                return <BrainstormQuestion question={question} ownedVoteIds={ownedVoteIds} handleVote={handleVote} handleDeleteVote={handleDeleteVote} />;
             }
 
             default:
@@ -918,7 +936,7 @@ const DiscussionPage = () => {
         </div>
     );
 };
-const OpenEndedQuestion = ({ question, userVote, handleVote, myToken, handleResponseVote, locked }) => {
+const OpenEndedQuestion = ({ question, userVote, handleVote, ownedVoteIds, upvotedVoteIds, handleResponseVote, locked }) => {
     const [response, setResponse] = useState(userVote ? userVote.value : '');
 
     useEffect(() => {
@@ -963,14 +981,13 @@ const OpenEndedQuestion = ({ question, userVote, handleVote, myToken, handleResp
                     <h3 className="font-semibold mb-2">All Responses:</h3>
                     <ul className="space-y-2">
                         {sortedResponses.map((vote) => {
-                            // Ownership is matched via the per-question token
-                            // (the server no longer sends raw user ids).
-                            const isOwnResponse = Boolean(myToken) && vote.ownerToken === myToken;
+                            // Ownership is matched via the per-response token
+                            // (the server no longer sends raw user ids); the
+                            // parent precomputes the set of ids we own/upvoted.
+                            const isOwnResponse = ownedVoteIds.has(vote.id);
                             const isYou = isOwnResponse;
                             const upvotes = vote.upvotes || 0;
-                            const hasUpvoted = Boolean(myToken)
-                                && Array.isArray(vote.upvoterTokens)
-                                && vote.upvoterTokens.includes(myToken);
+                            const hasUpvoted = upvotedVoteIds.has(vote.id);
                             return (
                                 <li key={vote.id} className="bg-gray-50 rounded-md p-3 flex items-start gap-3">
                                     <button
@@ -1018,7 +1035,8 @@ OpenEndedQuestion.propTypes = {
         value: PropTypes.string
     }),
     handleVote: PropTypes.func.isRequired,
-    myToken: PropTypes.string,
+    ownedVoteIds: PropTypes.instanceOf(Set).isRequired,
+    upvotedVoteIds: PropTypes.instanceOf(Set).isRequired,
     handleResponseVote: PropTypes.func.isRequired,
     locked: PropTypes.bool
 };
@@ -1096,7 +1114,7 @@ AgreementResults.propTypes = {
 
 // Unlike Open Ended (one editable response per person), Brainstorm lets each
 // participant add any number of separate ideas and delete their own.
-const BrainstormQuestion = ({ question, myToken, handleVote, handleDeleteVote }) => {
+const BrainstormQuestion = ({ question, ownedVoteIds, handleVote, handleDeleteVote }) => {
     const [idea, setIdea] = useState('');
     const votes = question.votes || [];
 
@@ -1131,9 +1149,10 @@ const BrainstormQuestion = ({ question, myToken, handleVote, handleDeleteVote })
                     <h3 className="font-semibold mb-2">All Ideas ({votes.length}):</h3>
                     <ul className="list-disc pl-5">
                         {votes.map((vote) => {
-                            // Ownership is matched via the per-question token
-                            // (the server no longer sends raw user ids).
-                            const isMine = Boolean(myToken) && vote.ownerToken === myToken;
+                            // Ownership is matched via the per-response token
+                            // (the server no longer sends raw user ids); the
+                            // parent precomputes the set of ids we own.
+                            const isMine = ownedVoteIds.has(vote.id);
                             return (
                             <li key={vote.id} className="mb-2 flex items-start justify-between">
                                 <span>
@@ -1219,7 +1238,7 @@ BrainstormQuestion.propTypes = {
             value: PropTypes.string.isRequired
         }))
     }).isRequired,
-    myToken: PropTypes.string,
+    ownedVoteIds: PropTypes.instanceOf(Set).isRequired,
     handleVote: PropTypes.func.isRequired,
     handleDeleteVote: PropTypes.func.isRequired
 };
