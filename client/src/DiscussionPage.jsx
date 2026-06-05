@@ -1,5 +1,5 @@
 import PropTypes from 'prop-types';
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import io from 'socket.io-client';
 import { QRCodeSVG } from 'qrcode.react';
@@ -111,6 +111,15 @@ const DiscussionPage = () => {
     // once it's truly reserved — otherwise a shuffle before the first question
     // could leave this user's handle un-inserted and free to collide later.
     const [pseudonymReserved, setPseudonymReserved] = useState(false);
+    // A shuffle is in flight. We never allow more than one reservation-mutating
+    // request outstanding: the async server handlers can finish out of order, so
+    // overlapping shuffles (or a shuffle racing the initial reservation) could
+    // leave the client showing a handle the DB never reserved. The ref guards
+    // re-entry synchronously (defeats same-render double-clicks); the state just
+    // disables the button. Shuffle is only offered once the handle is reserved,
+    // so it can never overlap the idempotent initial request.
+    const shufflePendingRef = useRef(false);
+    const [shufflePending, setShufflePending] = useState(false);
     const [editingIdentity, setEditingIdentity] = useState(false);
     const [error, setError] = useState(null);
     const [newTopicName, setNewTopicName] = useState('');
@@ -354,17 +363,22 @@ const DiscussionPage = () => {
 
     // Shuffle goes through the server so the new handle is still unique within
     // this discussion. The server reserves it; we adopt it and rename this
-    // browser's existing responses (only meaningful in pseudonym mode).
+    // browser's existing responses (only meaningful in pseudonym mode). Gated on
+    // an existing reservation and a not-already-pending shuffle so there is only
+    // ever one reservation-mutating request in flight — otherwise out-of-order
+    // acks could mark an unreserved handle as reserved.
     const handleRegeneratePseudonym = () => {
-        if (!userId) return;
+        if (!userId || !pseudonymReserved || shufflePendingRef.current) return;
+        shufflePendingRef.current = true;
+        setShufflePending(true);
         socket.emit('regeneratePseudonym', discussionSlug, userId, (resp) => {
-            if (!resp?.pseudonym) return;
+            shufflePendingRef.current = false;
+            setShufflePending(false);
+            // The discussion exists (we were already reserved), so a real
+            // reservation is expected; ignore anything else defensively.
+            if (!resp?.pseudonym || !resp.reserved) return;
             setAssignedPseudonym(resp.pseudonym);
-            // A shuffle before the discussion exists yields only a preview; leave
-            // it unreserved so the request effect still reserves a handle once the
-            // discussion is created, and don't rename responses (there are none).
-            setPseudonymReserved(!!resp.reserved);
-            if (resp.reserved && identity?.mode === NameModes.PSEUDONYM) {
+            if (identity?.mode === NameModes.PSEUDONYM) {
                 socket.emit('updateDisplayName', discussionSlug, userId, resp.pseudonym);
             }
         });
@@ -582,6 +596,8 @@ const DiscussionPage = () => {
     useEffect(() => {
         setAssignedPseudonym(null);
         setPseudonymReserved(false);
+        shufflePendingRef.current = false;
+        setShufflePending(false);
     }, [discussionSlug]);
 
     // Ask the server for a handle that's unique within this discussion. We wait
@@ -932,7 +948,8 @@ const DiscussionPage = () => {
                             <button
                                 type="button"
                                 onClick={handleRegeneratePseudonym}
-                                className="text-primary hover:underline"
+                                disabled={!pseudonymReserved || shufflePending}
+                                className="text-primary hover:underline disabled:opacity-50 disabled:no-underline disabled:cursor-default"
                                 title="Get a new pseudonym"
                             >
                                 (shuffle)
