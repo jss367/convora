@@ -2313,10 +2313,28 @@ async function assignPseudonym(slug, userId, preferred, { regenerate = false } =
   if (current && !regenerate) return { pseudonym: current, reserved: true };
 
   // Names already in use in this discussion, so we can skip them up front (the
-  // DB still has the final say via reservePseudonym's unique constraint).
+  // DB still has the final say via reservePseudonym's unique constraint). We
+  // union two sources: the reservation table, AND handles already shown on
+  // existing votes/comments by OTHER users. The latter matters for discussions
+  // that predate this migration (whose reservation table starts empty while old
+  // responses already display handles) — without it a newcomer could be handed a
+  // name already visible on someone else's old response. We exclude the
+  // requesting user's own responses so a returning participant can reclaim the
+  // handle their existing responses already show.
   const takenResult = await pool.query(
-    'SELECT pseudonym FROM discussion_pseudonyms WHERE discussion_id = $1',
-    [discussionId]
+    `SELECT pseudonym FROM discussion_pseudonyms WHERE discussion_id = $1
+     UNION
+     SELECT v.pseudonym
+       FROM votes v
+       JOIN questions q ON v.question_id = q.id
+      WHERE q.discussion_id = $1 AND v.user_id <> $2 AND v.pseudonym IS NOT NULL
+     UNION
+     SELECT c.pseudonym
+       FROM response_comments c
+       JOIN votes v ON c.response_id = v.id
+       JOIN questions q ON v.question_id = q.id
+      WHERE q.discussion_id = $1 AND c.user_id <> $2 AND c.pseudonym IS NOT NULL`,
+    [discussionId, userId]
   );
   const taken = new Set(takenResult.rows.map((row) => row.pseudonym));
 

@@ -1135,6 +1135,44 @@ test('Shuffling in one tab syncs the new handle to the same user\'s other tabs',
   }
 });
 
+test('A newcomer avoids a handle already shown on a pre-existing response', async () => {
+  const topic = uniqueTopic('pseudonym-backfill');
+  const seeder = await connectSocket();
+  try {
+    seeder.emit('joinDiscussion', topic);
+    const question = await addBrainstormQuestion(seeder, topic, 'Ideas?');
+    // Simulate a participant who responded BEFORE this feature shipped: a vote
+    // carrying a handle, with no row in discussion_pseudonyms.
+    const idea = waitForQuestions(seeder, (qs) => qs[0] && qs[0].votes.length === 1, 'idea added');
+    seeder.emit('vote', topic, question.id, 'My idea', 'old-user', 'Tidy Newt');
+    await idea;
+  } finally {
+    seeder.disconnect();
+  }
+
+  // No reservation row exists yet, but "Tidy Newt" is already displayed.
+  const reservations = await pool.query('SELECT COUNT(*)::int AS n FROM discussion_pseudonyms');
+  assert.equal(reservations.rows[0].n, 0);
+
+  const newcomer = await connectSocket();
+  const returning = await connectSocket();
+  try {
+    // A new participant proposing the same handle must be deconflicted away from
+    // the one an existing response already shows.
+    const fresh = await emitWithAck(newcomer, 'requestPseudonym', topic, 'user-new', 'Tidy Newt');
+    assert.equal(fresh.reserved, true);
+    assert.notEqual(fresh.pseudonym, 'Tidy Newt');
+
+    // The original responder (same userId) can still reclaim the handle their
+    // existing response already shows.
+    const reclaimed = await emitWithAck(returning, 'requestPseudonym', topic, 'old-user', 'Tidy Newt');
+    assert.equal(reclaimed.pseudonym, 'Tidy Newt');
+  } finally {
+    newcomer.disconnect();
+    returning.disconnect();
+  }
+});
+
 test('a moderator can edit a question before anyone responds', async () => {
   const topic = uniqueTopic('edit-question');
   const mod = await connectSocket();
