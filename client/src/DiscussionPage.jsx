@@ -118,6 +118,8 @@ const DiscussionPage = () => {
     });
     const [similarPrompt, setSimilarPrompt] = useState(null);
     const [adminLinkCopied, setAdminLinkCopied] = useState(false);
+    // Id of the question a moderator is currently editing inline (null when none).
+    const [editingQuestionId, setEditingQuestionId] = useState(null);
     // Experimental "opinion groups" view, hidden behind a ?clusters=1 flag so it
     // can be evaluated on a real discussion without exposing it to everyone. Once
     // enabled it's remembered per browser so the link survives navigation.
@@ -387,6 +389,16 @@ const DiscussionPage = () => {
         socket.emit('setPinned', discussionSlug, questionId, !pinned, adminToken);
     };
 
+    // Save a moderator's edit to a question. The server only accepts it while the
+    // question has no responses; on success it broadcasts fresh questions and we
+    // close the inline editor, otherwise the editor stays open to show the error.
+    const handleEditQuestion = (questionId, updates, onResult) => {
+        socket.emit('editQuestion', discussionSlug, questionId, updates, adminToken, (resp) => {
+            if (resp && resp.updated) setEditingQuestionId(null);
+            if (typeof onResult === 'function') onResult(resp);
+        });
+    };
+
     const handleCopyAdminLink = async () => {
         try {
             await navigator.clipboard.writeText(adminUrl);
@@ -640,6 +652,12 @@ const DiscussionPage = () => {
         socket.emit('deleteVote', discussionSlug, voteId, userId);
     };
 
+    // Moderator-only: remove any participant's response/idea, regardless of
+    // owner (spam control). The server re-checks the admin token.
+    const handleModeratorDeleteVote = (questionId, voteId) => {
+        socket.emit('moderatorDeleteVote', discussionSlug, voteId, adminToken);
+    };
+
     const handleSliderChange = (questionId, value) => {
         setSliderValues(prev => ({ ...prev, [questionId]: value }));
     };
@@ -676,6 +694,11 @@ const DiscussionPage = () => {
 
     const handleDeleteComment = (commentId) => {
         socket.emit('deleteResponseComment', topic, commentId, userId);
+    };
+
+    // Moderator-only: remove any participant's comment, regardless of owner.
+    const handleModeratorDeleteComment = (commentId) => {
+        socket.emit('moderatorDeleteResponseComment', topic, commentId, adminToken);
     };
 
     const handleSetDiscussionFlags = (flags) => {
@@ -806,7 +829,7 @@ const DiscussionPage = () => {
                 );
             }
             case QuestionTypes.OPEN_ENDED: {
-                return <OpenEndedQuestion question={question} userVote={userVote} handleVote={handleVote} ownedVoteIds={ownedVoteIds} upvotedVoteIds={upvotedVoteIds} handleResponseVote={handleResponseVote} locked={locked} />;
+                return <OpenEndedQuestion question={question} userVote={userVote} handleVote={handleVote} ownedVoteIds={ownedVoteIds} upvotedVoteIds={upvotedVoteIds} handleResponseVote={handleResponseVote} locked={locked} isAdmin={isAdmin} onModeratorDeleteVote={handleModeratorDeleteVote} />;
             }
             case QuestionTypes.BRAINSTORM: {
                 return <BrainstormQuestion
@@ -816,11 +839,14 @@ const DiscussionPage = () => {
                     handleVote={handleVote}
                     handleDeleteVote={handleDeleteVote}
                     locked={locked}
+                    isAdmin={isAdmin}
                     myBrainstorm={myBrainstorm}
                     onSetRating={handleSetRating}
                     onToggleReaction={handleToggleReaction}
                     onAddComment={handleAddComment}
                     onDeleteComment={handleDeleteComment}
+                    onModeratorDeleteVote={handleModeratorDeleteVote}
+                    onModeratorDeleteComment={handleModeratorDeleteComment}
                 />;
             }
 
@@ -1028,7 +1054,7 @@ const DiscussionPage = () => {
                             </button>
                             <button
                                 onClick={handleDuplicateDiscussion}
-                                className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600"
+                                className="px-4 py-2 bg-primary text-white rounded hover:bg-opacity-90"
                             >
                                 Duplicate
                             </button>
@@ -1316,8 +1342,21 @@ const DiscussionPage = () => {
             </div>
 
             {/* Questions list */}
-            {orderedQuestions.map((question) => (
+            {orderedQuestions.map((question) => {
+                // A question can only be edited before anyone has responded — once
+                // it has votes, its wording is locked in (matches the server guard).
+                const hasResponses = (question.votes?.length || 0) > 0;
+                const isEditing = editingQuestionId === question.id;
+                return (
                 <div key={question.id} className="bg-white shadow-lg rounded-lg p-6 mb-6">
+                    {isEditing ? (
+                        <QuestionEditor
+                            question={question}
+                            onSave={handleEditQuestion}
+                            onCancel={() => setEditingQuestionId(null)}
+                        />
+                    ) : (
+                    <>
                     <div className="flex justify-between items-start mb-4">
                         <h2 className="text-xl font-semibold">
                             {question.pinned && <span className="mr-1" title="Pinned">📌</span>}
@@ -1325,6 +1364,14 @@ const DiscussionPage = () => {
                         </h2>
                         {isAdmin && (
                             <div className="flex gap-2 ml-4 shrink-0">
+                                {!hasResponses && (
+                                    <button
+                                        onClick={() => setEditingQuestionId(question.id)}
+                                        className="text-xs px-2 py-1 rounded border border-gray-300 text-gray-600 hover:bg-gray-100"
+                                    >
+                                        Edit
+                                    </button>
+                                )}
                                 <button
                                     onClick={() => handleTogglePin(question.id, question.pinned)}
                                     className="text-xs px-2 py-1 rounded border border-gray-300 text-gray-600 hover:bg-gray-100"
@@ -1342,12 +1389,131 @@ const DiscussionPage = () => {
                     </div>
                     <p className="mb-4 text-sm text-gray-500">Type: {question.type}</p>
                     {renderVotingMechanism(question)}
+                    </>
+                    )}
                 </div>
-            ))}
+                );
+            })}
         </div>
     );
 };
-const OpenEndedQuestion = ({ question, userVote, handleVote, ownedVoteIds, upvotedVoteIds, handleResponseVote, locked }) => {
+
+// Inline moderator editor for a question's wording/type, mirroring the fields of
+// the "add question" form. Only mounted for questions with no responses yet; the
+// server enforces that same rule, so a stale view can't slip an edit through.
+const QuestionEditor = ({ question, onSave, onCancel }) => {
+    const [text, setText] = useState(question.text);
+    const [type, setType] = useState(question.type);
+    const [minValue, setMinValue] = useState(question.minValue ?? 0);
+    const [maxValue, setMaxValue] = useState(question.maxValue ?? 100);
+    const [error, setError] = useState(null);
+    const [saving, setSaving] = useState(false);
+
+    const handleSave = () => {
+        const trimmed = text.trim();
+        if (trimmed === '') {
+            setError('Question text cannot be empty.');
+            return;
+        }
+        const updates = { text: trimmed, type };
+        if (type === QuestionTypes.NUMERICAL) {
+            const min = parseInt(minValue, 10);
+            const max = parseInt(maxValue, 10);
+            if (!Number.isInteger(min) || !Number.isInteger(max) || min >= max) {
+                setError('Minimum value must be less than maximum value.');
+                return;
+            }
+            updates.minValue = min;
+            updates.maxValue = max;
+        }
+        setError(null);
+        setSaving(true);
+        onSave(question.id, updates, (resp) => {
+            setSaving(false);
+            if (!resp || !resp.updated) {
+                setError(
+                    resp && resp.reason === 'has_responses'
+                        ? 'This question already has responses and can no longer be edited.'
+                        : 'Failed to save changes. Please try again.'
+                );
+            }
+            // On success the parent unmounts this editor; nothing more to do here.
+        });
+    };
+
+    return (
+        <div>
+            <input
+                type="text"
+                value={text}
+                onChange={(e) => setText(e.target.value)}
+                placeholder="Enter a new question or statement"
+                className="w-full p-3 border border-gray-300 rounded-md mb-4 focus:outline-none focus:ring-2 focus:ring-primary"
+            />
+            <div className="mb-4">
+                <label className="block mb-2">Question Type:</label>
+                <select
+                    value={type}
+                    onChange={(e) => setType(e.target.value)}
+                    className="w-full p-3 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary"
+                >
+                    {Object.values(QuestionTypes).map(t => (
+                        <option key={t} value={t}>{t}</option>
+                    ))}
+                </select>
+                {QuestionTypeDescriptions[type] && (
+                    <p className="mt-2 text-sm text-gray-500">{QuestionTypeDescriptions[type]}</p>
+                )}
+            </div>
+            {type === QuestionTypes.NUMERICAL && (
+                <div className="mb-4 flex space-x-4">
+                    <div className="flex-1">
+                        <label className="block mb-2">Min Value:</label>
+                        <input
+                            type="number"
+                            value={minValue}
+                            onChange={(e) => setMinValue(e.target.value)}
+                            className="w-full p-3 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary"
+                        />
+                    </div>
+                    <div className="flex-1">
+                        <label className="block mb-2">Max Value:</label>
+                        <input
+                            type="number"
+                            value={maxValue}
+                            onChange={(e) => setMaxValue(e.target.value)}
+                            className="w-full p-3 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary"
+                        />
+                    </div>
+                </div>
+            )}
+            {error && <div className="text-red-500 mb-3 text-sm">{error}</div>}
+            <div className="flex gap-2">
+                <button
+                    onClick={handleSave}
+                    disabled={saving}
+                    className="px-4 py-2 bg-primary text-white rounded hover:bg-opacity-90 transition duration-300 disabled:opacity-50"
+                >
+                    {saving ? 'Saving…' : 'Save'}
+                </button>
+                <button
+                    onClick={onCancel}
+                    disabled={saving}
+                    className="px-4 py-2 rounded border border-gray-300 text-gray-600 hover:bg-gray-100 transition duration-300 disabled:opacity-50"
+                >
+                    Cancel
+                </button>
+            </div>
+        </div>
+    );
+};
+QuestionEditor.propTypes = {
+    question: PropTypes.object.isRequired,
+    onSave: PropTypes.func.isRequired,
+    onCancel: PropTypes.func.isRequired,
+};
+
+const OpenEndedQuestion = ({ question, userVote, handleVote, ownedVoteIds, upvotedVoteIds, handleResponseVote, locked, isAdmin, onModeratorDeleteVote }) => {
     const [response, setResponse] = useState(userVote ? userVote.value : '');
 
     useEffect(() => {
@@ -1414,9 +1580,20 @@ const OpenEndedQuestion = ({ question, userVote, handleVote, ownedVoteIds, upvot
                                         <span className="text-xs font-semibold">{upvotes}</span>
                                     </button>
                                     <div className="flex-1">
-                                        <div className="text-xs font-semibold text-gray-500 mb-1">
-                                            {vote.pseudonym || 'Anonymous'}
-                                            {isYou && ' (you)'}
+                                        <div className="flex items-start justify-between gap-2">
+                                            <div className="text-xs font-semibold text-gray-500 mb-1">
+                                                {vote.pseudonym || 'Anonymous'}
+                                                {isYou && ' (you)'}
+                                            </div>
+                                            {isAdmin && (
+                                                <button
+                                                    onClick={() => onModeratorDeleteVote(question.id, vote.id)}
+                                                    title="Remove this response (moderator)"
+                                                    className="text-xs text-red-500 hover:text-red-700 shrink-0"
+                                                >
+                                                    Remove
+                                                </button>
+                                            )}
                                         </div>
                                         <div className="text-gray-800 whitespace-pre-wrap">{vote.value}</div>
                                     </div>
@@ -1449,7 +1626,9 @@ OpenEndedQuestion.propTypes = {
     ownedVoteIds: PropTypes.instanceOf(Set).isRequired,
     upvotedVoteIds: PropTypes.instanceOf(Set).isRequired,
     handleResponseVote: PropTypes.func.isRequired,
-    locked: PropTypes.bool
+    locked: PropTypes.bool,
+    isAdmin: PropTypes.bool,
+    onModeratorDeleteVote: PropTypes.func
 };
 
 // Stacked divergence bar + summary for an Agreement question. Shows at a glance
@@ -1557,8 +1736,9 @@ AgreementMiniBar.propTypes = {
 // aggregates; only this user's own selections (myRating/myReactions) are known
 // to the client, so nothing reveals who voted which way.
 const BrainstormIdea = ({
-    vote, isOwn, ownedCommentIds, reactionsActive, commentsEnabled, locked,
-    myRating, myReactions, onDeleteVote, onSetRating, onToggleReaction, onAddComment, onDeleteComment,
+    vote, isOwn, isAdmin, ownedCommentIds, reactionsActive, commentsEnabled, locked,
+    myRating, myReactions, onDeleteVote, onModeratorDelete, onSetRating, onToggleReaction,
+    onAddComment, onDeleteComment, onModeratorDeleteComment,
 }) => {
     const [comment, setComment] = useState('');
     const net = (vote.qualityUp || 0) - (vote.qualityDown || 0);
@@ -1603,12 +1783,13 @@ const BrainstormIdea = ({
                             {vote.value}
                             {isOwn && <span className="text-xs text-gray-500"> (You)</span>}
                         </span>
-                        {isOwn && (
+                        {(isOwn || isAdmin) && (
                             <button
-                                onClick={onDeleteVote}
+                                onClick={isOwn ? onDeleteVote : onModeratorDelete}
+                                title={isOwn ? undefined : 'Remove this idea (moderator)'}
                                 className="ml-2 text-sm text-red-500 hover:text-red-700 shrink-0"
                             >
-                                Delete
+                                {isOwn ? 'Delete' : 'Remove'}
                             </button>
                         )}
                     </div>
@@ -1669,12 +1850,13 @@ const BrainstormIdea = ({
                                                 <span className="font-semibold text-gray-600">{c.pseudonym || 'Anonymous'}:</span>{' '}
                                                 <span className="text-gray-800 whitespace-pre-wrap">{c.body}</span>
                                             </span>
-                                            {ownedCommentIds.has(c.id) && (
+                                            {(ownedCommentIds.has(c.id) || isAdmin) && (
                                                 <button
-                                                    onClick={() => onDeleteComment(c.id)}
+                                                    onClick={() => (ownedCommentIds.has(c.id) ? onDeleteComment(c.id) : onModeratorDeleteComment(c.id))}
+                                                    title={ownedCommentIds.has(c.id) ? undefined : 'Remove this comment (moderator)'}
                                                     className="text-xs text-red-500 hover:text-red-700 shrink-0"
                                                 >
-                                                    Delete
+                                                    {ownedCommentIds.has(c.id) ? 'Delete' : 'Remove'}
                                                 </button>
                                             )}
                                         </li>
@@ -1720,6 +1902,7 @@ BrainstormIdea.propTypes = {
         comments: PropTypes.array,
     }).isRequired,
     isOwn: PropTypes.bool,
+    isAdmin: PropTypes.bool,
     ownedCommentIds: PropTypes.instanceOf(Set).isRequired,
     reactionsActive: PropTypes.bool,
     commentsEnabled: PropTypes.bool,
@@ -1727,10 +1910,12 @@ BrainstormIdea.propTypes = {
     myRating: PropTypes.object,
     myReactions: PropTypes.array,
     onDeleteVote: PropTypes.func.isRequired,
+    onModeratorDelete: PropTypes.func,
     onSetRating: PropTypes.func.isRequired,
     onToggleReaction: PropTypes.func.isRequired,
     onAddComment: PropTypes.func.isRequired,
     onDeleteComment: PropTypes.func.isRequired,
+    onModeratorDeleteComment: PropTypes.func,
 };
 
 // participant add any number of separate ideas and delete their own. The
@@ -1738,8 +1923,9 @@ BrainstormIdea.propTypes = {
 // comments on top, revealing them when the room shifts from generating ideas to
 // evaluating them.
 const BrainstormQuestion = ({
-    question, ownedVoteIds, ownedCommentIds, handleVote, handleDeleteVote, locked, myBrainstorm,
+    question, ownedVoteIds, ownedCommentIds, handleVote, handleDeleteVote, locked, isAdmin, myBrainstorm,
     onSetRating, onToggleReaction, onAddComment, onDeleteComment,
+    onModeratorDeleteVote, onModeratorDeleteComment,
 }) => {
     const [idea, setIdea] = useState('');
     const votes = question.votes || [];
@@ -1799,6 +1985,7 @@ const BrainstormQuestion = ({
                                 // (the server no longer sends raw user ids); the
                                 // parent precomputes the sets of ids we own.
                                 isOwn={ownedVoteIds.has(vote.id)}
+                                isAdmin={isAdmin}
                                 ownedCommentIds={ownedCommentIds}
                                 reactionsActive={reactionsActive}
                                 commentsEnabled={commentsEnabled}
@@ -1806,10 +1993,12 @@ const BrainstormQuestion = ({
                                 myRating={myBrainstorm.ratings[vote.id] || {}}
                                 myReactions={myBrainstorm.reactions[vote.id] || []}
                                 onDeleteVote={() => handleDeleteVote(question.id, vote.id)}
+                                onModeratorDelete={() => onModeratorDeleteVote(question.id, vote.id)}
                                 onSetRating={onSetRating}
                                 onToggleReaction={onToggleReaction}
                                 onAddComment={onAddComment}
                                 onDeleteComment={onDeleteComment}
+                                onModeratorDeleteComment={onModeratorDeleteComment}
                             />
                         ))}
                     </ul>
@@ -1888,6 +2077,7 @@ BrainstormQuestion.propTypes = {
     handleVote: PropTypes.func.isRequired,
     handleDeleteVote: PropTypes.func.isRequired,
     locked: PropTypes.bool,
+    isAdmin: PropTypes.bool,
     myBrainstorm: PropTypes.shape({
         ratings: PropTypes.object,
         reactions: PropTypes.object,
@@ -1896,6 +2086,8 @@ BrainstormQuestion.propTypes = {
     onToggleReaction: PropTypes.func.isRequired,
     onAddComment: PropTypes.func.isRequired,
     onDeleteComment: PropTypes.func.isRequired,
+    onModeratorDeleteVote: PropTypes.func,
+    onModeratorDeleteComment: PropTypes.func,
 };
 
 export default DiscussionPage;

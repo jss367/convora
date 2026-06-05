@@ -996,6 +996,80 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Moderator-only: edit a question's wording/type, allowed ONLY while it has no
+  // responses yet. Once anyone has answered, the wording is a contract their
+  // responses were made against, so editing is refused (delete + re-ask instead).
+  socket.on('editQuestion', async (topic, questionId, updates, token, ack) => {
+    const discussionSlug = slugifyTopic(topic);
+    const reply = (result) => { if (typeof ack === 'function') ack(result); };
+    try {
+      const discussionId = await verifyAdmin(discussionSlug, token);
+      if (!discussionId) {
+        socket.emit('error', { message: 'Not authorized to moderate this discussion.' });
+        reply({ updated: false, reason: 'not_authorized' });
+        return;
+      }
+
+      // Scope existence through discussion_id so a moderator of one discussion
+      // can't probe or edit another's questions by passing a foreign id.
+      const existing = await pool.query(
+        'SELECT id FROM questions WHERE id = $1 AND discussion_id = $2',
+        [questionId, discussionId]
+      );
+      if (existing.rows.length === 0) {
+        reply({ updated: false, reason: 'not_found' });
+        return;
+      }
+
+      const responses = await pool.query('SELECT 1 FROM votes WHERE question_id = $1 LIMIT 1', [questionId]);
+      if (responses.rows.length > 0) {
+        socket.emit('error', { message: 'This question already has responses and can no longer be edited.' });
+        reply({ updated: false, reason: 'has_responses' });
+        return;
+      }
+
+      // Validate the same way creation does: non-empty text, a known type, and
+      // (for Numerical) a valid min < max range.
+      const text = String(updates && updates.text != null ? updates.text : '').trim();
+      const type = updates && updates.type;
+      if (!text || !VALID_QUESTION_TYPES.has(type)) {
+        reply({ updated: false, reason: 'invalid' });
+        return;
+      }
+      let minValue = null;
+      let maxValue = null;
+      if (type === 'Numerical') {
+        minValue = parseInt(updates.minValue, 10);
+        maxValue = parseInt(updates.maxValue, 10);
+        if (!Number.isInteger(minValue) || !Number.isInteger(maxValue) || minValue >= maxValue) {
+          reply({ updated: false, reason: 'invalid' });
+          return;
+        }
+      }
+
+      // The NOT EXISTS guard closes the race between the response check above and
+      // this write: if a vote landed in between, no row is updated and we report
+      // it as having responses rather than silently editing an answered question.
+      const result = await pool.query(
+        `UPDATE questions SET text = $1, type = $2, min_value = $3, max_value = $4
+         WHERE id = $5 AND discussion_id = $6
+           AND NOT EXISTS (SELECT 1 FROM votes WHERE question_id = $5)`,
+        [text, type, minValue, maxValue, questionId, discussionId]
+      );
+      if (result.rowCount === 0) {
+        socket.emit('error', { message: 'This question already has responses and can no longer be edited.' });
+        reply({ updated: false, reason: 'has_responses' });
+        return;
+      }
+      io.to(discussionSlug).emit('questions', await getQuestions(discussionSlug));
+      reply({ updated: true });
+    } catch (error) {
+      console.error('Error editing question:', error);
+      socket.emit('error', { message: 'Failed to edit question' });
+      reply({ updated: false, reason: 'error' });
+    }
+  });
+
   socket.on('toggleResponseVote', async (topic, responseId, userId) => {
     const discussionSlug = slugifyTopic(topic);
     try {
@@ -1096,6 +1170,32 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Moderator-only: remove any participant's comment (spam control). Scoped
+  // through the discussion so a moderator of one discussion can't reach another
+  // discussion's comments. Mirrors the author-only deleteResponseComment above.
+  socket.on('moderatorDeleteResponseComment', async (topic, commentId, token) => {
+    const discussionSlug = slugifyTopic(topic);
+    try {
+      const discussionId = await verifyAdmin(discussionSlug, token);
+      if (!discussionId) {
+        socket.emit('error', { message: 'Not authorized to moderate this discussion.' });
+        return;
+      }
+      await pool.query(
+        `DELETE FROM response_comments c
+         USING votes v, questions q
+         WHERE c.id = $1
+           AND c.response_id = v.id AND v.question_id = q.id
+           AND q.discussion_id = $2`,
+        [commentId, discussionId]
+      );
+      io.to(discussionSlug).emit('questions', await getQuestions(discussionSlug));
+    } catch (error) {
+      console.error('Error deleting comment (moderator):', error);
+      socket.emit('error', { message: 'Failed to delete comment' });
+    }
+  });
+
   // Moderator-only: flip the discussion-wide interaction flags (allow/disallow
   // reactions, reveal/hide reactions, allow/disallow comments). These apply to
   // every brainstorm prompt at once so a moderator can phase the whole room —
@@ -1157,6 +1257,44 @@ io.on('connection', (socket) => {
     } catch (error) {
       console.error('Error deleting vote:', error);
       socket.emit('error', { message: 'Failed to delete vote' });
+    }
+  });
+
+  // Moderator-only: remove any participant's response/idea (a votes row),
+  // regardless of who authored it (spam control). Scoped through the discussion
+  // so a moderator can't reach another discussion's responses by passing a
+  // foreign voteId. Dependent ratings/reactions/comments/upvotes cascade away
+  // via their ON DELETE CASCADE foreign keys on votes(id).
+  socket.on('moderatorDeleteVote', async (topic, voteId, token) => {
+    const discussionSlug = slugifyTopic(topic);
+    try {
+      const discussionId = await verifyAdmin(discussionSlug, token);
+      if (!discussionId) {
+        socket.emit('error', { message: 'Not authorized to moderate this discussion.' });
+        return;
+      }
+      // Scope deletes to written-response question types only. The feature
+      // exists to remove spammy free text (Open Ended responses, Brainstorm
+      // ideas), and the UI only surfaces the "Remove" control for those. Poll
+      // and scale votes (Agreement, Numerical) are aggregate data, not
+      // spammable free text — deleting one would silently distort the results,
+      // so we forbid it server-side even though every vote id is broadcast in
+      // getQuestions and a moderator could otherwise target a poll vote id
+      // directly from the console.
+      await pool.query(
+        `DELETE FROM votes
+         WHERE id = $1
+           AND question_id IN (
+             SELECT id FROM questions
+             WHERE discussion_id = $2
+               AND type IN ('Open Ended', 'Brainstorm')
+           )`,
+        [voteId, discussionId]
+      );
+      io.to(discussionSlug).emit('questions', await getQuestions(discussionSlug));
+    } catch (error) {
+      console.error('Error deleting response (moderator):', error);
+      socket.emit('error', { message: 'Failed to delete response' });
     }
   });
 
@@ -1370,6 +1508,10 @@ const EPISTEMIC_REACTIONS = new Set([
   'citation-needed',
   'key-insight',
 ]);
+
+// The question types a discussion supports. Mirrors QuestionTypes in
+// client/src/DiscussionPage.jsx — used to validate edits server-side.
+const VALID_QUESTION_TYPES = new Set(['Agreement', 'Numerical', 'Open Ended', 'Brainstorm']);
 
 // Enrich Brainstorm responses in place with aggregated interaction data:
 // quality up/down tallies, the agreement distribution, reaction counts, and
@@ -1750,6 +1892,17 @@ async function migrateBrainstormInteractions() {
   // exactly once — re-running on every boot would clobber later moderator
   // changes by resurrecting stale per-question values. On a fresh DB it's a
   // harmless no-op since all values are at their defaults.
+  //
+  // enabled/comments roll up with BOOL_OR ("on if any question had it on").
+  // Visibility CANNOT roll up the same way: reactions_visible defaults TRUE on
+  // every question (including non-brainstorm and reactions-disabled ones), so a
+  // BOOL_OR would almost always yield TRUE and would force-reveal a brainstorm
+  // that was silently collecting reactions (enabled + hidden) just because some
+  // unrelated default-visible question exists. Revealing hidden data is the
+  // worse failure, so visibility errs toward hidden: consider only questions
+  // that actually had reactions enabled, and keep the discussion hidden if ANY
+  // such question was hidden (filtered BOOL_AND, defaulting to visible when no
+  // question had reactions enabled).
   if (!discussionFlagsExist) {
     await pool.query(`
       UPDATE discussions d SET
@@ -1759,7 +1912,7 @@ async function migrateBrainstormInteractions() {
       FROM (
         SELECT discussion_id,
                BOOL_OR(reactions_enabled) AS re,
-               BOOL_OR(reactions_visible) AS rv,
+               COALESCE(BOOL_AND(reactions_visible) FILTER (WHERE reactions_enabled), true) AS rv,
                BOOL_OR(comments_enabled)  AS ce
         FROM questions
         GROUP BY discussion_id
