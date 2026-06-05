@@ -710,18 +710,17 @@ io.on('connection', (socket) => {
   });
 
   // Associate this socket with the client's persistent userId so the server can
-  // route per-user messages (moderator grants) to it. Sent right after joining.
-  // If this user was already promoted to moderator for the topic, re-deliver
-  // their token now so promotion survives reconnects / being offline when promoted.
-  socket.on('identify', async (topic, userId) => {
+  // route a live moderator grant to it when a moderator promotes this user.
+  //
+  // Deliberately does NOT hand back an existing moderator token here: userId is
+  // not a secret (getQuestions broadcasts each vote's userId to the whole room),
+  // so re-delivering a token to anyone who supplies a promoted user's id would
+  // let an observer steal moderator access. A genuinely promoted user receives
+  // their token live at promotion time and persists it locally (so it survives
+  // reloads/reconnects via verifyAdmin); we never re-mint it from the id alone.
+  socket.on('identify', (topic, userId) => {
     if (!userId) return;
     socket.data.userId = userId;
-    try {
-      const token = await getModeratorToken(topic, userId);
-      if (token) socket.emit('moderatorGranted', { token });
-    } catch (error) {
-      console.error('Error checking moderator grant on identify:', error);
-    }
   });
 
   socket.on('leaveDiscussion', (topic) => {
@@ -973,8 +972,11 @@ app.post('/api/discussions', async (req, res) => {
 app.get('/api/discussions/:id', async (req, res) => {
   const { id } = req.params;
   try {
+    // Select explicit columns, never admin_token: this endpoint is public and
+    // the discussion id is discoverable via GET /api/discussions, so returning
+    // the moderator secret here would let anyone claim moderator controls.
     const result = await pool.query(
-      'SELECT * FROM discussions WHERE id = $1',
+      'SELECT id, topic, created_at, locked FROM discussions WHERE id = $1',
       [id]
     );
     if (result.rows.length > 0) {
@@ -1300,13 +1302,19 @@ async function claimModerator(topic) {
   }
 }
 
+// An opaque, stable handle for a participant: a hash of their user_id, so it
+// stays bound to the same user no matter how the list reorders or who drops
+// out. This lets the moderator UI refer to users without ever receiving the
+// raw user_id (which doubles as the vote-ownership secret), and means a stale
+// UI promotes the user it displayed — never whoever now sits at that position.
+function participantHandle(userId) {
+  return `participant-${crypto.createHash('sha256').update(String(userId)).digest('hex').slice(0, 16)}`;
+}
+
 // The discussion's participants: everyone who has cast a vote or written a
 // response (the only users the server can identify, since there are no
-// accounts and presence is anonymous). Ordered deterministically by first
-// activity so a given `participant-N` handle maps to the same user every time
-// it's recomputed — this lets the moderator UI refer to users without ever
-// receiving raw user_ids (which double as the vote-ownership secret).
-// Returns rows of { userId, pseudonym, isModerator } including the opaque id.
+// accounts and presence is anonymous). Ordered by first activity for a stable
+// display order. Returns rows of { id, userId, pseudonym, isModerator }.
 async function getParticipants(topic) {
   const result = await pool.query(
     `SELECT v.user_id,
@@ -1323,8 +1331,8 @@ async function getParticipants(topic) {
       ORDER BY MIN(v.created_at), v.user_id`,
     [topic]
   );
-  return result.rows.map((row, index) => ({
-    id: `participant-${index + 1}`,
+  return result.rows.map((row) => ({
+    id: participantHandle(row.user_id),
     userId: row.user_id,
     pseudonym: row.pseudonym || 'Anonymous',
     isModerator: row.is_moderator === true,
@@ -1338,9 +1346,10 @@ async function listParticipants(topic) {
   return participants.map(({ id, pseudonym, isModerator }) => ({ id, pseudonym, isModerator }));
 }
 
-// Resolve an opaque participant handle (participant-N) back to its user_id by
-// recomputing the same deterministic ordering getParticipants uses. Returns
-// null if the handle doesn't match a current participant (e.g. a stale list).
+// Resolve an opaque participant handle back to its user_id. Because the handle
+// is a hash of the user_id (not a position), this matches the exact user the
+// moderator selected even if the list has since reordered; it returns null when
+// that user is no longer a participant (e.g. they removed their only response).
 async function resolveParticipant(topic, participantId) {
   const participants = await getParticipants(topic);
   return participants.find(p => p.id === participantId) || null;
@@ -1359,20 +1368,6 @@ async function promoteModerator(discussionId, userId) {
     [discussionId, userId, token]
   );
   return result.rows[0].token;
-}
-
-// The moderator token previously granted to this user for this discussion, or
-// null. Used to re-deliver moderation to a promoted user when they (re)connect.
-async function getModeratorToken(topic, userId) {
-  if (!userId) return null;
-  const result = await pool.query(
-    `SELECT m.token
-       FROM discussion_moderators m
-       JOIN discussions d ON m.discussion_id = d.id
-      WHERE d.topic = $1 AND m.user_id = $2`,
-    [topic, userId]
-  );
-  return result.rows.length > 0 ? result.rows[0].token : null;
 }
 
 // Push a freshly granted moderator token to every connected socket belonging to

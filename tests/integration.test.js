@@ -203,18 +203,20 @@ test('a moderator can promote a participant, granting them working controls', as
     guest.emit('vote', topic, questionId, 'Agree', guestUserId, 'Guest Otter');
     await voteRecorded;
 
-    // The moderator sees the guest via an opaque handle — never a raw user id.
+    // The moderator sees the guest via an opaque, stable handle — never a raw
+    // user id, and not a positional index.
     const list = await emitWithAck(mod, 'listParticipants', topic, adminToken);
     assert.equal(list.success, true);
     assert.equal(list.participants.length, 1);
-    assert.equal(list.participants[0].id, 'participant-1');
+    assert.match(list.participants[0].id, /^participant-[a-f0-9]{16}$/);
     assert.equal(list.participants[0].pseudonym, 'Guest Otter');
     assert.equal(list.participants[0].isModerator, false);
     assert.equal(list.participants[0].userId, undefined);
+    const guestHandle = list.participants[0].id;
 
     // Promotion delivers a token to the guest live and flips their flag.
     const granted = waitForEvent(guest, 'moderatorGranted');
-    const promote = await emitWithAck(mod, 'promoteModerator', topic, adminToken, 'participant-1');
+    const promote = await emitWithAck(mod, 'promoteModerator', topic, adminToken, guestHandle);
     assert.equal(promote.success, true);
     assert.equal(promote.participants[0].isModerator, true);
 
