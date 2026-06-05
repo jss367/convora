@@ -226,6 +226,8 @@ const DiscussionPage = () => {
         socket.emit('promoteModerator', topic, adminToken, participantId, (resp) => {
             if (resp && resp.success) {
                 setParticipants(resp.participants);
+            } else if (resp && resp.error === 'participant_offline') {
+                setError('That participant needs to have the discussion open to be made a moderator. Ask them to open it, then try again.');
             } else {
                 setError('Could not promote that participant. Try refreshing the list.');
             }
@@ -249,6 +251,16 @@ const DiscussionPage = () => {
 
             if (response.ok) {
                 const result = await response.json();
+                // The duplicate's creator is its moderator: persist the returned
+                // token under the per-topic key DiscussionPage reads on mount, so
+                // they arrive already holding moderator controls.
+                if (result.adminToken) {
+                    try {
+                        localStorage.setItem(`convora_admin_${result.newTopic}`, result.adminToken);
+                    } catch (e) {
+                        console.warn('Failed to store admin token:', e);
+                    }
+                }
                 navigate(`/discussion/${result.newTopic}`);
             } else {
                 const errorData = await response.json();

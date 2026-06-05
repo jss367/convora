@@ -253,6 +253,51 @@ test('a non-moderator cannot list or promote participants', async () => {
   }
 });
 
+test('promoting an offline participant fails and does not leave a dangling grant', async () => {
+  const topic = uniqueTopic('promote-offline');
+  const creator = await jsonRequest('POST', '/api/discussions', { topic });
+  const adminToken = creator.body.adminToken;
+
+  const mod = await connectSocket();
+  const guest = await connectSocket();
+  const guestUserId = 'offline-guest-1';
+
+  try {
+    mod.emit('joinDiscussion', topic);
+    guest.emit('joinDiscussion', topic);
+    guest.emit('identify', topic, guestUserId);
+
+    const questionAdded = waitForQuestions(mod, (questions) => questions.length === 1, 'question added');
+    mod.emit('addQuestion', topic, { text: 'Offline?', type: 'Agreement', minValue: null, maxValue: null, options: [] });
+    const questionId = (await questionAdded)[0].id;
+
+    const voteRecorded = waitForQuestions(guest, (questions) => questions[0] && questions[0].votes.length === 1, 'guest vote');
+    guest.emit('vote', topic, questionId, 'Agree', guestUserId, 'Absent Owl');
+    await voteRecorded;
+
+    const list = await emitWithAck(mod, 'listParticipants', topic, adminToken);
+    const guestHandle = list.participants[0].id;
+
+    // Guest leaves before being promoted. Wait until the server has processed
+    // the disconnect (presence drops to just the moderator) so the promote can't
+    // find a socket to deliver to.
+    const presenceDropped = waitForEvent(mod, 'presence', (count) => count === 1);
+    guest.disconnect();
+    await presenceDropped;
+
+    const promote = await emitWithAck(mod, 'promoteModerator', topic, adminToken, guestHandle);
+    assert.equal(promote.success, false);
+    assert.equal(promote.error, 'participant_offline');
+
+    // The grant was rolled back — the participant is not left marked a moderator.
+    const after = await emitWithAck(mod, 'listParticipants', topic, adminToken);
+    assert.equal(after.participants[0].isModerator, false);
+  } finally {
+    mod.disconnect();
+    guest.disconnect();
+  }
+});
+
 async function jsonRequest(method, urlPath, body) {
   const response = await fetch(`${baseUrl}${urlPath}`, {
     method,

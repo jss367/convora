@@ -851,8 +851,17 @@ io.on('connection', (socket) => {
         if (typeof cb === 'function') cb({ success: false, error: 'unknown_participant' });
         return;
       }
-      const grantedToken = await promoteModerator(discussionId, target.userId);
-      deliverModeratorToken(topic, target.userId, grantedToken);
+      const { token: grantedToken, inserted } = await promoteModerator(discussionId, target.userId);
+      const delivered = deliverModeratorToken(topic, target.userId, grantedToken);
+      // A token can only reach a user via a live push (we never re-deliver from a
+      // client-supplied id). If this call newly granted moderation but the user
+      // isn't connected to receive it, roll the grant back rather than leaving
+      // them marked as a moderator with a token they can never obtain.
+      if (inserted && delivered === 0) {
+        await revokeModerator(discussionId, target.userId);
+        if (typeof cb === 'function') cb({ success: false, error: 'participant_offline' });
+        return;
+      }
       await emitDiscussionState(topic);
       if (typeof cb === 'function') {
         cb({ success: true, participants: await listParticipants(topic) });
@@ -1356,31 +1365,46 @@ async function resolveParticipant(topic, participantId) {
 }
 
 // Promote a user to moderator by minting them a personal token (idempotent: a
-// user already promoted keeps their existing token). Returns the token so it
-// can be delivered to that user's connected sockets.
+// user already promoted keeps their existing token). Returns the token plus
+// whether this call newly created the grant (vs. the user already being a
+// moderator), so the caller can roll back a brand-new grant that couldn't be
+// delivered.
 async function promoteModerator(discussionId, userId) {
   const token = crypto.randomBytes(16).toString('hex');
   const result = await pool.query(
     `INSERT INTO discussion_moderators (discussion_id, user_id, token)
      VALUES ($1, $2, $3)
      ON CONFLICT (discussion_id, user_id) DO UPDATE SET user_id = EXCLUDED.user_id
-     RETURNING token`,
+     RETURNING token, (xmax = 0) AS inserted`,
     [discussionId, userId, token]
   );
-  return result.rows[0].token;
+  return { token: result.rows[0].token, inserted: result.rows[0].inserted === true };
+}
+
+// Remove a user's moderator grant for a discussion.
+async function revokeModerator(discussionId, userId) {
+  await pool.query(
+    'DELETE FROM discussion_moderators WHERE discussion_id = $1 AND user_id = $2',
+    [discussionId, userId]
+  );
 }
 
 // Push a freshly granted moderator token to every connected socket belonging to
 // the given user in the discussion's room, so promotion takes effect live.
+// Returns how many sockets received it — 0 means the user isn't currently
+// connected/identified, so the grant can't reach them.
 function deliverModeratorToken(topic, userId, token) {
   const room = io.sockets.adapter.rooms.get(topic);
-  if (!room) return;
+  if (!room) return 0;
+  let delivered = 0;
   for (const socketId of room) {
     const target = io.sockets.sockets.get(socketId);
     if (target && target.data.userId === userId) {
       target.emit('moderatorGranted', { token });
+      delivered++;
     }
   }
+  return delivered;
 }
 
 // Whether voting is currently closed for a discussion.
@@ -1747,15 +1771,19 @@ app.post('/api/duplicate-discussion', async (req, res) => {
 
     const originalDiscussionId = originalDiscussionResult.rows[0].id;
 
-    // Create new discussion. Duplicating into an existing topic would merge
-    // questions into that discussion, so treat the unique conflict as a user
-    // error instead.
+    // Create new discussion, minting an admin token so the person duplicating
+    // lands as its moderator (same creator-is-moderator rule as POST
+    // /api/discussions). The row is always brand new here — a topic conflict is
+    // rejected below — so this never overwrites an existing moderator.
+    // Duplicating into an existing topic would merge questions into that
+    // discussion, so treat the unique conflict as a user error instead.
+    const newAdminToken = crypto.randomBytes(16).toString('hex');
     const newDiscussionResult = await client.query(
-      `INSERT INTO discussions (topic)
-       VALUES ($1)
+      `INSERT INTO discussions (topic, admin_token)
+       VALUES ($1, $2)
        ON CONFLICT (topic) DO NOTHING
        RETURNING id`,
-      [newTopic]
+      [newTopic, newAdminToken]
     );
 
     if (newDiscussionResult.rows.length === 0) {
@@ -1775,7 +1803,7 @@ app.post('/api/duplicate-discussion', async (req, res) => {
 
     await client.query('COMMIT');
 
-    res.json({ success: true, newTopic });
+    res.json({ success: true, newTopic, adminToken: newAdminToken });
   } catch (error) {
     await client.query('ROLLBACK');
     console.error('Error duplicating discussion:', error);
