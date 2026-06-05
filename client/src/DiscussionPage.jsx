@@ -425,6 +425,24 @@ const DiscussionPage = () => {
         persistJoinQrSize(next);
     };
 
+    // Re-clamp the open QR panel when the viewport shrinks (moving the browser
+    // between displays, rotating a tablet) so the fixed bottom-left panel and its
+    // resize handle can't drift off-screen. clampJoinQrSize bounds to
+    // [MIN, maxJoinQrSize()], so this only ever shrinks — it never auto-grows the
+    // moderator's chosen size on a larger viewport.
+    useEffect(() => {
+        if (!showJoinQr) return;
+        const handleResize = () => {
+            setJoinQrSize(prev => {
+                const next = clampJoinQrSize(prev);
+                if (next !== prev) persistJoinQrSize(next);
+                return next;
+            });
+        };
+        window.addEventListener('resize', handleResize);
+        return () => window.removeEventListener('resize', handleResize);
+    }, [showJoinQr, discussionSlug]);
+
     // Push a changed broadcast name to the server so it retroactively renames
     // this browser's already-submitted responses (otherwise prior responses keep
     // the old name; switching to anonymous wouldn't actually hide them).
