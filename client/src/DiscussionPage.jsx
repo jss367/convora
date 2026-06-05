@@ -488,14 +488,24 @@ const DiscussionPage = () => {
         });
     }, []);
 
-    // Adopt a moderator token the server pushes to us — either because another
-    // moderator just promoted this user, or because a previously promoted user
-    // (re)connected. Persist it under the same per-slug key the create/share
-    // flows use so the controls light up immediately and survive reloads.
+    // Adopt a moderator token the server pushes to us when this user is promoted.
+    // Persist it under the same per-slug key the create/share flows use so the
+    // controls light up immediately and survive reloads.
+    //
+    // Do NOT overwrite a token we already hold: the creator authenticates with
+    // the discussion's admin_token, and if they (or a shared-link moderator)
+    // click "Make moderator" on their own participant row, the per-user grant
+    // pushed back would otherwise replace that admin_token — downgrading the
+    // creator so verifyCreator no longer recognizes them and they lose the
+    // ability to remove moderators. A genuinely new promotee holds no token yet,
+    // so they still adopt it. (A stale token is cleared by the checkModerator
+    // load/reconnect check before any legitimate re-promotion.)
     const handleModeratorGranted = useCallback(({ token }) => {
         if (!token) return;
+        const key = `convora_admin_${discussionSlug}`;
         try {
-            localStorage.setItem(`convora_admin_${discussionSlug}`, token);
+            if (localStorage.getItem(key)) return;
+            localStorage.setItem(key, token);
         } catch (e) {
             console.warn('Failed to store admin token:', e);
         }
