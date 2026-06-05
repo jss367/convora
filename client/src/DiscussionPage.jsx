@@ -108,6 +108,7 @@ const DiscussionPage = () => {
     const [newTopicName, setNewTopicName] = useState('');
     const [showDuplicateModal, setShowDuplicateModal] = useState(false);
     const [showShareModal, setShowShareModal] = useState(false);
+    const [showActionsMenu, setShowActionsMenu] = useState(false);
     const [presence, setPresence] = useState(0);
     const [copied, setCopied] = useState(false);
     const [adminToken, setAdminToken] = useState(null);
@@ -923,46 +924,86 @@ const DiscussionPage = () => {
                 )}
             </div>
 
-            {/* Discussion actions */}
-            <div className="mb-4 flex flex-wrap gap-3">
+            {/* Discussion actions. Share is the one frequently-used action, so it
+                stays a solid primary button. View Summary / Opinion Groups are
+                view-oriented and get a quieter ghost style. The rare, one-off
+                actions (duplicate, exports) live in a "More" overflow menu so they
+                don't compete for attention with the things people actually reach
+                for during a session. */}
+            <div className="mb-4 flex flex-wrap items-center gap-3">
                 <button
                     onClick={() => setShowShareModal(true)}
                     className="bg-primary text-white py-2 px-4 rounded hover:bg-opacity-90 transition duration-300"
                 >
                     Share
                 </button>
-                <button
-                    onClick={() => setShowDuplicateModal(true)}
-                    className="bg-blue-500 text-white py-2 px-4 rounded hover:bg-blue-600 transition duration-300"
-                >
-                    Duplicate Discussion
-                </button>
                 <Link
                     to={`/discussion/${discussionSlug}/summary`}
-                    className="bg-gray-800 text-white py-2 px-4 rounded hover:bg-gray-700 transition duration-300"
+                    className="border border-gray-300 text-gray-700 py-2 px-4 rounded hover:bg-gray-100 transition duration-300"
                 >
                     View Summary
                 </Link>
                 {showClusters && (
                     <Link
                         to={`/discussion/${encodeURIComponent(topic)}/clusters`}
-                        className="bg-amber-600 text-white py-2 px-4 rounded hover:bg-amber-700 transition duration-300"
+                        className="border border-gray-300 text-gray-700 py-2 px-4 rounded hover:bg-gray-100 transition duration-300"
                     >
                         Opinion Groups
                     </Link>
                 )}
-                <a
-                    href={`/api/discussions/${encodeURIComponent(discussionSlug)}/export.csv`}
-                    className="bg-primary text-white py-2 px-4 rounded hover:bg-opacity-90 transition duration-300"
-                >
-                    Export CSV
-                </a>
-                <a
-                    href={`/api/discussions/${encodeURIComponent(discussionSlug)}/export.json`}
-                    className="bg-secondary text-white py-2 px-4 rounded hover:bg-opacity-90 transition duration-300"
-                >
-                    Export JSON
-                </a>
+                <div className="relative">
+                    <button
+                        type="button"
+                        onClick={() => setShowActionsMenu((open) => !open)}
+                        aria-haspopup="true"
+                        aria-expanded={showActionsMenu}
+                        className="border border-gray-300 text-gray-700 py-2 px-4 rounded hover:bg-gray-100 transition duration-300"
+                    >
+                        More ▾
+                    </button>
+                    {showActionsMenu && (
+                        <>
+                            {/* Invisible backdrop closes the menu on any outside click,
+                                matching how the modals below handle dismissal. */}
+                            <div
+                                className="fixed inset-0 z-10"
+                                onClick={() => setShowActionsMenu(false)}
+                            />
+                            <div
+                                role="menu"
+                                className="absolute left-0 mt-1 z-20 w-52 bg-white border border-gray-200 rounded shadow-lg py-1"
+                            >
+                                <button
+                                    type="button"
+                                    role="menuitem"
+                                    onClick={() => {
+                                        setShowActionsMenu(false);
+                                        setShowDuplicateModal(true);
+                                    }}
+                                    className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
+                                >
+                                    Duplicate Discussion
+                                </button>
+                                <a
+                                    role="menuitem"
+                                    href={`/api/discussions/${encodeURIComponent(discussionSlug)}/export.csv`}
+                                    onClick={() => setShowActionsMenu(false)}
+                                    className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
+                                >
+                                    Export CSV
+                                </a>
+                                <a
+                                    role="menuitem"
+                                    href={`/api/discussions/${encodeURIComponent(discussionSlug)}/export.json`}
+                                    onClick={() => setShowActionsMenu(false)}
+                                    className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
+                                >
+                                    Export JSON
+                                </a>
+                            </div>
+                        </>
+                    )}
+                </div>
             </div>
 
             {/* Duplicate Modal */}
