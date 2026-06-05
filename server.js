@@ -1737,7 +1737,10 @@ app.get('/api/discussions/:topic/clusters', async (req, res) => {
       return res.status(404).json({ error: 'Discussion not found' });
     }
 
-    const questions = await getQuestions(req.params.topic);
+    // Opt into raw user ids: clustering groups participants by stable id, and
+    // this runs server-side only — the response carries aggregate cluster data
+    // (sizes, per-statement means), never individual ids.
+    const questions = await getQuestions(req.params.topic, { includeUserIds: true });
     const analysis = analyzeClusters(questions);
 
     res.json({

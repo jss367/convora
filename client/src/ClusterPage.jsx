@@ -164,7 +164,7 @@ const ClusterPage = () => {
     return (
         <div className="max-w-5xl mx-auto mt-10 px-4">
             <div className="mb-6">
-                <Link to={`/discussion/${topic}`} className="text-primary hover:underline">
+                <Link to={`/discussion/${encodeURIComponent(topic)}`} className="text-primary hover:underline">
                     Back to discussion
                 </Link>
                 <div className="flex items-center gap-3 mt-3 mb-2">
