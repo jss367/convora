@@ -187,29 +187,30 @@ function waitForQuestions(socket, predicate, description) {
 }
 
 function waitForServer(url, childProcess) {
-  return withTimeout(
-    new Promise((resolve, reject) => {
-      const interval = setInterval(async () => {
-        if (childProcess.exitCode !== null) {
-          clearInterval(interval);
-          reject(new Error(`Server exited early with code ${childProcess.exitCode}\n${serverOutput}`));
-          return;
-        }
+  let interval;
+  const readiness = new Promise((resolve, reject) => {
+    interval = setInterval(async () => {
+      if (childProcess.exitCode !== null) {
+        reject(new Error(`Server exited early with code ${childProcess.exitCode}\n${serverOutput}`));
+        return;
+      }
 
-        try {
-          const response = await fetch(`${url}/api/discussions`);
-          if (response.ok) {
-            clearInterval(interval);
-            resolve();
-          }
-        } catch {
-          // Keep polling until the server accepts connections or the timeout wins.
+      try {
+        const response = await fetch(`${url}/api/discussions`);
+        if (response.ok) {
+          resolve();
         }
-      }, 100);
-    }),
+      } catch {
+        // Keep polling until the server accepts connections or the timeout wins.
+      }
+    }, 100);
+  });
+
+  return withTimeout(
+    readiness,
     10000,
     `Timed out waiting for server to start\n${serverOutput}`
-  );
+  ).finally(() => clearInterval(interval));
 }
 
 function getAvailablePort() {
