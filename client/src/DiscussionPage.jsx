@@ -58,6 +58,27 @@ const AGREEMENT_SCALE = [
     { key: VoteOptions.STRONGLY_AGREE, label: 'Strongly Agree', bar: 'bg-green-600', dot: 'bg-green-600' },
 ];
 
+// Short labels for the compact per-idea agreement picker on brainstorm ideas.
+const AGREEMENT_SHORT = {
+    [VoteOptions.STRONGLY_DISAGREE]: 'SD',
+    [VoteOptions.DISAGREE]: 'D',
+    [VoteOptions.UNSURE]: 'U',
+    [VoteOptions.AGREE]: 'A',
+    [VoteOptions.STRONGLY_AGREE]: 'SA',
+};
+
+// Curated epistemic reactions for brainstorm ideas (LessWrong-flavoured): a
+// small, fixed set of high-signal tags, not free-form emoji. Keys must match the
+// server's allowed set; labels/emoji are display-only.
+const EPISTEMIC_REACTIONS = [
+    { key: 'changed-mind', label: 'Changed my mind', emoji: '🔁' },
+    { key: 'crux', label: 'Crux', emoji: '🎯' },
+    { key: 'locally-valid', label: 'Locally valid', emoji: '✅' },
+    { key: 'locally-invalid', label: 'Locally invalid', emoji: '❌' },
+    { key: 'citation-needed', label: 'Citation needed', emoji: '📚' },
+    { key: 'key-insight', label: 'Key insight', emoji: '💡' },
+];
+
 // In production the client is served by the same server it talks to, so we
 // default to a same-origin connection. Set VITE_SOCKET_URL only when the
 // client runs on a different origin than the API (e.g. `vite` dev server).
@@ -100,6 +121,11 @@ const DiscussionPage = () => {
     const [participants, setParticipants] = useState([]);
     const [showParticipants, setShowParticipants] = useState(false);
     const [showJoinQr, setShowJoinQr] = useState(false);
+    // This user's own brainstorm ratings/reactions, kept separately from the
+    // (aggregate-only, unattributable) broadcast so we can highlight their
+    // selections. Only this user mutates it, so optimistic updates are safe; we
+    // fetch the authoritative copy once on join to survive reloads.
+    const [myBrainstorm, setMyBrainstorm] = useState({ ratings: {}, reactions: {} });
 
     const isAdmin = !!adminToken;
     const { locked } = discussionState;
@@ -177,33 +203,50 @@ const DiscussionPage = () => {
     // brief gap before the effect populates them a vote simply won't match
     // (treated as not-ours). ownedVoteIds: responses we authored. upvotedVoteIds:
     // responses we've upvoted. Both keyed by the response (vote) id.
+    // ownedCommentIds: brainstorm comments we authored. Comments carry the same
+    // per-row ownership token (keyed by the comment id) as votes, so we recognize
+    // our own the same way — and can show their Delete button — without the
+    // server exposing who wrote what.
     const [ownedVoteIds, setOwnedVoteIds] = useState(() => new Set());
     const [upvotedVoteIds, setUpvotedVoteIds] = useState(() => new Set());
+    const [ownedCommentIds, setOwnedCommentIds] = useState(() => new Set());
     useEffect(() => {
         if (!userId) {
             setOwnedVoteIds(new Set());
             setUpvotedVoteIds(new Set());
+            setOwnedCommentIds(new Set());
             return undefined;
         }
         let cancelled = false;
         const compute = async () => {
             const owned = new Set();
             const upvoted = new Set();
+            const ownedComments = new Set();
             const allVotes = (questions || []).flatMap(q =>
                 Array.isArray(q.votes) ? q.votes : []
             );
             await Promise.all(allVotes.map(async (vote) => {
                 if (vote == null || vote.id === undefined || vote.id === null) return;
                 const myToken = await ownerToken(vote.id, userId);
-                if (!myToken) return;
-                if (vote.ownerToken === myToken) owned.add(vote.id);
-                if (Array.isArray(vote.upvoterTokens) && vote.upvoterTokens.includes(myToken)) {
-                    upvoted.add(vote.id);
+                if (myToken) {
+                    if (vote.ownerToken === myToken) owned.add(vote.id);
+                    if (Array.isArray(vote.upvoterTokens) && vote.upvoterTokens.includes(myToken)) {
+                        upvoted.add(vote.id);
+                    }
                 }
+                await Promise.all((Array.isArray(vote.comments) ? vote.comments : []).map(async (c) => {
+                    if (c == null || c.id === undefined || c.id === null) return;
+                    // Namespaced to match the server (`comment:<id>`), so a comment
+                    // token can never equal a vote token of the same numeric id and
+                    // link an author to an otherwise-anonymous idea.
+                    const myCommentToken = await ownerToken(`comment:${c.id}`, userId);
+                    if (myCommentToken && c.ownerToken === myCommentToken) ownedComments.add(c.id);
+                }));
             }));
             if (!cancelled) {
                 setOwnedVoteIds(owned);
                 setUpvotedVoteIds(upvoted);
+                setOwnedCommentIds(ownedComments);
             }
         };
         compute();
@@ -507,6 +550,17 @@ const DiscussionPage = () => {
         return () => socket.off('connect', identify);
     }, [topic, discussionSlug, userId]);
 
+    // Restore this user's own brainstorm ratings/reactions on join/reload. The
+    // server only ever returns the requesting user's own selections.
+    useEffect(() => {
+        if (!userId) return;
+        socket.emit('getBrainstormState', topic, userId, (state) => {
+            if (state) {
+                setMyBrainstorm({ ratings: state.ratings || {}, reactions: state.reactions || {} });
+            }
+        });
+    }, [topic, userId]);
+
     const handleAddQuestion = () => {
         console.log('Inside handleAddQuestion');
 
@@ -588,6 +642,40 @@ const DiscussionPage = () => {
 
     const handleResponseVote = (responseId) => {
         socket.emit('toggleResponseVote', discussionSlug, responseId, userId);
+    };
+
+    // Set/clear one axis of this user's rating on a brainstorm idea. Toggles off
+    // when the same value is re-selected. Updates local "mine" state optimistically
+    // (no other actor can change this user's own rating) and tells the server.
+    const handleSetRating = (responseId, axis, value) => {
+        const current = myBrainstorm.ratings[responseId]?.[axis] ?? null;
+        const next = current === value ? null : value;
+        setMyBrainstorm(prev => {
+            const ratings = { ...prev.ratings, [responseId]: { ...prev.ratings[responseId], [axis]: next } };
+            return { ...prev, ratings };
+        });
+        socket.emit('setResponseRating', topic, responseId, axis, next, userId);
+    };
+
+    const handleToggleReaction = (responseId, reaction) => {
+        setMyBrainstorm(prev => {
+            const set = new Set(prev.reactions[responseId] || []);
+            if (set.has(reaction)) set.delete(reaction); else set.add(reaction);
+            return { ...prev, reactions: { ...prev.reactions, [responseId]: [...set] } };
+        });
+        socket.emit('toggleResponseReaction', topic, responseId, reaction, userId);
+    };
+
+    const handleAddComment = (responseId, body) => {
+        socket.emit('addResponseComment', topic, responseId, body, userId, displayName);
+    };
+
+    const handleDeleteComment = (commentId) => {
+        socket.emit('deleteResponseComment', topic, commentId, userId);
+    };
+
+    const handleSetQuestionFlags = (questionId, flags) => {
+        socket.emit('setQuestionFlags', topic, questionId, flags, adminToken);
     };
 
     const sortQuestions = (questions) => {
@@ -717,7 +805,21 @@ const DiscussionPage = () => {
                 return <OpenEndedQuestion question={question} userVote={userVote} handleVote={handleVote} ownedVoteIds={ownedVoteIds} upvotedVoteIds={upvotedVoteIds} handleResponseVote={handleResponseVote} locked={locked} />;
             }
             case QuestionTypes.BRAINSTORM: {
-                return <BrainstormQuestion question={question} ownedVoteIds={ownedVoteIds} handleVote={handleVote} handleDeleteVote={handleDeleteVote} />;
+                return <BrainstormQuestion
+                    question={question}
+                    ownedVoteIds={ownedVoteIds}
+                    ownedCommentIds={ownedCommentIds}
+                    handleVote={handleVote}
+                    handleDeleteVote={handleDeleteVote}
+                    locked={locked}
+                    isAdmin={isAdmin}
+                    myBrainstorm={myBrainstorm}
+                    onSetFlags={handleSetQuestionFlags}
+                    onSetRating={handleSetRating}
+                    onToggleReaction={handleToggleReaction}
+                    onAddComment={handleAddComment}
+                    onDeleteComment={handleDeleteComment}
+                />;
             }
 
             default:
@@ -1348,11 +1450,230 @@ AgreementResults.propTypes = {
     }).isRequired,
 };
 
-// Unlike Open Ended (one editable response per person), Brainstorm lets each
-// participant add any number of separate ideas and delete their own.
-const BrainstormQuestion = ({ question, ownedVoteIds, handleVote, handleDeleteVote }) => {
+// Compact agreement-distribution bar for a single brainstorm idea. Shows how the
+// room splits without naming anyone — the whole point of the agreement axis.
+const AgreementMiniBar = ({ counts }) => {
+    const total = AGREEMENT_SCALE.reduce((sum, seg) => sum + (counts[seg.key] || 0), 0);
+    if (total === 0) {
+        return <p className="text-xs text-gray-400 mt-1">No agreement votes yet.</p>;
+    }
+    return (
+        <div className="mt-1">
+            <div className="flex w-full h-2 rounded-full overflow-hidden bg-gray-200">
+                {AGREEMENT_SCALE.map(seg => (counts[seg.key] || 0) > 0 && (
+                    <div
+                        key={seg.key}
+                        className={seg.bar}
+                        style={{ width: `${((counts[seg.key] || 0) / total) * 100}%` }}
+                        title={`${seg.label}: ${counts[seg.key]}`}
+                    />
+                ))}
+            </div>
+            <div className="text-xs text-gray-500 mt-0.5">{total} agreement {total === 1 ? 'vote' : 'votes'}</div>
+        </div>
+    );
+};
+
+AgreementMiniBar.propTypes = {
+    counts: PropTypes.object,
+};
+
+// A single brainstorm idea, with optional two-axis rating (quality up/down +
+// agreement scale), epistemic reactions, and a comment thread — each shown only
+// when the moderator has enabled/revealed it. Rating and reaction counts are
+// aggregates; only this user's own selections (myRating/myReactions) are known
+// to the client, so nothing reveals who voted which way.
+const BrainstormIdea = ({
+    vote, isOwn, ownedCommentIds, reactionsActive, commentsEnabled, locked,
+    myRating, myReactions, onDeleteVote, onSetRating, onToggleReaction, onAddComment, onDeleteComment,
+}) => {
+    const [comment, setComment] = useState('');
+    const net = (vote.qualityUp || 0) - (vote.qualityDown || 0);
+    const comments = vote.comments || [];
+    // You can't rate/react to your own idea (the server rejects it too), so
+    // disable those controls on own ideas — but commenting on your own idea is
+    // fine. Counts/histogram stay visible read-only either way.
+    const ratingDisabled = locked || isOwn;
+
+    const submitComment = () => {
+        const trimmed = comment.trim();
+        if (trimmed === '') return;
+        onAddComment(vote.id, trimmed);
+        setComment('');
+    };
+
+    return (
+        <li className="bg-gray-50 rounded-md p-3">
+            <div className="flex items-start gap-3">
+                {reactionsActive && (
+                    <div className="flex flex-col items-center shrink-0 select-none">
+                        <button
+                            type="button"
+                            onClick={() => onSetRating(vote.id, 'quality', 1)}
+                            disabled={ratingDisabled}
+                            title="Worth considering"
+                            className={`leading-none text-lg ${myRating.quality === 1 ? 'text-primary' : 'text-gray-400 hover:text-gray-600'} ${ratingDisabled ? 'opacity-50 cursor-not-allowed' : ''}`}
+                        >▲</button>
+                        <span className="text-xs font-semibold text-gray-700">{net > 0 ? `+${net}` : net}</span>
+                        <button
+                            type="button"
+                            onClick={() => onSetRating(vote.id, 'quality', -1)}
+                            disabled={ratingDisabled}
+                            title="Not worth considering"
+                            className={`leading-none text-lg ${myRating.quality === -1 ? 'text-red-500' : 'text-gray-400 hover:text-gray-600'} ${ratingDisabled ? 'opacity-50 cursor-not-allowed' : ''}`}
+                        >▼</button>
+                    </div>
+                )}
+                <div className="flex-1 min-w-0">
+                    <div className="flex items-start justify-between gap-2">
+                        <span className="text-gray-800 whitespace-pre-wrap">
+                            {vote.value}
+                            {isOwn && <span className="text-xs text-gray-500"> (You)</span>}
+                        </span>
+                        {isOwn && (
+                            <button
+                                onClick={onDeleteVote}
+                                className="ml-2 text-sm text-red-500 hover:text-red-700 shrink-0"
+                            >
+                                Delete
+                            </button>
+                        )}
+                    </div>
+
+                    {reactionsActive && (
+                        <div className="mt-2">
+                            <div className="flex flex-wrap gap-1">
+                                {AGREEMENT_SCALE.map(seg => (
+                                    <button
+                                        key={seg.key}
+                                        type="button"
+                                        onClick={() => onSetRating(vote.id, 'agreement', seg.key)}
+                                        disabled={ratingDisabled}
+                                        title={seg.label}
+                                        className={`px-2 py-0.5 text-xs rounded border ${myRating.agreement === seg.key
+                                            ? 'bg-primary text-white border-primary'
+                                            : 'bg-white text-gray-600 border-gray-300 hover:border-primary'} ${ratingDisabled ? 'opacity-50 cursor-not-allowed' : ''}`}
+                                    >
+                                        {AGREEMENT_SHORT[seg.key]}
+                                    </button>
+                                ))}
+                            </div>
+                            <AgreementMiniBar counts={vote.agreementCounts || {}} />
+                        </div>
+                    )}
+
+                    {reactionsActive && (
+                        <div className="flex flex-wrap gap-1 mt-2">
+                            {EPISTEMIC_REACTIONS.map(r => {
+                                const count = (vote.reactionCounts || {})[r.key] || 0;
+                                const active = myReactions.includes(r.key);
+                                return (
+                                    <button
+                                        key={r.key}
+                                        type="button"
+                                        onClick={() => onToggleReaction(vote.id, r.key)}
+                                        disabled={ratingDisabled}
+                                        title={r.label}
+                                        className={`px-2 py-0.5 text-xs rounded-full border ${active
+                                            ? 'bg-indigo-100 border-indigo-400 text-indigo-800'
+                                            : 'bg-white border-gray-300 text-gray-600 hover:border-indigo-300'} ${ratingDisabled ? 'opacity-50 cursor-not-allowed' : ''}`}
+                                    >
+                                        <span className="mr-1">{r.emoji}</span>{r.label}
+                                        {count > 0 && <span className="ml-1 font-semibold">{count}</span>}
+                                    </button>
+                                );
+                            })}
+                        </div>
+                    )}
+
+                    {commentsEnabled && (
+                        <div className="mt-3 border-t border-gray-200 pt-2">
+                            {comments.length > 0 && (
+                                <ul className="space-y-1 mb-2">
+                                    {comments.map(c => (
+                                        <li key={c.id} className="text-sm flex items-start justify-between gap-2">
+                                            <span>
+                                                <span className="font-semibold text-gray-600">{c.pseudonym || 'Anonymous'}:</span>{' '}
+                                                <span className="text-gray-800 whitespace-pre-wrap">{c.body}</span>
+                                            </span>
+                                            {ownedCommentIds.has(c.id) && (
+                                                <button
+                                                    onClick={() => onDeleteComment(c.id)}
+                                                    className="text-xs text-red-500 hover:text-red-700 shrink-0"
+                                                >
+                                                    Delete
+                                                </button>
+                                            )}
+                                        </li>
+                                    ))}
+                                </ul>
+                            )}
+                            {!locked && (
+                                <div className="flex gap-2">
+                                    <input
+                                        type="text"
+                                        value={comment}
+                                        onChange={(e) => setComment(e.target.value)}
+                                        onKeyDown={(e) => { if (e.key === 'Enter') submitComment(); }}
+                                        placeholder="Add a comment"
+                                        className="flex-1 p-1.5 border rounded text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                                    />
+                                    <button
+                                        onClick={submitComment}
+                                        disabled={comment.trim() === ''}
+                                        className="px-3 py-1 text-sm bg-primary text-white rounded hover:bg-opacity-90 disabled:opacity-50"
+                                    >
+                                        Post
+                                    </button>
+                                </div>
+                            )}
+                        </div>
+                    )}
+                </div>
+            </div>
+        </li>
+    );
+};
+
+BrainstormIdea.propTypes = {
+    vote: PropTypes.shape({
+        id: PropTypes.oneOfType([PropTypes.string, PropTypes.number]).isRequired,
+        value: PropTypes.string.isRequired,
+        ownerToken: PropTypes.string,
+        qualityUp: PropTypes.number,
+        qualityDown: PropTypes.number,
+        agreementCounts: PropTypes.object,
+        reactionCounts: PropTypes.object,
+        comments: PropTypes.array,
+    }).isRequired,
+    isOwn: PropTypes.bool,
+    ownedCommentIds: PropTypes.instanceOf(Set).isRequired,
+    reactionsActive: PropTypes.bool,
+    commentsEnabled: PropTypes.bool,
+    locked: PropTypes.bool,
+    myRating: PropTypes.object,
+    myReactions: PropTypes.array,
+    onDeleteVote: PropTypes.func.isRequired,
+    onSetRating: PropTypes.func.isRequired,
+    onToggleReaction: PropTypes.func.isRequired,
+    onAddComment: PropTypes.func.isRequired,
+    onDeleteComment: PropTypes.func.isRequired,
+};
+
+// participant add any number of separate ideas and delete their own. The
+// moderator can layer reactions (two-axis ratings + epistemic reactions) and
+// comments on top, revealing them when the room shifts from generating ideas to
+// evaluating them.
+const BrainstormQuestion = ({
+    question, ownedVoteIds, ownedCommentIds, handleVote, handleDeleteVote, locked, isAdmin, myBrainstorm,
+    onSetFlags, onSetRating, onToggleReaction, onAddComment, onDeleteComment,
+}) => {
     const [idea, setIdea] = useState('');
     const votes = question.votes || [];
+    const reactionsEnabled = question.reactionsEnabled;
+    const reactionsVisible = question.reactionsVisible;
+    const commentsEnabled = question.commentsEnabled;
+    const reactionsActive = reactionsEnabled && reactionsVisible;
 
     const submitIdea = () => {
         if (idea.trim() === '') {
@@ -1363,49 +1684,77 @@ const BrainstormQuestion = ({ question, ownedVoteIds, handleVote, handleDeleteVo
         setIdea('');
     };
 
+    const modButton = 'px-2 py-1 rounded bg-white border border-indigo-300 text-indigo-700 hover:bg-indigo-100';
+
     return (
         <div>
-            <textarea
-                value={idea}
-                onChange={(e) => setIdea(e.target.value)}
-                className="w-full p-2 border rounded mb-2"
-                rows="3"
-                placeholder="Add an idea (you can add as many as you like)"
-            />
-            <button
-                onClick={submitIdea}
-                disabled={idea.trim() === ''}
-                className="px-4 py-2 bg-primary text-white rounded hover:bg-opacity-90 transition duration-300 mb-4 disabled:opacity-50"
-            >
-                Add Idea
-            </button>
+            {isAdmin && (
+                <div className="flex flex-wrap items-center gap-2 mb-4 bg-indigo-50 border border-indigo-100 rounded-md p-2 text-xs">
+                    <span className="font-semibold text-indigo-800">Moderator:</span>
+                    <button onClick={() => onSetFlags(question.id, { reactions_enabled: !reactionsEnabled })} className={modButton}>
+                        {reactionsEnabled ? 'Disable reactions' : 'Enable reactions'}
+                    </button>
+                    {reactionsEnabled && (
+                        <button onClick={() => onSetFlags(question.id, { reactions_visible: !reactionsVisible })} className={modButton}>
+                            {reactionsVisible ? 'Hide reactions' : 'Show reactions'}
+                        </button>
+                    )}
+                    <button onClick={() => onSetFlags(question.id, { comments_enabled: !commentsEnabled })} className={modButton}>
+                        {commentsEnabled ? 'Disable comments' : 'Enable comments'}
+                    </button>
+                </div>
+            )}
+
+            {!locked && (
+                <>
+                    <textarea
+                        value={idea}
+                        onChange={(e) => setIdea(e.target.value)}
+                        className="w-full p-2 border rounded mb-2"
+                        rows="3"
+                        placeholder="Add an idea (you can add as many as you like)"
+                    />
+                    <button
+                        onClick={submitIdea}
+                        disabled={idea.trim() === ''}
+                        className="px-4 py-2 bg-primary text-white rounded hover:bg-opacity-90 transition duration-300 mb-4 disabled:opacity-50"
+                    >
+                        Add Idea
+                    </button>
+                </>
+            )}
+
+            {reactionsEnabled && !reactionsVisible && (
+                <p className="text-sm text-gray-500 mb-2">
+                    Reactions are hidden for now — the moderator will open them up for the discussion.
+                </p>
+            )}
 
             {votes.length > 0 && (
                 <div className="mt-4">
                     <h3 className="font-semibold mb-2">All Ideas ({votes.length}):</h3>
-                    <ul className="list-disc pl-5">
-                        {votes.map((vote) => {
-                            // Ownership is matched via the per-response token
-                            // (the server no longer sends raw user ids); the
-                            // parent precomputes the set of ids we own.
-                            const isMine = ownedVoteIds.has(vote.id);
-                            return (
-                            <li key={vote.id} className="mb-2 flex items-start justify-between">
-                                <span>
-                                    {vote.value}
-                                    {isMine && " (You)"}
-                                </span>
-                                {isMine && (
-                                    <button
-                                        onClick={() => handleDeleteVote(question.id, vote.id)}
-                                        className="ml-4 text-sm text-red-500 hover:text-red-700"
-                                    >
-                                        Delete
-                                    </button>
-                                )}
-                            </li>
-                            );
-                        })}
+                    <ul className="space-y-2">
+                        {votes.map((vote) => (
+                            <BrainstormIdea
+                                key={vote.id}
+                                vote={vote}
+                                // Ownership is matched via the per-response token
+                                // (the server no longer sends raw user ids); the
+                                // parent precomputes the sets of ids we own.
+                                isOwn={ownedVoteIds.has(vote.id)}
+                                ownedCommentIds={ownedCommentIds}
+                                reactionsActive={reactionsActive}
+                                commentsEnabled={commentsEnabled}
+                                locked={locked}
+                                myRating={myBrainstorm.ratings[vote.id] || {}}
+                                myReactions={myBrainstorm.reactions[vote.id] || []}
+                                onDeleteVote={() => handleDeleteVote(question.id, vote.id)}
+                                onSetRating={onSetRating}
+                                onToggleReaction={onToggleReaction}
+                                onAddComment={onAddComment}
+                                onDeleteComment={onDeleteComment}
+                            />
+                        ))}
                     </ul>
                 </div>
             )}
@@ -1467,7 +1816,10 @@ NumericalResults.propTypes = {
 
 BrainstormQuestion.propTypes = {
     question: PropTypes.shape({
-        id: PropTypes.string.isRequired,
+        id: PropTypes.oneOfType([PropTypes.string, PropTypes.number]).isRequired,
+        reactionsEnabled: PropTypes.bool,
+        reactionsVisible: PropTypes.bool,
+        commentsEnabled: PropTypes.bool,
         votes: PropTypes.arrayOf(PropTypes.shape({
             id: PropTypes.oneOfType([PropTypes.string, PropTypes.number]).isRequired,
             ownerToken: PropTypes.string,
@@ -1475,8 +1827,20 @@ BrainstormQuestion.propTypes = {
         }))
     }).isRequired,
     ownedVoteIds: PropTypes.instanceOf(Set).isRequired,
+    ownedCommentIds: PropTypes.instanceOf(Set).isRequired,
     handleVote: PropTypes.func.isRequired,
-    handleDeleteVote: PropTypes.func.isRequired
+    handleDeleteVote: PropTypes.func.isRequired,
+    locked: PropTypes.bool,
+    isAdmin: PropTypes.bool,
+    myBrainstorm: PropTypes.shape({
+        ratings: PropTypes.object,
+        reactions: PropTypes.object,
+    }).isRequired,
+    onSetFlags: PropTypes.func.isRequired,
+    onSetRating: PropTypes.func.isRequired,
+    onToggleReaction: PropTypes.func.isRequired,
+    onAddComment: PropTypes.func.isRequired,
+    onDeleteComment: PropTypes.func.isRequired,
 };
 
 export default DiscussionPage;

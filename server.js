@@ -990,6 +990,139 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Set/clear one axis (quality or agreement) of a user's rating on a brainstorm
+  // idea. Gated on the question being a Brainstorm with reactions currently
+  // revealed, so a hidden/disabled phase can't be rated through a crafted event.
+  socket.on('setResponseRating', async (topic, responseId, axis, value, userId) => {
+    const discussionSlug = slugifyTopic(topic);
+    try {
+      if (axis !== 'quality' && axis !== 'agreement') return;
+      const ctx = await getResponseContext(topic, responseId);
+      // Locking closes voting; ratings are votes, so reject them just like the
+      // `vote` handler does. (Phasing uses reactionsVisible, not the lock.)
+      if (!ctx || ctx.locked || ctx.type !== 'Brainstorm' || !ctx.reactionsEnabled || !ctx.reactionsVisible) return;
+      // No self-rating: an author can't vote on their own idea, mirroring the
+      // self-upvote guard on toggleResponseVote, so they can't inflate it.
+      if (ctx.ownerId === userId) return;
+      await setResponseRating(responseId, userId, axis, value);
+      io.to(discussionSlug).emit('questions', await getQuestions(discussionSlug));
+    } catch (error) {
+      console.error('Error setting response rating:', error);
+      socket.emit('error', { message: 'Failed to rate response' });
+    }
+  });
+
+  socket.on('toggleResponseReaction', async (topic, responseId, reaction, userId) => {
+    const discussionSlug = slugifyTopic(topic);
+    try {
+      if (!EPISTEMIC_REACTIONS.has(reaction)) return;
+      const ctx = await getResponseContext(topic, responseId);
+      if (!ctx || ctx.locked || ctx.type !== 'Brainstorm' || !ctx.reactionsEnabled || !ctx.reactionsVisible) return;
+      // No self-reactions on your own idea, same rationale as ratings.
+      if (ctx.ownerId === userId) return;
+      await toggleResponseReaction(responseId, userId, reaction);
+      io.to(discussionSlug).emit('questions', await getQuestions(discussionSlug));
+    } catch (error) {
+      console.error('Error toggling response reaction:', error);
+      socket.emit('error', { message: 'Failed to react to response' });
+    }
+  });
+
+  socket.on('addResponseComment', async (topic, responseId, body, userId, pseudonym, ack) => {
+    const discussionSlug = slugifyTopic(topic);
+    const reply = (result) => { if (typeof ack === 'function') ack(result); };
+    try {
+      const ctx = await getResponseContext(topic, responseId);
+      // A locked discussion has new statements closed; comments are statements.
+      if (!ctx || ctx.locked || ctx.type !== 'Brainstorm' || !ctx.commentsEnabled) {
+        reply({ added: false });
+        return;
+      }
+      const text = String(body || '').trim();
+      if (!text) {
+        reply({ added: false });
+        return;
+      }
+      // Sanitize the display name the same way votes do (trim + length cap), so
+      // a crafted oversized/whitespace pseudonym can't bloat or break the UI.
+      await pool.query(
+        'INSERT INTO response_comments (response_id, user_id, pseudonym, body) VALUES ($1, $2, $3, $4)',
+        [responseId, userId, sanitizePseudonym(pseudonym), text.slice(0, 2000)]
+      );
+      io.to(discussionSlug).emit('questions', await getQuestions(discussionSlug));
+      reply({ added: true });
+    } catch (error) {
+      console.error('Error adding response comment:', error);
+      socket.emit('error', { message: 'Failed to add comment' });
+      reply({ added: false });
+    }
+  });
+
+  // Delete a comment. Scoped through the discussion and to the comment's own
+  // author, so a participant can only remove their own comments.
+  socket.on('deleteResponseComment', async (topic, commentId, userId) => {
+    const discussionSlug = slugifyTopic(topic);
+    try {
+      await pool.query(
+        `DELETE FROM response_comments c
+         USING votes v, questions q, discussions d
+         WHERE c.id = $1 AND c.user_id = $2
+           AND c.response_id = v.id AND v.question_id = q.id AND q.discussion_id = d.id
+           AND d.slug = $3`,
+        [commentId, userId, discussionSlug]
+      );
+      io.to(discussionSlug).emit('questions', await getQuestions(discussionSlug));
+    } catch (error) {
+      console.error('Error deleting response comment:', error);
+      socket.emit('error', { message: 'Failed to delete comment' });
+    }
+  });
+
+  // Moderator-only: flip the per-question interaction flags (allow/disallow
+  // reactions, reveal/hide reactions, allow/disallow comments). Only known
+  // boolean flags are applied.
+  socket.on('setQuestionFlags', async (topic, questionId, flags, token) => {
+    const discussionSlug = slugifyTopic(topic);
+    try {
+      const discussionId = await verifyAdmin(topic, token);
+      if (!discussionId) {
+        socket.emit('error', { message: 'Not authorized to moderate this discussion.' });
+        return;
+      }
+      const allowed = ['reactions_enabled', 'reactions_visible', 'comments_enabled'];
+      const sets = [];
+      const values = [];
+      for (const key of allowed) {
+        if (flags && Object.prototype.hasOwnProperty.call(flags, key)) {
+          values.push(!!flags[key]);
+          sets.push(`${key} = $${values.length}`);
+        }
+      }
+      if (sets.length === 0) return;
+      values.push(questionId, discussionId);
+      await pool.query(
+        `UPDATE questions SET ${sets.join(', ')} WHERE id = $${values.length - 1} AND discussion_id = $${values.length}`,
+        values
+      );
+      io.to(discussionSlug).emit('questions', await getQuestions(discussionSlug));
+    } catch (error) {
+      console.error('Error setting question flags:', error);
+      socket.emit('error', { message: 'Failed to update question' });
+    }
+  });
+
+  // Return the requesting user's own ratings/reactions so the client can restore
+  // its selected state after a reload or reconnect.
+  socket.on('getBrainstormState', async (topic, userId, ack) => {
+    try {
+      const state = await getMyBrainstormState(topic, userId);
+      if (typeof ack === 'function') ack(state);
+    } catch (error) {
+      console.error('Error fetching brainstorm state:', error);
+      if (typeof ack === 'function') ack({ ratings: {}, reactions: {} });
+    }
+  });
+
   socket.on('deleteVote', async (topic, voteId, userId) => {
     const discussionSlug = slugifyTopic(topic);
     try {
@@ -1018,6 +1151,19 @@ io.on('connection', (socket) => {
            AND question_id IN (
              SELECT id FROM questions
              WHERE discussion_id = (SELECT id FROM discussions WHERE slug = $3)
+           )`,
+        [pseudonym, userId, discussionSlug]
+      );
+      // Brainstorm comments persist their author's name separately, so rename /
+      // anonymize must reach them too — otherwise old comments keep showing the
+      // previous name after a privacy action.
+      await pool.query(
+        `UPDATE response_comments SET pseudonym = $1
+         WHERE user_id = $2
+           AND response_id IN (
+             SELECT v.id FROM votes v
+             JOIN questions q ON v.question_id = q.id
+             WHERE q.discussion_id = (SELECT id FROM discussions WHERE slug = $3)
            )`,
         [pseudonym, userId, discussionSlug]
       );
@@ -1130,6 +1276,9 @@ async function getQuestions(topic, { includeUserIds = false } = {}) {
       q.options,
       q.created_at,
       q.pinned,
+      q.reactions_enabled,
+      q.reactions_visible,
+      q.comments_enabled,
       COALESCE(json_agg(
         json_build_object(
           'id', v.id,
@@ -1150,10 +1299,13 @@ async function getQuestions(topic, { includeUserIds = false } = {}) {
   `;
 
   const result = await pool.query(query, [slug]);
-  return result.rows.map(row => ({
+  const questions = result.rows.map(row => ({
     ...row,
     minValue: row.min_value,
     maxValue: row.max_value,
+    reactionsEnabled: row.reactions_enabled === true,
+    reactionsVisible: row.reactions_visible === true,
+    commentsEnabled: row.comments_enabled === true,
     options: parseOptions(row.options),
     // Replace raw stable user ids on the wire with per-response ownership
     // tokens so a socket observer can't correlate a participant's responses —
@@ -1178,6 +1330,136 @@ async function getQuestions(topic, { includeUserIds = false } = {}) {
       return tokenized;
     }),
   }));
+  await attachBrainstormInteractions(questions, { includeUserIds });
+  return questions;
+}
+
+// Curated set of epistemic reactions a participant can place on a brainstorm
+// idea. The keys are stable; the client owns their display labels. The server
+// keeps its own copy purely to reject anything outside the set.
+const EPISTEMIC_REACTIONS = new Set([
+  'changed-mind',
+  'crux',
+  'locally-valid',
+  'locally-invalid',
+  'citation-needed',
+  'key-insight',
+]);
+
+// Enrich Brainstorm responses in place with aggregated interaction data:
+// quality up/down tallies, the agreement distribution, reaction counts, and
+// comments. Everything here is an aggregate or a pseudonymous comment — never
+// a list of who voted which way — so reactions stay unattributable. Ratings and
+// reactions are only attached when the moderator currently has them revealed;
+// comments only when comments are enabled. This enforces the hide/disable
+// toggles server-side rather than trusting the client to omit hidden data.
+async function attachBrainstormInteractions(questions, { includeUserIds = false } = {}) {
+  const ratingIds = [];
+  const commentIds = [];
+  for (const q of questions) {
+    if (q.type !== 'Brainstorm') continue;
+    const votes = q.votes || [];
+    if (q.reactionsEnabled && q.reactionsVisible) {
+      for (const v of votes) ratingIds.push(v.id);
+    }
+    if (q.commentsEnabled) {
+      for (const v of votes) commentIds.push(v.id);
+    }
+  }
+
+  const ratingsByResponse = new Map();
+  const reactionsByResponse = new Map();
+  if (ratingIds.length > 0) {
+    const qualityResult = await pool.query(
+      `SELECT response_id,
+              COUNT(*) FILTER (WHERE quality > 0) AS up,
+              COUNT(*) FILTER (WHERE quality < 0) AS down
+       FROM response_ratings
+       WHERE response_id = ANY($1::int[])
+       GROUP BY response_id`,
+      [ratingIds]
+    );
+    for (const r of qualityResult.rows) {
+      ratingsByResponse.set(r.response_id, {
+        qualityUp: Number(r.up),
+        qualityDown: Number(r.down),
+        agreementCounts: {},
+      });
+    }
+
+    const agreementResult = await pool.query(
+      `SELECT response_id, agreement, COUNT(*) AS c
+       FROM response_ratings
+       WHERE response_id = ANY($1::int[]) AND agreement IS NOT NULL
+       GROUP BY response_id, agreement`,
+      [ratingIds]
+    );
+    for (const r of agreementResult.rows) {
+      const entry = ratingsByResponse.get(r.response_id)
+        || { qualityUp: 0, qualityDown: 0, agreementCounts: {} };
+      entry.agreementCounts[r.agreement] = Number(r.c);
+      ratingsByResponse.set(r.response_id, entry);
+    }
+
+    const reactionResult = await pool.query(
+      `SELECT response_id, reaction, COUNT(*) AS c
+       FROM response_reactions
+       WHERE response_id = ANY($1::int[])
+       GROUP BY response_id, reaction`,
+      [ratingIds]
+    );
+    for (const r of reactionResult.rows) {
+      const counts = reactionsByResponse.get(r.response_id) || {};
+      counts[r.reaction] = Number(r.c);
+      reactionsByResponse.set(r.response_id, counts);
+    }
+  }
+
+  const commentsByResponse = new Map();
+  if (commentIds.length > 0) {
+    const commentResult = await pool.query(
+      `SELECT id, response_id, user_id, pseudonym, body, created_at
+       FROM response_comments
+       WHERE response_id = ANY($1::int[])
+       ORDER BY created_at, id`,
+      [commentIds]
+    );
+    for (const c of commentResult.rows) {
+      const list = commentsByResponse.get(c.response_id) || [];
+      // Like votes, comments carry a per-comment ownership token rather than the
+      // raw user id, so the author can recognize (and delete) their own without
+      // exposing who wrote what. The token is namespaced (`comment:<id>`) so it
+      // can't collide with a vote's token: comment ids and vote ids are separate
+      // sequences that both start at 1, and an un-namespaced token would let a
+      // client link a comment author to an equally-numbered anonymous idea. The
+      // client mirrors this namespace (see commentOwnerToken in DiscussionPage).
+      const comment = { id: c.id, pseudonym: c.pseudonym, body: c.body, created_at: c.created_at };
+      if (includeUserIds) {
+        comment.userId = c.user_id;
+      } else {
+        comment.ownerToken = ownerToken(`comment:${c.id}`, c.user_id);
+      }
+      list.push(comment);
+      commentsByResponse.set(c.response_id, list);
+    }
+  }
+
+  for (const q of questions) {
+    if (q.type !== 'Brainstorm') continue;
+    const reveal = q.reactionsEnabled && q.reactionsVisible;
+    for (const v of q.votes || []) {
+      if (reveal) {
+        const rating = ratingsByResponse.get(v.id);
+        v.qualityUp = rating ? rating.qualityUp : 0;
+        v.qualityDown = rating ? rating.qualityDown : 0;
+        v.agreementCounts = rating ? rating.agreementCounts : {};
+        v.reactionCounts = reactionsByResponse.get(v.id) || {};
+      }
+      if (q.commentsEnabled) {
+        v.comments = commentsByResponse.get(v.id) || [];
+      }
+    }
+  }
 }
 
 // Per-response, non-reversible ownership token broadcast in place of raw stable
@@ -1400,6 +1682,58 @@ async function migrateResponseVotesTable() {
     console.error('Error creating response_votes table:', e);
     throw e;
   }
+}
+
+// Interaction features layered on individual Brainstorm ideas: two-axis ratings
+// (a quality up/down vote and an agreement selection), curated epistemic
+// reactions, and threaded comments. Plus per-question moderator flags: whether
+// reactions/comments are available, and — for reactions — whether they're
+// currently revealed (so a moderator can collect ideas first, then open
+// reactions for an evaluation phase). All idempotent.
+async function migrateBrainstormInteractions() {
+  await pool.query('ALTER TABLE questions ADD COLUMN IF NOT EXISTS reactions_enabled BOOLEAN NOT NULL DEFAULT FALSE');
+  await pool.query('ALTER TABLE questions ADD COLUMN IF NOT EXISTS reactions_visible BOOLEAN NOT NULL DEFAULT TRUE');
+  await pool.query('ALTER TABLE questions ADD COLUMN IF NOT EXISTS comments_enabled BOOLEAN NOT NULL DEFAULT FALSE');
+
+  // One row per (response, user): that user's quality vote (-1/+1) and/or
+  // agreement selection. Either axis may be null when only the other is set.
+  // Always aggregated before broadcast, so individual votes stay unattributable.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS response_ratings (
+      id SERIAL PRIMARY KEY,
+      response_id INTEGER NOT NULL REFERENCES votes(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL,
+      quality SMALLINT,
+      agreement TEXT,
+      UNIQUE (response_id, user_id)
+    )
+  `);
+
+  // One row per (response, user, reaction); reaction is a curated epistemic tag.
+  // Aggregated to counts before broadcast — also unattributable.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS response_reactions (
+      id SERIAL PRIMARY KEY,
+      response_id INTEGER NOT NULL REFERENCES votes(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL,
+      reaction TEXT NOT NULL,
+      UNIQUE (response_id, user_id, reaction)
+    )
+  `);
+
+  // Comments on a brainstorm idea. Unlike ratings/reactions these carry their
+  // author's pseudonym, since they're conversation rather than an anonymous vote.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS response_comments (
+      id SERIAL PRIMARY KEY,
+      response_id INTEGER NOT NULL REFERENCES votes(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL,
+      pseudonym TEXT,
+      body TEXT NOT NULL,
+      created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
+    )
+  `);
+  console.log('Brainstorm interactions migration completed');
 }
 
 // Moderation columns: a per-discussion admin token, a discussion lock, and a
@@ -1834,6 +2168,106 @@ async function toggleResponseVote(topic, responseId, userId) {
   }
 }
 
+// Look up a brainstorm response within a topic and return its owner plus the
+// parent question's interaction flags. Returns null when the response doesn't
+// belong to the topic, so callers reject forged/cross-topic response ids.
+async function getResponseContext(topic, responseId) {
+  const slug = slugifyTopic(topic);
+  const result = await pool.query(
+    `SELECT v.user_id, q.type, q.reactions_enabled, q.reactions_visible, q.comments_enabled, d.locked
+     FROM votes v
+     JOIN questions q ON v.question_id = q.id
+     JOIN discussions d ON q.discussion_id = d.id
+     WHERE v.id = $1 AND d.slug = $2`,
+    [responseId, slug]
+  );
+  if (result.rows.length === 0) return null;
+  const row = result.rows[0];
+  return {
+    ownerId: row.user_id,
+    type: row.type,
+    reactionsEnabled: row.reactions_enabled === true,
+    reactionsVisible: row.reactions_visible === true,
+    commentsEnabled: row.comments_enabled === true,
+    locked: row.locked === true,
+  };
+}
+
+// Set or clear one axis of a user's rating on a brainstorm response. Upserts so
+// the two axes (quality, agreement) can be set independently; passing null
+// clears that axis (e.g. un-clicking the up arrow).
+async function setResponseRating(responseId, userId, axis, value) {
+  if (axis === 'quality') {
+    const quality = value === 1 || value === -1 ? value : null;
+    await pool.query(
+      `INSERT INTO response_ratings (response_id, user_id, quality) VALUES ($1, $2, $3)
+       ON CONFLICT (response_id, user_id) DO UPDATE SET quality = EXCLUDED.quality`,
+      [responseId, userId, quality]
+    );
+  } else if (axis === 'agreement') {
+    const agreement = AGREEMENT_OPTIONS.includes(value) ? value : null;
+    await pool.query(
+      `INSERT INTO response_ratings (response_id, user_id, agreement) VALUES ($1, $2, $3)
+       ON CONFLICT (response_id, user_id) DO UPDATE SET agreement = EXCLUDED.agreement`,
+      [responseId, userId, agreement]
+    );
+  }
+}
+
+// Toggle a single epistemic reaction for a user on a response: remove it if
+// present, add it otherwise.
+async function toggleResponseReaction(responseId, userId, reaction) {
+  const deleteResult = await pool.query(
+    'DELETE FROM response_reactions WHERE response_id = $1 AND user_id = $2 AND reaction = $3',
+    [responseId, userId, reaction]
+  );
+  if (deleteResult.rowCount === 0) {
+    await pool.query(
+      'INSERT INTO response_reactions (response_id, user_id, reaction) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING',
+      [responseId, userId, reaction]
+    );
+  }
+}
+
+// A user's own ratings and reactions across a whole discussion, so the client
+// can restore which buttons it had selected after a reload. This is the only
+// path that returns per-user selections, and it's scoped to the requesting
+// user's own rows — never another participant's.
+async function getMyBrainstormState(topic, userId) {
+  const ratings = {};
+  const reactions = {};
+  if (!userId) return { ratings, reactions };
+  const slug = slugifyTopic(topic);
+
+  const ratingResult = await pool.query(
+    `SELECT rr.response_id, rr.quality, rr.agreement
+     FROM response_ratings rr
+     JOIN votes v ON rr.response_id = v.id
+     JOIN questions q ON v.question_id = q.id
+     JOIN discussions d ON q.discussion_id = d.id
+     WHERE d.slug = $1 AND rr.user_id = $2`,
+    [slug, userId]
+  );
+  for (const row of ratingResult.rows) {
+    ratings[row.response_id] = { quality: row.quality, agreement: row.agreement };
+  }
+
+  const reactionResult = await pool.query(
+    `SELECT react.response_id, react.reaction
+     FROM response_reactions react
+     JOIN votes v ON react.response_id = v.id
+     JOIN questions q ON v.question_id = q.id
+     JOIN discussions d ON q.discussion_id = d.id
+     WHERE d.slug = $1 AND react.user_id = $2`,
+    [slug, userId]
+  );
+  for (const row of reactionResult.rows) {
+    (reactions[row.response_id] = reactions[row.response_id] || []).push(row.reaction);
+  }
+
+  return { ratings, reactions };
+}
+
 // Removes a single vote (used for Brainstorm ideas). The user_id check ensures a
 // participant can only delete their own ideas.
 async function deleteVote(voteId, userId) {
@@ -2120,10 +2554,13 @@ app.post('/api/duplicate-discussion', async (req, res) => {
 
     const newDiscussionId = newDiscussion.id;
 
-    // Copy questions from original to new discussion
+    // Copy questions from original to new discussion. Carry the brainstorm
+    // interaction flags too, so duplicating a discussion preserves whether
+    // reactions/comments were enabled (and reactions revealed) rather than
+    // silently resetting them to the migration defaults.
     await client.query(`
-      INSERT INTO questions (discussion_id, text, type, min_value, max_value, options)
-      SELECT $1, text, type, min_value, max_value, options
+      INSERT INTO questions (discussion_id, text, type, min_value, max_value, options, reactions_enabled, reactions_visible, comments_enabled)
+      SELECT $1, text, type, min_value, max_value, options, reactions_enabled, reactions_visible, comments_enabled
       FROM questions
       WHERE discussion_id = $2
     `, [newDiscussionId, originalDiscussionId]);
@@ -2172,6 +2609,7 @@ initSchema()
   .then(() => migrateUniqueDiscussionTopics())
   .then(() => migrateDiscussionSlugs())
   .then(() => Promise.all([migrateAddPseudonymColumn(), migrateResponseVotesTable(), migrateModeratorsTable()]))
+  .then(() => migrateBrainstormInteractions())
   .then(() => {
     server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
   })
