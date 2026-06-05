@@ -3,6 +3,7 @@ const express = require('express');
 const http = require('http');
 const socketIo = require('socket.io');
 const { Pool } = require('pg');
+const fs = require('fs');
 const path = require('path');
 const bodyParser = require('body-parser');
 const cors = require('cors');
@@ -399,15 +400,27 @@ app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'dist', 'index.html'));
 });
 
+// Ensure the database schema exists before serving requests. schema.sql is
+// idempotent (CREATE TABLE IF NOT EXISTS), so this is a no-op on a database
+// that's already populated (e.g. restored from latest.dump) and creates the
+// tables on a fresh, empty database.
+async function initSchema() {
+  const schema = fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf8');
+  await pool.query(schema);
+}
+
 const PORT = process.env.PORT || 3001;
 
-// Run required migrations before accepting connections so that no client can
-// query a column that doesn't exist yet (e.g. votes.pseudonym).
-migrateAddPseudonymColumn()
+// Create the schema on a fresh deploy, then run required migrations before
+// accepting connections so that no client can query a column that doesn't
+// exist yet (e.g. votes.pseudonym). Order matters: create tables first, then
+// migrate the existing/just-created schema, then start listening.
+initSchema()
+  .then(() => migrateAddPseudonymColumn())
   .then(() => {
     server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
   })
   .catch((err) => {
-    console.error('Failed to run migrations, exiting:', err);
+    console.error('Failed to initialize database, exiting:', err);
     process.exit(1);
   });
