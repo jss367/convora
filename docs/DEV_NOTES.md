@@ -107,7 +107,10 @@ DATABASE_URL=postgresql://convora:convora@127.0.0.1:54330/convora_test npm run t
 
 The default test harness uses a separate Docker Compose project and port
 (`convora-test`, `54330`) from the dev database (`54329`). Set `KEEP_TEST_DB=1`
-to leave the test database running after a failed run.
+to leave the test database running after a failed run. Because the tests truncate
+tables between cases, they refuse to run unless `DATABASE_URL` points at a
+localhost database whose name ends with `_test`; set `ALLOW_NON_TEST_DATABASE=1`
+only for a disposable nonstandard test database.
 
 ## Production Deployment on Heroku
 
