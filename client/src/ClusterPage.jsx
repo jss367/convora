@@ -27,9 +27,9 @@ const StanceBar = ({ agree, unsure, disagree }) => {
                 {agree > 0 && <div className="bg-green-500" style={{ width: pct(agree) }} title={`Agree: ${agree}`} />}
             </div>
             <div className="flex gap-x-3 mt-1 text-xs text-gray-500">
-                <span>Agree: {agree}</span>
-                <span>Unsure: {unsure}</span>
                 <span>Disagree: {disagree}</span>
+                <span>Unsure: {unsure}</span>
+                <span>Agree: {agree}</span>
             </div>
         </div>
     );

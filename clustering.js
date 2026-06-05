@@ -25,6 +25,12 @@ const MIN_PARTICIPANTS = 4;
 const MIN_STATEMENTS = 2;
 const MAX_CLUSTERS = 5;
 
+// A group counts as leaning (rather than neutral) only once its mean agreement
+// passes this magnitude. Matches the UI's "Agrees/Disagrees" vs "Mixed/unsure"
+// boundary, so a statement is never called common ground while a group is shown
+// as undecided.
+const COMMON_GROUND_LEAN = 0.3;
+
 // Deterministic PRNG (mulberry32). The same votes must always yield the same
 // groups, since people reload this view and compare it over time.
 function makeRng(seed) {
@@ -282,22 +288,27 @@ function buildClusterReport(statements, participants, matrix, voted, assignments
     // that actually voted: common ground requires every group to have weighed
     // in, and spread/magnitude are measured over voting groups only.
     const everyGroupVoted = clusterStats.every(cs => cs.voters > 0);
+    const votedGroups = clusterVoters.filter(v => v > 0).length;
     const votedMeans = clusterMeans.filter((m, i) => clusterVoters[i] > 0);
-    const opinions = votedMeans.filter(m => Math.abs(m) > 0.1);
-    const signs = new Set(opinions.map(m => Math.sign(m)));
+
+    // Common ground requires every group to actually lean the same way. A group
+    // that voted but is collectively neutral (|mean| < COMMON_GROUND_LEAN) does
+    // not count as agreement and must not be dropped, otherwise a statement gets
+    // labeled common ground while the UI shows that group as "Mixed / unsure".
+    const allAgree = votedMeans.length > 0 && votedMeans.every(m => m >= COMMON_GROUND_LEAN);
+    const allDisagree = votedMeans.length > 0 && votedMeans.every(m => m <= -COMMON_GROUND_LEAN);
 
     return {
       id: s.id,
       text: s.text,
       clusterMeans,
       clusterVoters,
+      votedGroups,
       overallMean: overall.mean,
       voters: overall.voters,
       agree: overall.agree,
       disagree: overall.disagree,
-      // Common ground: every group voted, and every group with a clear opinion
-      // leans the same way.
-      allGroupsAgree: everyGroupVoted && opinions.length > 0 && signs.size === 1,
+      allGroupsAgree: everyGroupVoted && (allAgree || allDisagree),
       minMagnitude: votedMeans.length > 0 ? Math.min(...votedMeans.map(m => Math.abs(m))) : 0,
       spread: votedMeans.length >= 2 ? Math.max(...votedMeans) - Math.min(...votedMeans) : 0,
       direction: overall.mean > 0 ? 'agree' : overall.mean < 0 ? 'disagree' : 'split',
@@ -309,8 +320,10 @@ function buildClusterReport(statements, participants, matrix, voted, assignments
     .sort((a, b) => b.minMagnitude - a.minMagnitude || a.spread - b.spread)
     .slice(0, 5);
 
+  // Divisive needs at least two groups that actually voted, so a single group's
+  // internal spread can't masquerade as cross-group disagreement.
   const divisive = perStatement
-    .filter(st => st.voters >= 2)
+    .filter(st => st.voters >= 2 && st.votedGroups >= 2)
     .sort((a, b) => b.spread - a.spread)
     .slice(0, 5);
 
