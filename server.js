@@ -970,8 +970,35 @@ async function getQuestions(topic) {
     ...row,
     minValue: row.min_value,
     maxValue: row.max_value,
-    options: parseOptions(row.options)
+    options: parseOptions(row.options),
+    // Replace raw stable user ids on the wire with per-question ownership
+    // tokens so a socket observer can't correlate a participant's responses
+    // across prompts. Each client recomputes the same token for its own votes
+    // (see ownerToken() in client/src/identity.js — the two MUST match).
+    votes: (Array.isArray(row.votes) ? row.votes : []).map(vote => {
+      const tokenized = {
+        ...vote,
+        ownerToken: ownerToken(row.id, vote.userId),
+        upvoterTokens: (Array.isArray(vote.upvoters) ? vote.upvoters : [])
+          .map(uid => ownerToken(row.id, uid)),
+      };
+      delete tokenized.userId;
+      delete tokenized.upvoters;
+      return tokenized;
+    }),
   }));
+}
+
+// Per-question, non-reversible ownership token broadcast in place of raw stable
+// user ids (see getQuestions). Definition: sha256(questionId + ':' + userId),
+// hex. No server secret needed — userIds are long random strings, and folding
+// in the questionId means the same browser gets a different token per prompt.
+//
+// IMPORTANT: must stay byte-for-byte identical to ownerToken() in
+// client/src/identity.js. Change one, change both.
+function ownerToken(questionId, userId) {
+  if (questionId === null || questionId === undefined || !userId) return null;
+  return crypto.createHash('sha256').update(`${questionId}:${userId}`).digest('hex');
 }
 
 async function addQuestion(topic, question) {

@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict');
+const crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
 const net = require('node:net');
 const path = require('node:path');
@@ -130,9 +131,20 @@ test('Socket.IO adds questions and broadcasts votes with pseudonyms', async () =
     voter.emit('vote', topic, question.id, 'Agree', 'user-1', 'Careful Tester');
 
     const updatedQuestions = await voteUpdate;
-    assert.equal(updatedQuestions[0].votes[0].value, 'Agree');
-    assert.equal(updatedQuestions[0].votes[0].userId, 'user-1');
-    assert.equal(updatedQuestions[0].votes[0].pseudonym, 'Careful Tester');
+    const broadcastVote = updatedQuestions[0].votes[0];
+    assert.equal(broadcastVote.value, 'Agree');
+    assert.equal(broadcastVote.pseudonym, 'Careful Tester');
+    // The broadcast must NOT carry the raw stable userId — that would let a
+    // socket observer correlate a participant's responses across prompts. It
+    // carries a per-question, non-reversible ownership token instead.
+    assert.equal('userId' in broadcastVote, false);
+    assert.equal(broadcastVote.upvoters, undefined);
+    const expectedToken = crypto
+      .createHash('sha256')
+      .update(`${question.id}:user-1`)
+      .digest('hex');
+    assert.equal(broadcastVote.ownerToken, expectedToken);
+    assert.deepEqual(broadcastVote.upvoterTokens, []);
   } finally {
     author.disconnect();
     voter.disconnect();
@@ -183,6 +195,70 @@ test('Socket.IO sanitizes display names: anonymous stores null, long names are c
     voter.emit('vote', topic, question.id, 'idea-long', 'long-user', longName);
     const longVote = (await longUpdate)[0].votes.find((v) => v.value === 'idea-long');
     assert.equal(longVote.pseudonym, 'X'.repeat(40));
+  } finally {
+    author.disconnect();
+    voter.disconnect();
+  }
+});
+
+test('Socket.IO ownership tokens hide stable ids and differ per question', async () => {
+  const topic = uniqueTopic('tokens');
+  const author = await connectSocket();
+  const voter = await connectSocket();
+
+  const tokenFor = (questionId, userId) =>
+    crypto.createHash('sha256').update(`${questionId}:${userId}`).digest('hex');
+
+  try {
+    author.emit('joinDiscussion', topic);
+    voter.emit('joinDiscussion', topic);
+
+    // Two open-ended questions, both answered by the SAME browser (same userId).
+    const q1Update = waitForQuestions(author, (qs) => qs.length === 1, 'q1 broadcast');
+    author.emit('addQuestion', topic, {
+      text: 'Prompt one?', type: 'Open Ended', minValue: null, maxValue: null, options: [],
+    });
+    const q1 = (await q1Update)[0];
+
+    const q2Update = waitForQuestions(author, (qs) => qs.length === 2, 'q2 broadcast');
+    author.emit('addQuestion', topic, {
+      text: 'Prompt two?', type: 'Open Ended', minValue: null, maxValue: null, options: [],
+    });
+    const q2 = (await q2Update).find((q) => q.id !== q1.id);
+
+    const v1Update = waitForQuestions(
+      author,
+      (qs) => qs.find((q) => q.id === q1.id)?.votes?.length === 1,
+      'q1 vote'
+    );
+    voter.emit('vote', topic, q1.id, 'answer one', 'same-browser', 'Same Browser');
+    const vote1 = (await v1Update).find((q) => q.id === q1.id).votes[0];
+
+    const v2Update = waitForQuestions(
+      author,
+      (qs) => qs.find((q) => q.id === q2.id)?.votes?.length === 1,
+      'q2 vote'
+    );
+    voter.emit('vote', topic, q2.id, 'answer two', 'same-browser', 'Same Browser');
+    const vote2 = (await v2Update).find((q) => q.id === q2.id).votes[0];
+
+    // No raw ids leak, and the same browser gets a DIFFERENT token per prompt —
+    // so a socket observer can't correlate the two responses.
+    assert.equal('userId' in vote1, false);
+    assert.equal(vote1.ownerToken, tokenFor(q1.id, 'same-browser'));
+    assert.equal(vote2.ownerToken, tokenFor(q2.id, 'same-browser'));
+    assert.notEqual(vote1.ownerToken, vote2.ownerToken);
+
+    // Upvoter ids are likewise tokenized (and self-matchable per question).
+    const upUpdate = waitForQuestions(
+      author,
+      (qs) => qs.find((q) => q.id === q1.id)?.votes?.[0]?.upvotes === 1,
+      'q1 upvote'
+    );
+    author.emit('toggleResponseVote', topic, vote1.id, 'upvoter-x');
+    const upvoted = (await upUpdate).find((q) => q.id === q1.id).votes[0];
+    assert.equal(upvoted.upvoters, undefined);
+    assert.deepEqual(upvoted.upvoterTokens, [tokenFor(q1.id, 'upvoter-x')]);
   } finally {
     author.disconnect();
     voter.disconnect();

@@ -9,6 +9,7 @@ import {
     setNameMode,
     setCustomName,
     getDisplayName,
+    ownerToken,
     NameModes,
     MAX_CUSTOM_NAME_LENGTH,
 } from './identity';
@@ -119,6 +120,38 @@ const DiscussionPage = () => {
     // (derived from the chosen mode: pseudonym, anonymous, or a typed-in name).
     const userId = identity?.userId || null;
     const displayName = identity ? getDisplayName(identity) : '';
+
+    // The server no longer broadcasts raw user ids — each vote carries a
+    // per-question ownership token (sha256(questionId + ':' + userId)) instead,
+    // so socket observers can't correlate one browser's responses across
+    // prompts. To recognize our OWN votes we recompute that token for this
+    // browser per question. The hash is async (Web Crypto), so we keep the
+    // results in a Map<String(questionId), token>; during the brief gap before
+    // an effect populates it, a vote simply won't match (treated as not-ours).
+    const [myTokens, setMyTokens] = useState(() => new Map());
+    useEffect(() => {
+        if (!userId) {
+            setMyTokens(new Map());
+            return;
+        }
+        let cancelled = false;
+        const compute = async () => {
+            const entries = await Promise.all(
+                (questions || []).map(async (q) => [String(q.id), await ownerToken(q.id, userId)])
+            );
+            if (!cancelled) setMyTokens(new Map(entries));
+        };
+        compute();
+        return () => { cancelled = true; };
+    }, [userId, questions]);
+
+    // True when `vote` belongs to this browser, matched via its per-question
+    // ownership token rather than a raw user id.
+    const isMyVote = useCallback((question, vote) => {
+        if (!vote || !question) return false;
+        const myToken = myTokens.get(String(question.id));
+        return Boolean(myToken) && vote.ownerToken === myToken;
+    }, [myTokens]);
 
     // Adopt the moderator token for this topic: an ?admin=<token> URL param
     // (shared admin link) takes precedence and is then persisted and stripped
@@ -407,12 +440,12 @@ const DiscussionPage = () => {
             return questions;
         }
         return questions.filter(question =>
-            !question.votes || !question.votes.some(vote => vote.userId === userId)
+            !question.votes || !question.votes.some(vote => isMyVote(question, vote))
         );
     };
 
     const renderVotingMechanism = (question) => {
-        const userVote = question.votes ? question.votes.find(v => v.userId === userId) : null;
+        const userVote = question.votes ? question.votes.find(v => isMyVote(question, v)) : null;
 
         if (!question || typeof question !== 'object') {
             console.error('Invalid question object:', question);
@@ -489,10 +522,10 @@ const DiscussionPage = () => {
                 );
             }
             case QuestionTypes.OPEN_ENDED: {
-                return <OpenEndedQuestion question={question} userVote={userVote} handleVote={handleVote} userId={userId} handleResponseVote={handleResponseVote} locked={locked} />;
+                return <OpenEndedQuestion question={question} userVote={userVote} handleVote={handleVote} myToken={myTokens.get(String(question.id))} handleResponseVote={handleResponseVote} locked={locked} />;
             }
             case QuestionTypes.BRAINSTORM: {
-                return <BrainstormQuestion question={question} userId={userId} handleVote={handleVote} handleDeleteVote={handleDeleteVote} />;
+                return <BrainstormQuestion question={question} myToken={myTokens.get(String(question.id))} handleVote={handleVote} handleDeleteVote={handleDeleteVote} />;
             }
 
             default:
@@ -875,7 +908,7 @@ const DiscussionPage = () => {
         </div>
     );
 };
-const OpenEndedQuestion = ({ question, userVote, handleVote, userId, handleResponseVote, locked }) => {
+const OpenEndedQuestion = ({ question, userVote, handleVote, myToken, handleResponseVote, locked }) => {
     const [response, setResponse] = useState(userVote ? userVote.value : '');
 
     useEffect(() => {
@@ -920,10 +953,14 @@ const OpenEndedQuestion = ({ question, userVote, handleVote, userId, handleRespo
                     <h3 className="font-semibold mb-2">All Responses:</h3>
                     <ul className="space-y-2">
                         {sortedResponses.map((vote) => {
-                            const isYou = vote.userId === userVote?.userId;
+                            // Ownership is matched via the per-question token
+                            // (the server no longer sends raw user ids).
+                            const isOwnResponse = Boolean(myToken) && vote.ownerToken === myToken;
+                            const isYou = isOwnResponse;
                             const upvotes = vote.upvotes || 0;
-                            const hasUpvoted = Array.isArray(vote.upvoters) && vote.upvoters.includes(userId);
-                            const isOwnResponse = vote.userId === userId;
+                            const hasUpvoted = Boolean(myToken)
+                                && Array.isArray(vote.upvoterTokens)
+                                && vote.upvoterTokens.includes(myToken);
                             return (
                                 <li key={vote.id} className="bg-gray-50 rounded-md p-3 flex items-start gap-3">
                                     <button
@@ -959,19 +996,19 @@ OpenEndedQuestion.propTypes = {
     question: PropTypes.shape({
         id: PropTypes.oneOfType([PropTypes.string, PropTypes.number]).isRequired,
         votes: PropTypes.arrayOf(PropTypes.shape({
-            userId: PropTypes.string.isRequired,
+            ownerToken: PropTypes.string,
             value: PropTypes.string.isRequired,
             pseudonym: PropTypes.string,
             upvotes: PropTypes.number,
-            upvoters: PropTypes.array
+            upvoterTokens: PropTypes.array
         }))
     }).isRequired,
     userVote: PropTypes.shape({
-        userId: PropTypes.string.isRequired,
+        ownerToken: PropTypes.string,
         value: PropTypes.string
     }),
     handleVote: PropTypes.func.isRequired,
-    userId: PropTypes.string,
+    myToken: PropTypes.string,
     handleResponseVote: PropTypes.func.isRequired,
     locked: PropTypes.bool
 };
@@ -1049,7 +1086,7 @@ AgreementResults.propTypes = {
 
 // Unlike Open Ended (one editable response per person), Brainstorm lets each
 // participant add any number of separate ideas and delete their own.
-const BrainstormQuestion = ({ question, userId, handleVote, handleDeleteVote }) => {
+const BrainstormQuestion = ({ question, myToken, handleVote, handleDeleteVote }) => {
     const [idea, setIdea] = useState('');
     const votes = question.votes || [];
 
@@ -1083,13 +1120,17 @@ const BrainstormQuestion = ({ question, userId, handleVote, handleDeleteVote }) 
                 <div className="mt-4">
                     <h3 className="font-semibold mb-2">All Ideas ({votes.length}):</h3>
                     <ul className="list-disc pl-5">
-                        {votes.map((vote) => (
+                        {votes.map((vote) => {
+                            // Ownership is matched via the per-question token
+                            // (the server no longer sends raw user ids).
+                            const isMine = Boolean(myToken) && vote.ownerToken === myToken;
+                            return (
                             <li key={vote.id} className="mb-2 flex items-start justify-between">
                                 <span>
                                     {vote.value}
-                                    {vote.userId === userId && " (You)"}
+                                    {isMine && " (You)"}
                                 </span>
-                                {vote.userId === userId && (
+                                {isMine && (
                                     <button
                                         onClick={() => handleDeleteVote(question.id, vote.id)}
                                         className="ml-4 text-sm text-red-500 hover:text-red-700"
@@ -1098,7 +1139,8 @@ const BrainstormQuestion = ({ question, userId, handleVote, handleDeleteVote }) 
                                     </button>
                                 )}
                             </li>
-                        ))}
+                            );
+                        })}
                     </ul>
                 </div>
             )}
@@ -1163,11 +1205,11 @@ BrainstormQuestion.propTypes = {
         id: PropTypes.string.isRequired,
         votes: PropTypes.arrayOf(PropTypes.shape({
             id: PropTypes.oneOfType([PropTypes.string, PropTypes.number]).isRequired,
-            userId: PropTypes.string.isRequired,
+            ownerToken: PropTypes.string,
             value: PropTypes.string.isRequired
         }))
     }).isRequired,
-    userId: PropTypes.string,
+    myToken: PropTypes.string,
     handleVote: PropTypes.func.isRequired,
     handleDeleteVote: PropTypes.func.isRequired
 };

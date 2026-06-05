@@ -153,6 +153,26 @@ export function regeneratePseudonym() {
     return updated;
 }
 
+// Per-question, non-reversible ownership token. The server broadcasts these
+// (instead of raw stable userIds) so a socket observer can't correlate one
+// browser's responses across prompts, while each client can still recognize its
+// OWN votes by recomputing the token. Definition: sha256(questionId + ':' +
+// userId), hex. There is no server secret — userIds are long random strings
+// (~80 bits), so tokens aren't brute-forceable, and folding in the questionId
+// gives the same browser a different token per prompt (breaks cross-prompt
+// correlation).
+//
+// IMPORTANT: this MUST stay byte-for-byte identical to the server-side
+// ownerToken() in server.js. If you change the formula, change it in both.
+export async function ownerToken(questionId, userId) {
+    if (questionId === null || questionId === undefined || !userId) return null;
+    const data = new TextEncoder().encode(`${questionId}:${userId}`);
+    const digest = await crypto.subtle.digest('SHA-256', data);
+    return Array.from(new Uint8Array(digest))
+        .map((b) => b.toString(16).padStart(2, '0'))
+        .join('');
+}
+
 // Switches which kind of name is shown, persisting the choice.
 export function setNameMode(mode) {
     const next = Object.values(NameModes).includes(mode) ? mode : NameModes.PSEUDONYM;
