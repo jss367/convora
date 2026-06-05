@@ -40,7 +40,6 @@ const HomePage = () => {
 
     const handleCreateDiscussion = async () => {
         if (newDiscussion.trim() !== '') {
-            const discussionId = newDiscussion.toLowerCase().replace(/\s+/g, '-');
             try {
                 const response = await fetch('/api/discussions', {
                     method: 'POST',
@@ -52,7 +51,8 @@ const HomePage = () => {
                 if (!response.ok) {
                     throw new Error('Failed to create discussion');
                 }
-                navigate(`/discussion/${discussionId}`);
+                const discussion = await response.json();
+                navigate(`/discussion/${discussion.slug}`);
             } catch (error) {
                 console.error('Error creating discussion:', error);
             }
@@ -82,7 +82,7 @@ const HomePage = () => {
                 {discussions.map(discussion => (
                     <Link
                         key={discussion.id}
-                        to={`/discussion/${discussion.topic}`}
+                        to={`/discussion/${discussion.slug}`}
                         className="bg-white shadow-lg rounded-lg p-6 hover:shadow-xl transition duration-300"
                     >
                         <h2 className="text-xl font-semibold mb-2">{discussion.topic}</h2>

@@ -1,6 +1,7 @@
 import PropTypes from 'prop-types';
 import React, { useCallback, useEffect, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router-dom';
+import { slugifyTopic } from './slugs';
 
 const AGREEMENT_OPTIONS = [
     'Strongly Disagree',
@@ -33,12 +34,20 @@ function formatDate(value) {
 
 const SummaryPage = () => {
     const { topic } = useParams();
+    const navigate = useNavigate();
+    const discussionSlug = slugifyTopic(topic);
     const [summary, setSummary] = useState(null);
     const [loading, setLoading] = useState(true);
     const [synthesisLoading, setSynthesisLoading] = useState(false);
     const [error, setError] = useState(null);
 
-    const encodedTopic = encodeURIComponent(topic);
+    const encodedTopic = encodeURIComponent(discussionSlug);
+
+    useEffect(() => {
+        if (topic !== discussionSlug) {
+            navigate(`/discussion/${discussionSlug}/summary`, { replace: true });
+        }
+    }, [topic, discussionSlug, navigate]);
 
     const loadSummary = useCallback(async ({ llm = false } = {}) => {
         if (llm) {
@@ -77,7 +86,7 @@ const SummaryPage = () => {
         return (
             <div className="max-w-5xl mx-auto mt-10 px-4">
                 <p className="text-red-600 mb-4">{error}</p>
-                <Link to={`/discussion/${topic}`} className="text-primary hover:underline">Back to discussion</Link>
+                <Link to={`/discussion/${discussionSlug}`} className="text-primary hover:underline">Back to discussion</Link>
             </div>
         );
     }
@@ -89,7 +98,7 @@ const SummaryPage = () => {
     return (
         <div className="max-w-5xl mx-auto mt-10 px-4">
             <div className="mb-6">
-                <Link to={`/discussion/${topic}`} className="text-primary hover:underline">
+                <Link to={`/discussion/${discussionSlug}`} className="text-primary hover:underline">
                     Back to discussion
                 </Link>
                 <h1 className="text-4xl font-bold mt-3 mb-2 text-gray-800">Summary: {summary.discussion.topic}</h1>
