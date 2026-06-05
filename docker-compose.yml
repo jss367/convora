@@ -1,0 +1,19 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-convora}
+      POSTGRES_USER: ${POSTGRES_USER:-convora}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-convora}
+    ports:
+      - "${POSTGRES_PORT:-54329}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 2s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  postgres-data:

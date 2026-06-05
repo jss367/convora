@@ -9,8 +9,14 @@
     "scripts": {
         "start": "node server.js",
         "dev:server": "nodemon server.js",
+        "dev:server:docker": "DATABASE_URL=postgresql://convora:convora@127.0.0.1:54329/convora nodemon server.js",
         "dev:client": "cd client && vite",
+        "dev:db": "docker compose up -d postgres",
+        "dev:db:down": "docker compose down",
         "build": "cd client && vite build",
+        "test": "npm run test:integration",
+        "test:node": "node --test tests/integration.test.js",
+        "test:integration": "scripts/test-integration.sh",
         "heroku-postbuild": "npm install && cd client && npm install && npx vite build"
     },
     "keywords": [
