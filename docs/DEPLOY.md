@@ -27,8 +27,10 @@ concurrent users; you will not need to scale horizontally at that size.
    injected automatically from `convora-db`. When it goes live you get a URL
    like `https://convora.onrender.com`.
 
-   The app starts fine against an empty database — you'll just see no
-   discussions until you create some (or restore the backup below).
+   The app creates its tables on startup (it runs `schema.sql`, which is
+   idempotent), so it works against a fresh, empty database out of the box —
+   you'll just see no discussions until you create some (or restore the backup
+   below).
 
 ## Restore the old data (optional)
 
