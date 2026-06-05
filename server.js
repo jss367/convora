@@ -706,6 +706,23 @@ function emitPresence(topic) {
   io.to(topic).emit('presence', count);
 }
 
+// Push a freshly reserved handle to a user's OTHER sockets in a discussion (all
+// but the originating socket, which receives it via its ack). Used after a
+// shuffle so a second tab open on the same discussion stops submitting under the
+// old handle, which is now free for another participant to claim. Sockets are
+// tagged with their userId via the 'identify' event.
+function emitPseudonymSync(slug, userId, pseudonym, exceptSocketId) {
+  const room = io.sockets.adapter.rooms.get(slug);
+  if (!room) return;
+  for (const socketId of room) {
+    if (socketId === exceptSocketId) continue;
+    const member = io.sockets.sockets.get(socketId);
+    if (member && member.data.userId === userId) {
+      member.emit('pseudonymSync', { pseudonym });
+    }
+  }
+}
+
 // Read the lock state and whether a moderator has been claimed.
 async function getDiscussionState(topic) {
   const slug = slugifyTopic(topic);
@@ -1170,7 +1187,16 @@ io.on('connection', (socket) => {
         cb({ pseudonym: null, reserved: false });
         return;
       }
-      cb(await assignPseudonym(slugifyTopic(topic), userId, null, { regenerate: true }));
+      const discussionSlug = slugifyTopic(topic);
+      const result = await assignPseudonym(discussionSlug, userId, null, { regenerate: true });
+      cb(result);
+      // The shuffle freed the old handle for anyone else to claim, so this user's
+      // OTHER tabs on this discussion must stop using it. Push the new handle to
+      // them (their already-submitted responses were renamed via updateDisplayName
+      // by the shuffling tab); the originating socket already has it via the ack.
+      if (result.reserved) {
+        emitPseudonymSync(discussionSlug, userId, result.pseudonym, socket.id);
+      }
     } catch (error) {
       console.error('Error regenerating pseudonym:', error);
       cb({ pseudonym: null, reserved: false });

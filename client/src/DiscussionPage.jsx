@@ -562,6 +562,16 @@ const DiscussionPage = () => {
         setAdminToken(token);
     }, [discussionSlug]);
 
+    // Another tab of ours shuffled, freeing our old handle; adopt the new one so
+    // this tab stops submitting under a handle someone else can now claim. The
+    // shuffling tab already renamed our existing responses, so we just update the
+    // live handle (the server only sends this to our own sockets).
+    const handlePseudonymSync = useCallback((payload) => {
+        if (!payload?.pseudonym) return;
+        setAssignedPseudonym(payload.pseudonym);
+        setPseudonymReserved(true);
+    }, []);
+
     useEffect(() => {
         if (topic !== discussionSlug) return undefined;
         console.log('Current topic:', discussionSlug);
@@ -572,6 +582,7 @@ const DiscussionPage = () => {
         socket.on('discussionState', setDiscussionState);
         socket.on('similarQuestion', setSimilarPrompt);
         socket.on('moderatorGranted', handleModeratorGranted);
+        socket.on('pseudonymSync', handlePseudonymSync);
         return () => {
             // Leave the room so the server stops counting this client toward the
             // discussion's presence once the page unmounts (e.g. navigating home).
@@ -582,8 +593,9 @@ const DiscussionPage = () => {
             socket.off('discussionState', setDiscussionState);
             socket.off('similarQuestion', setSimilarPrompt);
             socket.off('moderatorGranted', handleModeratorGranted);
+            socket.off('pseudonymSync', handlePseudonymSync);
         };
-    }, [topic, discussionSlug, handleQuestionsUpdate, handleModeratorGranted]);
+    }, [topic, discussionSlug, handleQuestionsUpdate, handleModeratorGranted, handlePseudonymSync]);
 
     // Tell the server which persistent user this socket is, so it can route
     // moderator grants to us. Re-sent after any reconnect so a promoted user

@@ -1104,6 +1104,37 @@ test('Before the discussion exists, handles are previews (unreserved) and reserv
   }
 });
 
+test('Shuffling in one tab syncs the new handle to the same user\'s other tabs', async () => {
+  const topic = uniqueTopic('pseudonym-sync');
+  await seedDiscussion(topic);
+  const tabA = await connectSocket();
+  const tabB = await connectSocket();
+  try {
+    // Two tabs of the same browser share a userId. Each must join the room and
+    // identify so the server can route a shuffle's sync to the other tab.
+    tabA.emit('joinDiscussion', topic);
+    tabB.emit('joinDiscussion', topic);
+    tabA.emit('identify', topic, 'user-tabs');
+    tabB.emit('identify', topic, 'user-tabs');
+    const first = await emitWithAck(tabA, 'requestPseudonym', topic, 'user-tabs', 'Tidy Newt');
+    assert.equal(first.pseudonym, 'Tidy Newt');
+    // The second tab shares the reservation (same userId).
+    const shared = await emitWithAck(tabB, 'requestPseudonym', topic, 'user-tabs', 'Tidy Newt');
+    assert.equal(shared.pseudonym, 'Tidy Newt');
+
+    // Tab A shuffles; Tab B should be told the new handle so it stops using the
+    // now-freed "Tidy Newt".
+    const synced = waitForEvent(tabB, 'pseudonymSync');
+    const shuffled = await emitWithAck(tabA, 'regeneratePseudonym', topic, 'user-tabs');
+    const payload = await synced;
+    assert.equal(payload.pseudonym, shuffled.pseudonym);
+    assert.notEqual(payload.pseudonym, 'Tidy Newt');
+  } finally {
+    tabA.disconnect();
+    tabB.disconnect();
+  }
+});
+
 function claimModerator(socket, topic) {
   return withTimeout(
     new Promise((resolve, reject) => {
