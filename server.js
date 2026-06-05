@@ -551,11 +551,8 @@ app.use((req, res, next) => {
 app.post('/api/discussions', async (req, res) => {
   const { topic } = req.body;
   try {
-    const result = await pool.query(
-      'INSERT INTO discussions (topic) VALUES ($1) RETURNING id',
-      [topic]
-    );
-    res.json({ success: true, id: result.rows[0].id });
+    const id = await getOrCreateDiscussion(pool, topic);
+    res.json({ success: true, id });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Server error' });
@@ -581,6 +578,17 @@ app.get('/api/discussions/:id', async (req, res) => {
 });
 
 // Database functions
+async function getOrCreateDiscussion(db, topic) {
+  const result = await db.query(
+    `INSERT INTO discussions (topic)
+     VALUES ($1)
+     ON CONFLICT (topic) DO UPDATE SET topic = EXCLUDED.topic
+     RETURNING id`,
+    [topic]
+  );
+  return result.rows[0].id;
+}
+
 async function getQuestions(topic) {
   const query = `
     SELECT 
@@ -629,21 +637,7 @@ async function addQuestion(topic, question) {
   try {
     await client.query('BEGIN');
 
-    // Get or create discussion
-    let discussionId;
-    const discussionResult = await client.query(
-      'SELECT id FROM discussions WHERE topic = $1',
-      [topic]
-    );
-    if (discussionResult.rows.length === 0) {
-      const newDiscussionResult = await client.query(
-        'INSERT INTO discussions (topic) VALUES ($1) RETURNING id',
-        [topic]
-      );
-      discussionId = newDiscussionResult.rows[0].id;
-    } else {
-      discussionId = discussionResult.rows[0].id;
-    }
+    const discussionId = await getOrCreateDiscussion(client, topic);
 
     // Ensure options is a valid JSON array
     const optionsJson = JSON.stringify(Array.isArray(question.options) ? question.options : []);
@@ -677,6 +671,82 @@ async function migrateAddPseudonymColumn() {
   console.log('Pseudonym column migration completed');
 }
 
+// Older deployments could create duplicate discussions because several paths
+// performed SELECT-then-INSERT without a uniqueness guarantee. Collapse those
+// duplicates before adding the unique constraint.
+async function migrateUniqueDiscussionTopics() {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(`
+      WITH duplicate_topics AS (
+        SELECT
+          topic,
+          MIN(id) AS keep_id,
+          MIN(admin_token) AS admin_token,
+          BOOL_OR(locked) AS locked
+        FROM discussions
+        GROUP BY topic
+        HAVING COUNT(*) > 1
+      ),
+      merged_discussions AS (
+        UPDATE discussions d
+        SET
+          admin_token = COALESCE(d.admin_token, duplicate_topics.admin_token),
+          locked = d.locked OR duplicate_topics.locked
+        FROM duplicate_topics
+        WHERE d.id = duplicate_topics.keep_id
+        RETURNING d.id
+      ),
+      moved_questions AS (
+        UPDATE questions q
+        SET discussion_id = duplicate_topics.keep_id
+        FROM duplicate_topics
+        JOIN discussions d
+          ON d.topic = duplicate_topics.topic
+         AND d.id <> duplicate_topics.keep_id
+        WHERE q.discussion_id = d.id
+        RETURNING q.id
+      )
+      DELETE FROM discussions d
+      USING duplicate_topics
+      WHERE d.topic = duplicate_topics.topic
+        AND d.id <> duplicate_topics.keep_id
+    `);
+    await client.query(`
+      DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1
+          FROM pg_constraint c
+          WHERE c.conrelid = 'discussions'::regclass
+            AND c.contype = 'u'
+            AND c.conkey = ARRAY(
+              SELECT a.attnum
+              FROM pg_attribute a
+              WHERE a.attrelid = 'discussions'::regclass
+                AND a.attname = 'topic'
+            )::smallint[]
+        ) THEN
+          CREATE UNIQUE INDEX IF NOT EXISTS discussions_topic_unique_idx
+            ON discussions(topic);
+          ALTER TABLE discussions
+            ADD CONSTRAINT discussions_topic_unique
+            UNIQUE USING INDEX discussions_topic_unique_idx;
+        END IF;
+      END $$;
+    `);
+    await client.query('COMMIT');
+    console.log('Discussion topic uniqueness migration completed');
+  } catch (e) {
+    await client.query('ROLLBACK');
+    console.error('Error migrating discussion topic uniqueness:', e);
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
 // Table for upvotes on individual open-ended responses. One row per
 // (response, user); a response is identified by its votes.id. Idempotent.
 async function migrateResponseVotesTable() {
@@ -700,17 +770,17 @@ async function migrateResponseVotesTable() {
 // per-question pin flag. Plus the pg_trgm extension for near-duplicate
 // statement detection. All idempotent.
 async function migrateModerationAndDedup() {
+  await pool.query('ALTER TABLE discussions ADD COLUMN IF NOT EXISTS admin_token TEXT');
+  await pool.query('ALTER TABLE discussions ADD COLUMN IF NOT EXISTS locked BOOLEAN NOT NULL DEFAULT FALSE');
+  await pool.query('ALTER TABLE questions ADD COLUMN IF NOT EXISTS pinned BOOLEAN NOT NULL DEFAULT FALSE');
+
   try {
-    await pool.query('ALTER TABLE discussions ADD COLUMN IF NOT EXISTS admin_token TEXT');
-    await pool.query('ALTER TABLE discussions ADD COLUMN IF NOT EXISTS locked BOOLEAN NOT NULL DEFAULT FALSE');
-    await pool.query('ALTER TABLE questions ADD COLUMN IF NOT EXISTS pinned BOOLEAN NOT NULL DEFAULT FALSE');
     await pool.query('CREATE EXTENSION IF NOT EXISTS pg_trgm');
-    console.log('Moderation + dedup migration completed');
   } catch (e) {
-    console.error('Error in moderation/dedup migration:', e);
+    console.error('pg_trgm extension migration failed; similarity checks will be skipped:', e.message);
   }
+  console.log('Moderation + dedup migration completed');
 }
-migrateModerationAndDedup().catch(console.error);
 
 // Verify that the supplied token is the discussion's admin token. Returns the
 // discussion id when valid, or null otherwise.
@@ -725,13 +795,8 @@ async function verifyAdmin(topic, token) {
 
 // First-come moderator claim: assigns a fresh admin token only if the
 // discussion has none yet. Returns the token, or null if already claimed.
-// discussions.topic has no unique constraint in this schema (the rest of the
-// app tolerates duplicate-topic rows), so we can't lean on ON CONFLICT. To keep
-// the first-come guarantee even for a brand-new topic — where two concurrent
-// claims could otherwise both see no row and both INSERT, producing duplicate
-// rows each with a valid token — we serialize claims for the same topic with a
-// transaction-scoped advisory lock. hashtext() maps the topic to the bigint the
-// lock API expects; the lock releases automatically on COMMIT/ROLLBACK.
+// The advisory lock serializes moderator claims for the same topic; the upsert
+// also keeps the claim race-safe against non-moderator topic creation paths.
 async function claimModerator(topic) {
   const token = crypto.randomBytes(16).toString('hex');
   const client = await pool.connect();
@@ -739,33 +804,18 @@ async function claimModerator(topic) {
     await client.query('BEGIN');
     await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [topic]);
 
-    const existing = await client.query('SELECT admin_token FROM discussions WHERE topic = $1', [topic]);
-
-    let result;
-    if (existing.rows.some(row => row.admin_token)) {
-      // Already claimed. Inspect every row for the topic, not just the first:
-      // duplicate-topic rows can exist (no unique constraint), so a later row
-      // holding a token must block a fresh claim even if rows[0] is unclaimed.
-      result = null;
-    } else if (existing.rows.length === 0) {
-      const inserted = await client.query(
-        'INSERT INTO discussions (topic, admin_token) VALUES ($1, $2) RETURNING admin_token',
-        [topic, token]
-      );
-      result = inserted.rows[0].admin_token;
-    } else {
-      // No row is claimed yet. Stamp the same token on all unclaimed rows for
-      // the topic so it resolves to a single moderator regardless of which
-      // duplicate row a later SELECT happens to read.
-      const updated = await client.query(
-        'UPDATE discussions SET admin_token = $1 WHERE topic = $2 AND admin_token IS NULL RETURNING admin_token',
-        [token, topic]
-      );
-      result = updated.rows.length > 0 ? updated.rows[0].admin_token : null;
-    }
+    const claim = await client.query(
+      `INSERT INTO discussions (topic, admin_token)
+       VALUES ($1, $2)
+       ON CONFLICT (topic) DO UPDATE
+       SET admin_token = COALESCE(discussions.admin_token, EXCLUDED.admin_token)
+       WHERE discussions.admin_token IS NULL
+       RETURNING admin_token`,
+      [topic, token]
+    );
 
     await client.query('COMMIT');
-    return result;
+    return claim.rows.length > 0 ? claim.rows[0].admin_token : null;
   } catch (e) {
     await client.query('ROLLBACK');
     throw e;
@@ -1118,11 +1168,21 @@ app.post('/api/duplicate-discussion', async (req, res) => {
 
     const originalDiscussionId = originalDiscussionResult.rows[0].id;
 
-    // Create new discussion
+    // Create new discussion. Duplicating into an existing topic would merge
+    // questions into that discussion, so treat the unique conflict as a user
+    // error instead.
     const newDiscussionResult = await client.query(
-      'INSERT INTO discussions (topic) VALUES ($1) RETURNING id',
+      `INSERT INTO discussions (topic)
+       VALUES ($1)
+       ON CONFLICT (topic) DO NOTHING
+       RETURNING id`,
       [newTopic]
     );
+
+    if (newDiscussionResult.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: 'Discussion topic already exists' });
+    }
 
     const newDiscussionId = newDiscussionResult.rows[0].id;
 
@@ -1169,6 +1229,8 @@ const PORT = process.env.PORT || 3001;
 // first, then run all migrations against the existing/just-created schema, then
 // start listening.
 initSchema()
+  .then(() => migrateModerationAndDedup())
+  .then(() => migrateUniqueDiscussionTopics())
   .then(() => Promise.all([migrateAddPseudonymColumn(), migrateResponseVotesTable()]))
   .then(() => {
     server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
