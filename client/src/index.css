@@ -3,5 +3,8 @@
 @import 'tailwindcss/utilities';
 
 body {
-    @apply bg-gray-100;
+    @apply bg-slate-100 text-slate-800 antialiased;
+    min-height: 100vh;
+    background-image: linear-gradient(to bottom, #f8fafc, #eef1f6);
+    background-attachment: fixed;
 }

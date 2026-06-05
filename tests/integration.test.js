@@ -1135,6 +1135,92 @@ test('Shuffling in one tab syncs the new handle to the same user\'s other tabs',
   }
 });
 
+test('a moderator can edit a question before anyone responds', async () => {
+  const topic = uniqueTopic('edit-question');
+  const mod = await connectSocket();
+
+  try {
+    mod.emit('joinDiscussion', topic);
+    const token = await claimModerator(mod, topic);
+
+    const added = waitForQuestions(mod, (qs) => qs.some((q) => q.text === 'Typoo?'), 'question added');
+    mod.emit('addQuestion', topic, { text: 'Typoo?', type: 'Agreement', minValue: null, maxValue: null, options: [] });
+    const question = (await added).find((q) => q.text === 'Typoo?');
+
+    // Edit both the wording and the type (to Numerical, so min/max are applied).
+    const editedUpdate = waitForQuestions(mod, (qs) => qs[0] && qs[0].text === 'Pick a budget', 'edit broadcast');
+    const ack = await emitWithAck(mod, 'editQuestion', topic, question.id,
+      { text: 'Pick a budget', type: 'Numerical', minValue: 0, maxValue: 10 }, token);
+    assert.equal(ack.updated, true);
+
+    const edited = (await editedUpdate)[0];
+    assert.equal(edited.text, 'Pick a budget');
+    assert.equal(edited.type, 'Numerical');
+    assert.equal(edited.minValue, 0);
+    assert.equal(edited.maxValue, 10);
+  } finally {
+    mod.disconnect();
+  }
+});
+
+test('editing a question is refused once it has responses', async () => {
+  const topic = uniqueTopic('edit-locked');
+  const mod = await connectSocket();
+  const participant = await connectSocket();
+
+  try {
+    mod.emit('joinDiscussion', topic);
+    participant.emit('joinDiscussion', topic);
+    const token = await claimModerator(mod, topic);
+
+    const added = waitForQuestions(mod, (qs) => qs.some((q) => q.text === 'Keep cars?'), 'question added');
+    mod.emit('addQuestion', topic, { text: 'Keep cars?', type: 'Agreement', minValue: null, maxValue: null, options: [] });
+    const question = (await added).find((q) => q.text === 'Keep cars?');
+
+    const voted = waitForQuestions(mod, (qs) => qs[0] && qs[0].votes.length === 1, 'vote recorded');
+    participant.emit('vote', topic, question.id, 'Agree', 'user-voter', 'Voter');
+    await voted;
+
+    const ack = await emitWithAck(mod, 'editQuestion', topic, question.id,
+      { text: 'Restrict cars?', type: 'Agreement' }, token);
+    assert.equal(ack.updated, false);
+    assert.equal(ack.reason, 'has_responses');
+
+    // The original wording must be untouched — the response was made against it.
+    const row = await pool.query('SELECT text FROM questions WHERE id = $1', [question.id]);
+    assert.equal(row.rows[0].text, 'Keep cars?');
+  } finally {
+    mod.disconnect();
+    participant.disconnect();
+  }
+});
+
+test('a non-moderator cannot edit a question', async () => {
+  const topic = uniqueTopic('edit-authz');
+  const mod = await connectSocket();
+  const stranger = await connectSocket();
+
+  try {
+    mod.emit('joinDiscussion', topic);
+    await claimModerator(mod, topic);
+
+    const added = waitForQuestions(mod, (qs) => qs.some((q) => q.text === 'Original?'), 'question added');
+    mod.emit('addQuestion', topic, { text: 'Original?', type: 'Agreement', minValue: null, maxValue: null, options: [] });
+    const question = (await added).find((q) => q.text === 'Original?');
+
+    const ack = await emitWithAck(stranger, 'editQuestion', topic, question.id,
+      { text: 'Hijacked?', type: 'Agreement' }, 'bogus-token');
+    assert.equal(ack.updated, false);
+    assert.equal(ack.reason, 'not_authorized');
+
+    const row = await pool.query('SELECT text FROM questions WHERE id = $1', [question.id]);
+    assert.equal(row.rows[0].text, 'Original?');
+  } finally {
+    mod.disconnect();
+    stranger.disconnect();
+  }
+});
+
 function claimModerator(socket, topic) {
   return withTimeout(
     new Promise((resolve, reject) => {
