@@ -6,7 +6,6 @@ const { Pool } = require('pg');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const bodyParser = require('body-parser');
 const cors = require('cors');
 
 const app = express();
@@ -178,6 +177,193 @@ function buildDeterministicSynthesis(writtenResponses) {
   };
 }
 
+function roundMetric(value, digits = 2) {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+  return Number(value.toFixed(digits));
+}
+
+function formatReportPercent(value) {
+  if (!Number.isFinite(value)) {
+    return '0%';
+  }
+  return `${Math.round(value * 100)}%`;
+}
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function summarizePrompt(question) {
+  return {
+    id: question.id,
+    text: question.text,
+    type: question.type,
+    responseCount: question.responseCount,
+  };
+}
+
+function buildFacilitatorDashboard(questionSummaries, participantStats) {
+  const participants = participantStats
+    .map(({
+      answeredQuestionIds,
+      pseudonym,
+      responseCount,
+      agreementResponseCount,
+      numericalResponseCount,
+      writtenResponseCount,
+    }) => ({
+      pseudonym,
+      responseCount,
+      agreementResponseCount,
+      numericalResponseCount,
+      writtenResponseCount,
+      answeredQuestionCount: answeredQuestionIds.size,
+    }))
+    .sort((a, b) => b.responseCount - a.responseCount || a.pseudonym.localeCompare(b.pseudonym))
+    .map((participant, index) => ({
+      ...participant,
+      id: `participant-${index + 1}`,
+    }));
+
+  const participantCount = participants.length;
+  const totalResponses = participants.reduce((sum, participant) => sum + participant.responseCount, 0);
+  const agreementPrompts = questionSummaries.filter(question => question.type === 'Agreement');
+  const numericalPrompts = questionSummaries.filter(question => question.type === 'Numerical');
+
+  const mostDivisiveStatements = agreementPrompts
+    .filter(question => question.decidedCount >= 2)
+    .map(question => ({
+      id: question.id,
+      text: question.text,
+      responseCount: question.responseCount,
+      agreeCount: question.agreeCount,
+      disagreeCount: question.disagreeCount,
+      unsureCount: question.unsureCount,
+      divisiveScore: roundMetric(question.divisiveScore),
+      leadingPosition: question.leadingPosition,
+    }))
+    .sort((a, b) => b.divisiveScore - a.divisiveScore || b.responseCount - a.responseCount)
+    .slice(0, 5);
+
+  const agreementTensions = agreementPrompts
+    .filter(question => question.decidedCount >= 2 && question.divisiveScore >= 0.35)
+    .map(question => ({
+      id: question.id,
+      type: 'Opinion split',
+      text: question.text,
+      severity: roundMetric(question.divisiveScore),
+      detail: `${question.agreeCount} agree / ${question.disagreeCount} disagree / ${question.unsureCount} unsure`,
+    }));
+
+  const numericalTensions = numericalPrompts
+    .filter(question => question.responseCount >= 2 && question.standardDeviation !== null)
+    .map(question => {
+      const range = Math.max(question.maxValue - question.minValue, 1);
+      const spreadScore = question.standardDeviation / range;
+      return {
+        id: question.id,
+        type: 'Numerical spread',
+        text: question.text,
+        severity: roundMetric(spreadScore),
+        detail: `Average ${roundMetric(question.average, 1)}, range ${roundMetric(question.minResponse, 1)}-${roundMetric(question.maxResponse, 1)}`,
+      };
+    })
+    .filter(item => item.severity >= 0.25);
+
+  const unresolvedTensions = [...agreementTensions, ...numericalTensions]
+    .sort((a, b) => b.severity - a.severity)
+    .slice(0, 6);
+
+  const unansweredPrompts = questionSummaries
+    .filter(question => question.responseCount === 0)
+    .map(summarizePrompt);
+
+  const underDiscussedPrompts = questionSummaries
+    .filter(question => question.responseCount > 0 && participantCount >= 3 && question.responseCount <= Math.max(1, Math.floor(participantCount * 0.35)))
+    .sort((a, b) => a.responseCount - b.responseCount)
+    .slice(0, 5)
+    .map(summarizePrompt);
+
+  const participationGaps = [];
+  if (participantCount === 0) {
+    participationGaps.push({
+      type: 'No responses yet',
+      severity: 'high',
+      detail: 'The discussion has prompts, but no participant has submitted a response.',
+    });
+  } else if (participantCount === 1) {
+    participationGaps.push({
+      type: 'Single voice',
+      severity: 'medium',
+      detail: 'Only one participant has responded so far.',
+    });
+  } else {
+    const topContributor = participants[0];
+    const nextContributor = participants[1];
+    const topShare = totalResponses > 0 ? topContributor.responseCount / totalResponses : 0;
+    if (topShare > 0.5 && topContributor.responseCount > nextContributor.responseCount) {
+      participationGaps.push({
+        type: 'Dominant contributor',
+        severity: topShare >= 0.7 ? 'high' : 'medium',
+        detail: `${topContributor.pseudonym} contributed ${formatReportPercent(topShare)} of all responses.`,
+      });
+    }
+
+    const leastActive = [...participants]
+      .sort((a, b) => a.responseCount - b.responseCount || a.pseudonym.localeCompare(b.pseudonym))
+      .slice(0, Math.min(3, participants.length));
+    const maxResponses = Math.max(...participants.map(participant => participant.responseCount));
+    if (maxResponses >= 3 && leastActive.some(participant => participant.responseCount <= Math.max(1, Math.floor(maxResponses * 0.33)))) {
+      participationGaps.push({
+        type: 'Uneven participation',
+        severity: 'medium',
+        detail: `Lowest visible contributors: ${leastActive.map(participant => `${participant.pseudonym} (${participant.responseCount})`).join(', ')}.`,
+      });
+    }
+  }
+
+  const writtenParticipants = participants.filter(participant => participant.writtenResponseCount > 0);
+  const hasWrittenPrompts = questionSummaries.some(question => question.type === 'Open Ended' || question.type === 'Brainstorm');
+  if (hasWrittenPrompts && participantCount > 0 && writtenParticipants.length < participantCount) {
+    participationGaps.push({
+      type: 'Written-response gap',
+      severity: 'medium',
+      detail: `${participantCount - writtenParticipants.length} of ${participantCount} visible participants have not added an open-ended or brainstorm response.`,
+    });
+  }
+
+  const recommendedNextActions = [];
+  if (unresolvedTensions.length > 0) {
+    recommendedNextActions.push(`Facilitate the top tension: "${unresolvedTensions[0].text}".`);
+  }
+  if (unansweredPrompts.length > 0) {
+    recommendedNextActions.push(`Invite responses to ${unansweredPrompts.length} unanswered ${unansweredPrompts.length === 1 ? 'prompt' : 'prompts'}.`);
+  }
+  if (participationGaps.length > 0) {
+    recommendedNextActions.push('Balance the room by inviting quieter visible participants to respond before closing.');
+  }
+  if (recommendedNextActions.length === 0) {
+    recommendedNextActions.push('Review the consensus and written synthesis, then close with owners and next steps.');
+  }
+
+  return {
+    unresolvedTensions,
+    mostDivisiveStatements,
+    unansweredPrompts,
+    underDiscussedPrompts,
+    participationGaps,
+    participantStats: participants.slice(0, 12),
+    recommendedNextActions,
+  };
+}
+
 async function buildLlmSynthesis(writtenResponses) {
   if (
     writtenResponses.length === 0 ||
@@ -237,14 +423,37 @@ async function buildLlmSynthesis(writtenResponses) {
 
 function buildSummary(discussion, questions, synthesis) {
   const participantIds = new Set();
+  const participantMap = new Map();
   const typeCounts = {};
   let totalResponses = 0;
 
   const questionSummaries = questions.map((question) => {
     const votes = question.votes || [];
     votes.forEach((vote) => {
-      if (vote.userId) {
-        participantIds.add(vote.userId);
+      const participantKey = vote.userId || vote.pseudonym || `anonymous-${vote.id}`;
+      if (participantKey) {
+        participantIds.add(participantKey);
+        if (!participantMap.has(participantKey)) {
+          participantMap.set(participantKey, {
+            id: participantKey,
+            pseudonym: vote.pseudonym || 'Anonymous',
+            responseCount: 0,
+            answeredQuestionIds: new Set(),
+            agreementResponseCount: 0,
+            numericalResponseCount: 0,
+            writtenResponseCount: 0,
+          });
+        }
+        const participant = participantMap.get(participantKey);
+        participant.responseCount += 1;
+        participant.answeredQuestionIds.add(question.id);
+        if (question.type === 'Agreement') {
+          participant.agreementResponseCount += 1;
+        } else if (question.type === 'Numerical') {
+          participant.numericalResponseCount += 1;
+        } else if (question.type === 'Open Ended' || question.type === 'Brainstorm') {
+          participant.writtenResponseCount += 1;
+        }
       }
     });
     totalResponses += votes.length;
@@ -322,6 +531,7 @@ function buildSummary(discussion, questions, synthesis) {
   const topDivisive = [...agreementSummaries]
     .sort((a, b) => b.divisiveScore - a.divisiveScore || b.responseCount - a.responseCount)
     .slice(0, 5);
+  const facilitatorDashboard = buildFacilitatorDashboard(questionSummaries, [...participantMap.values()]);
 
   return {
     discussion: {
@@ -338,9 +548,134 @@ function buildSummary(discussion, questions, synthesis) {
     },
     topConsensus,
     topDivisive,
+    facilitatorDashboard,
     synthesis,
     questions: questionSummaries,
   };
+}
+
+function renderReportHtml(summary) {
+  const dashboard = summary.facilitatorDashboard || {};
+  const synthesis = summary.synthesis;
+  const synthesisText = synthesis?.mode === 'llm'
+    ? synthesis.synthesis
+    : synthesis?.text;
+  const generatedAt = new Date().toLocaleString();
+
+  const renderList = (items, emptyText, renderItem) => {
+    if (!Array.isArray(items) || items.length === 0) {
+      return `<p class="muted">${escapeHtml(emptyText)}</p>`;
+    }
+    return `<ul>${items.map(renderItem).join('')}</ul>`;
+  };
+
+  const questionRows = summary.questions.map(question => {
+    const label = question.label ? `<span class="pill">${escapeHtml(question.label)}</span>` : '';
+    const metric = question.type === 'Agreement'
+      ? `${question.agreeCount || 0} agree / ${question.disagreeCount || 0} disagree / ${question.unsureCount || 0} unsure`
+      : question.type === 'Numerical'
+        ? `Avg ${question.average === null ? '-' : roundMetric(question.average, 1)} | Low ${question.minResponse ?? '-'} | High ${question.maxResponse ?? '-'}`
+        : `${question.responseCount} written ${question.responseCount === 1 ? 'response' : 'responses'}`;
+    return `
+      <tr>
+        <td>${escapeHtml(question.text)} ${label}</td>
+        <td>${escapeHtml(question.type)}</td>
+        <td>${question.responseCount}</td>
+        <td>${escapeHtml(metric)}</td>
+      </tr>`;
+  }).join('');
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${escapeHtml(summary.discussion.topic)} Report</title>
+  <style>
+    :root { color: #111827; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    body { margin: 0; background: #f3f4f6; }
+    main { max-width: 1040px; margin: 0 auto; padding: 48px 24px; }
+    header { margin-bottom: 28px; }
+    h1 { font-size: 36px; line-height: 1.1; margin: 0 0 8px; }
+    h2 { font-size: 20px; margin: 0 0 14px; }
+    h3 { font-size: 15px; margin: 0 0 6px; }
+    p, li, td, th { font-size: 14px; line-height: 1.5; }
+    section { background: #ffffff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 22px; margin: 18px 0; }
+    .muted { color: #6b7280; }
+    .grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+    .metric { border: 1px solid #e5e7eb; border-radius: 8px; padding: 14px; }
+    .metric strong { display: block; font-size: 26px; margin-top: 4px; }
+    .split { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+    ul { padding-left: 20px; margin: 0; }
+    li { margin-bottom: 10px; }
+    table { width: 100%; border-collapse: collapse; }
+    th { text-align: left; color: #4b5563; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+    th, td { border-bottom: 1px solid #e5e7eb; padding: 10px 8px; vertical-align: top; }
+    .pill { display: inline-block; color: #374151; background: #f3f4f6; border-radius: 999px; font-size: 11px; padding: 2px 7px; margin-left: 6px; }
+    @media print { body { background: #fff; } main { padding: 0; } section { break-inside: avoid; } }
+    @media (max-width: 760px) { .grid, .split { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <p class="muted">Convora final report | Generated ${escapeHtml(generatedAt)}</p>
+      <h1>${escapeHtml(summary.discussion.topic)}</h1>
+      <p class="muted">Created ${escapeHtml(new Date(summary.discussion.createdAt).toLocaleString())}</p>
+    </header>
+
+    <section>
+      <h2>Snapshot</h2>
+      <div class="grid">
+        <div class="metric">Questions<strong>${summary.counts.questions}</strong></div>
+        <div class="metric">Responses<strong>${summary.counts.responses}</strong></div>
+        <div class="metric">Participants<strong>${summary.counts.participants}</strong></div>
+        <div class="metric">Unanswered<strong>${dashboard.unansweredPrompts?.length || 0}</strong></div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Facilitator Brief</h2>
+      ${renderList(dashboard.recommendedNextActions, 'No recommended actions.', item => `<li>${escapeHtml(item)}</li>`)}
+    </section>
+
+    <section class="split">
+      <div>
+        <h2>Unresolved Tensions</h2>
+        ${renderList(dashboard.unresolvedTensions, 'No major unresolved tensions detected.', item => `<li><strong>${escapeHtml(item.text)}</strong><br><span class="muted">${escapeHtml(item.type)} | ${escapeHtml(item.detail)}</span></li>`)}
+      </div>
+      <div>
+        <h2>Participation Gaps</h2>
+        ${renderList(dashboard.participationGaps, 'No obvious participation gaps detected.', item => `<li><strong>${escapeHtml(item.type)}</strong><br><span class="muted">${escapeHtml(item.detail)}</span></li>`)}
+      </div>
+    </section>
+
+    <section class="split">
+      <div>
+        <h2>Most Divisive Statements</h2>
+        ${renderList(dashboard.mostDivisiveStatements, 'No divisive agreement statements yet.', item => `<li><strong>${escapeHtml(formatReportPercent(item.divisiveScore))}</strong> split | ${escapeHtml(item.text)}<br><span class="muted">${item.agreeCount} agree / ${item.disagreeCount} disagree / ${item.unsureCount} unsure</span></li>`)}
+      </div>
+      <div>
+        <h2>Unanswered Prompts</h2>
+        ${renderList(dashboard.unansweredPrompts, 'Every prompt has at least one response.', item => `<li>${escapeHtml(item.text)} <span class="muted">(${escapeHtml(item.type)})</span></li>`)}
+      </div>
+    </section>
+
+    <section>
+      <h2>Written Response Synthesis</h2>
+      <p>${escapeHtml(synthesisText || 'No open-ended responses yet.')}</p>
+    </section>
+
+    <section>
+      <h2>Prompt Details</h2>
+      <table>
+        <thead><tr><th>Prompt</th><th>Type</th><th>Responses</th><th>Signal</th></tr></thead>
+        <tbody>${questionRows}</tbody>
+      </table>
+    </section>
+  </main>
+</body>
+</html>`;
 }
 
 async function getDiscussionBySlug(slug) {
@@ -352,7 +687,7 @@ async function getDiscussionBySlug(slug) {
   return result.rows[0] || null;
 }
 
-app.use(bodyParser.json());
+app.use(express.json());
 app.use(express.static(path.join(__dirname, 'dist')));
 
 // Emit the number of clients currently in a discussion room to everyone there.
@@ -418,15 +753,23 @@ io.on('connection', (socket) => {
     emitPresence(roomToLeave);
   });
 
-  socket.on('addQuestion', async (topic, question, force) => {
+  socket.on('addQuestion', async (topic, question, force, ack) => {
     const discussionSlug = slugifyTopic(topic);
     console.log('Received addQuestion event');
     console.log('topic:', discussionSlug);
     console.log('question:', question);
 
+    // Report the outcome back to the submitter so the client only clears its
+    // draft once the question is actually added — not when it's bounced as a
+    // near-duplicate or fails.
+    const reply = (result) => {
+      if (typeof ack === 'function') ack(result);
+    };
+
     try {
       if (await isDiscussionLocked(discussionSlug)) {
         socket.emit('error', { message: 'This discussion is locked.' });
+        reply({ added: false, reason: 'locked' });
         return;
       }
 
@@ -436,6 +779,7 @@ io.on('connection', (socket) => {
         const similar = await findSimilarQuestion(discussionSlug, question.text);
         if (similar) {
           socket.emit('similarQuestion', { candidate: similar, question });
+          reply({ added: false, reason: 'similar' });
           return;
         }
       }
@@ -446,9 +790,11 @@ io.on('connection', (socket) => {
       console.log('Retrieved updated questions:', updatedQuestions);
       io.to(discussionSlug).emit('discussion', await getDiscussionBySlug(discussionSlug));
       io.to(discussionSlug).emit('questions', updatedQuestions);
+      reply({ added: true });
     } catch (error) {
       console.error('Error adding question:', error);
       socket.emit('error', { message: 'Failed to add question' });
+      reply({ added: false, reason: 'error' });
     }
   });
 
@@ -991,8 +1337,8 @@ async function addVote(questionId, vote, userId, pseudonym) {
 
     if (questionType === 'Brainstorm') {
       await client.query(
-        'INSERT INTO votes (question_id, user_id, value) VALUES ($1, $2, $3)',
-        [questionId, userId, vote]
+        'INSERT INTO votes (question_id, user_id, value, pseudonym) VALUES ($1, $2, $3, $4)',
+        [questionId, userId, vote, pseudonym]
       );
       await client.query('COMMIT');
       console.log('Brainstorm idea added successfully');
@@ -1014,7 +1360,10 @@ async function addVote(questionId, vote, userId, pseudonym) {
           'UPDATE votes SET value = $1, pseudonym = $2 WHERE id = $3',
           [JSON.stringify(vote), pseudonym, existingVote.id]
         );
-      } else if (existingVote.value === vote) {
+      } else if (existingVote.value === vote && questionType === 'Agreement') {
+        // Agreement votes toggle: re-selecting your current option undoes it.
+        // This must stay scoped to Agreement — for Open Ended, re-submitting the
+        // same text means "keep it", not "delete it".
         console.log('Voting for a option they already voted for');
         await client.query(
           'DELETE FROM votes WHERE id = $1',
@@ -1188,6 +1537,23 @@ app.get('/api/discussions/:topic/export.json', async (req, res) => {
   }
 });
 
+app.get('/api/discussions/:topic/report.html', async (req, res) => {
+  try {
+    const summary = await getDiscussionSummary(req.params.topic);
+
+    if (!summary) {
+      return res.status(404).json({ error: 'Discussion not found' });
+    }
+
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${sanitizeFilename(req.params.topic)}-final-report.html"`);
+    res.send(renderReportHtml(summary));
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 app.get('/api/discussions/:topic/export.csv', async (req, res) => {
   try {
     const discussion = await getDiscussionBySlug(req.params.topic);
@@ -1315,7 +1681,7 @@ app.post('/api/duplicate-discussion', async (req, res) => {
 });
 
 // Catch-all route
-app.get('*', (req, res) => {
+app.get(/.*/, (req, res) => {
   res.sendFile(path.join(__dirname, 'dist', 'index.html'));
 });
 
