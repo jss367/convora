@@ -338,8 +338,19 @@ function analyzeClusters(questions) {
   }
 
   if (!best) {
-    const { assignments } = kmeans(matrix, 2, rng);
-    best = { k: 2, assignments, score: silhouette(matrix, assignments, 2) };
+    // No candidate k >= 2 produced distinct groups: every participant votes
+    // essentially alike. Report a single consensus group rather than
+    // fabricating a second, empty one (which would leave the UI claiming "2
+    // opinion groups" with an empty Group B).
+    return buildClusterReport(
+      statements,
+      participants,
+      matrix,
+      voted,
+      new Array(participants.length).fill(0),
+      1,
+      null
+    );
   }
 
   return buildClusterReport(statements, participants, matrix, voted, best.assignments, best.k, best.score);

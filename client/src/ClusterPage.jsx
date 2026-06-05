@@ -184,35 +184,45 @@ const ClusterPage = () => {
 
             {!loading && !error && data && data.eligible && (
                 <>
-                    <p className="text-gray-700 mb-6">
-                        {data.participantCount} participants split into{' '}
-                        <span className="font-semibold">{data.k} opinion groups</span> based on how they
-                        voted across {data.statementCount} agreement statements. Groups are found
-                        automatically and updated as votes come in.
-                    </p>
+                    {data.k === 1 ? (
+                        <p className="text-gray-700 mb-6">
+                            All {data.participantCount} participants fall into a single group — they
+                            voted alike across {data.statementCount} agreement statements, so there
+                            are no distinct opinion camps yet. This usually means broad consensus.
+                        </p>
+                    ) : (
+                        <p className="text-gray-700 mb-6">
+                            {data.participantCount} participants split into{' '}
+                            <span className="font-semibold">{data.k} opinion groups</span> based on how
+                            they voted across {data.statementCount} agreement statements. Groups are
+                            found automatically and updated as votes come in.
+                        </p>
+                    )}
 
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
+                    <div className={`grid grid-cols-1 ${data.k > 1 ? 'md:grid-cols-2' : ''} gap-6 mb-8`}>
                         {data.clusters.map(cluster => (
                             <GroupCard key={cluster.id} cluster={cluster} />
                         ))}
                     </div>
 
-                    <div className="grid grid-cols-1 gap-6">
-                        <StatementList
-                            title="Common Ground"
-                            subtitle="Statements every group leans the same way on — the shared starting points."
-                            items={data.bridging}
-                            clusters={data.clusters}
-                            emptyText="No statements yet where all groups agree."
-                        />
-                        <StatementList
-                            title="Most Divisive"
-                            subtitle="Statements where the groups disagree most sharply."
-                            items={data.divisive}
-                            clusters={data.clusters}
-                            emptyText="Not enough votes to find divisive statements."
-                        />
-                    </div>
+                    {data.k > 1 && (
+                        <div className="grid grid-cols-1 gap-6">
+                            <StatementList
+                                title="Common Ground"
+                                subtitle="Statements every group leans the same way on — the shared starting points."
+                                items={data.bridging}
+                                clusters={data.clusters}
+                                emptyText="No statements yet where all groups agree."
+                            />
+                            <StatementList
+                                title="Most Divisive"
+                                subtitle="Statements where the groups disagree most sharply."
+                                items={data.divisive}
+                                clusters={data.clusters}
+                                emptyText="Not enough votes to find divisive statements."
+                            />
+                        </div>
+                    )}
                 </>
             )}
         </div>
