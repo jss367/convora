@@ -292,6 +292,22 @@ test('client pure-JS SHA-256 fallback matches the server ownership-token hash', 
   }
 });
 
+test('participant handle formula matches between client and server', async () => {
+  // The moderator panel hides promote/remove on the viewer's own row by matching
+  // the server's opaque handle: "participant-" + first 16 hex of sha256(userId).
+  // The client computes it from the same sha256Hex this asserts against the
+  // server hash, so they must agree — otherwise the self row fails open to
+  // showing its own controls again. (identity.js can't be imported directly here
+  // because of its extensionless ./sha256 import, so we re-derive the formula.)
+  const { sha256Hex } = await import('../client/src/sha256.js');
+  const ids = ['user-1', 'guest-user-1', 'Z9f3a2b1c0d4e5f6', 'a'.repeat(80)];
+  for (const id of ids) {
+    const client = `participant-${sha256Hex(new TextEncoder().encode(String(id))).slice(0, 16)}`;
+    const server = `participant-${crypto.createHash('sha256').update(String(id)).digest('hex').slice(0, 16)}`;
+    assert.equal(client, server, `participant handle mismatch for ${JSON.stringify(id)}`);
+  }
+});
+
 test('Socket.IO ownership tokens hide stable ids and differ per response', async () => {
   const topic = uniqueTopic('tokens');
   const author = await connectSocket();

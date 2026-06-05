@@ -10,6 +10,7 @@ import {
     setCustomName,
     getDisplayName,
     ownerToken,
+    participantHandle,
     NameModes,
     MAX_CUSTOM_NAME_LENGTH,
 } from './identity';
@@ -122,6 +123,9 @@ const DiscussionPage = () => {
     const [showParticipants, setShowParticipants] = useState(false);
     // Whether this viewer is the creator (only the creator may remove moderators).
     const [canDemote, setCanDemote] = useState(false);
+    // This browser's own participant handle, so we can hide promote/remove on our
+    // own row (acting on yourself tangles the creator's admin_token with a grant).
+    const [selfHandle, setSelfHandle] = useState(null);
     const [showJoinQr, setShowJoinQr] = useState(false);
     // This user's own brainstorm ratings/reactions, kept separately from the
     // (aggregate-only, unattributable) broadcast so we can highlight their
@@ -194,6 +198,20 @@ const DiscussionPage = () => {
     // (derived from the chosen mode: pseudonym, anonymous, or a typed-in name).
     const userId = identity?.userId || null;
     const displayName = identity ? getDisplayName(identity) : '';
+
+    // Compute our own participant handle so the moderator panel can hide the
+    // promote/remove controls on our own row.
+    useEffect(() => {
+        if (!userId) {
+            setSelfHandle(null);
+            return undefined;
+        }
+        let cancelled = false;
+        participantHandle(userId).then((handle) => {
+            if (!cancelled) setSelfHandle(handle);
+        });
+        return () => { cancelled = true; };
+    }, [userId]);
 
     // The server no longer broadcasts raw user ids — each vote carries a
     // per-response ownership token (sha256(voteId + ':' + userId)) instead, so
@@ -1174,8 +1192,22 @@ const DiscussionPage = () => {
                         <ul className="divide-y divide-gray-100">
                             {participants.map((participant) => (
                                 <li key={participant.id} className="flex items-center justify-between py-2">
-                                    <span className="text-gray-800">{participant.pseudonym}</span>
-                                    {participant.isModerator ? (
+                                    <span className="text-gray-800">
+                                        {participant.pseudonym}
+                                        {participant.id === selfHandle && (
+                                            <span className="text-gray-400"> (you)</span>
+                                        )}
+                                    </span>
+                                    {/* Never offer promote/remove on your own row: self-promote or
+                                        self-remove tangles the creator's admin_token with a per-user
+                                        grant. Show only the Moderator badge if applicable. */}
+                                    {participant.id === selfHandle ? (
+                                        participant.isModerator ? (
+                                            <span className="text-xs font-medium text-indigo-700 bg-indigo-50 px-2 py-1 rounded">
+                                                Moderator
+                                            </span>
+                                        ) : null
+                                    ) : participant.isModerator ? (
                                         <div className="flex items-center gap-2">
                                             <span className="text-xs font-medium text-indigo-700 bg-indigo-50 px-2 py-1 rounded">
                                                 Moderator
