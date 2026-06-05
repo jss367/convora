@@ -1,0 +1,39 @@
+# Render Blueprint for Convora — https://render.com/docs/blueprint-spec
+#
+# Creates one always-on web service (Node) plus a managed Postgres database.
+# The web service builds the React client and serves it alongside the API and
+# the Socket.IO WebSocket server, all on the same origin.
+#
+# NOTE ON PLANS: the `plan:` values below are the always-on, paid tiers
+# (recommended for a live WebSocket app — the free tiers sleep and the free
+# database expires). Confirm current names/prices at https://render.com/pricing
+# and adjust if needed. To just try it out, you can switch these to `free`.
+
+databases:
+  - name: convora-db
+    databaseName: convora
+    user: convora
+    plan: basic-256mb
+    region: oregon
+
+services:
+  - type: web
+    name: convora
+    runtime: node
+    plan: starter
+    region: oregon          # must match the database region for private networking
+    branch: main
+    autoDeploy: true        # redeploy on every push to `main`
+    buildCommand: npm install && npm run build
+    startCommand: node server.js
+    healthCheckPath: /
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: convora-db
+          property: connectionString
+      # CLIENT_URL is intentionally unset: the client connects same-origin, so
+      # CORS never applies. Set it only if you serve the frontend from a
+      # different origin (e.g. a custom domain you want to lock CORS down to).
