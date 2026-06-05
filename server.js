@@ -58,6 +58,253 @@ function parseOptions(options) {
   return [String(options)];
 }
 
+const AGREEMENT_OPTIONS = [
+  'Strongly Disagree',
+  'Disagree',
+  'Unsure',
+  'Agree',
+  'Strongly Agree',
+];
+
+function sanitizeFilename(value) {
+  return String(value || 'discussion')
+    .replace(/[^a-z0-9-_]+/gi, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 80) || 'discussion';
+}
+
+function escapeCsv(value) {
+  if (value === null || value === undefined) {
+    return '';
+  }
+  const stringValue = Array.isArray(value) ? JSON.stringify(value) : String(value);
+  return `"${stringValue.replace(/"/g, '""')}"`;
+}
+
+function parseStoredVoteValue(value) {
+  if (typeof value !== 'string') {
+    return value;
+  }
+  try {
+    return JSON.parse(value);
+  } catch (e) {
+    return value;
+  }
+}
+
+function getQuestionRange(question) {
+  const min = Number.parseInt(question.min_value, 10);
+  const max = Number.parseInt(question.max_value, 10);
+  return {
+    minValue: Number.isNaN(min) ? 0 : min,
+    maxValue: Number.isNaN(max) ? 100 : max,
+  };
+}
+
+function buildDeterministicSynthesis(writtenResponses) {
+  if (writtenResponses.length === 0) {
+    return null;
+  }
+
+  const byQuestion = writtenResponses.reduce((acc, response) => {
+    if (!acc.has(response.questionText)) {
+      acc.set(response.questionText, []);
+    }
+    acc.get(response.questionText).push(response.value);
+    return acc;
+  }, new Map());
+
+  const longestResponses = [...writtenResponses]
+    .sort((a, b) => b.value.length - a.value.length)
+    .slice(0, 3)
+    .map(response => ({
+      question: response.questionText,
+      excerpt: response.value.length > 180 ? `${response.value.slice(0, 177)}...` : response.value,
+    }));
+
+  return {
+    mode: 'deterministic',
+    text: `${writtenResponses.length} written ${writtenResponses.length === 1 ? 'response' : 'responses'} across ${byQuestion.size} ${byQuestion.size === 1 ? 'prompt' : 'prompts'}.`,
+    highlights: [...byQuestion.entries()].map(([question, responses]) => ({
+      question,
+      responseCount: responses.length,
+    })),
+    excerpts: longestResponses,
+  };
+}
+
+async function buildLlmSynthesis(writtenResponses) {
+  if (
+    writtenResponses.length === 0 ||
+    process.env.ENABLE_LLM_SYNTHESIS !== 'true' ||
+    !process.env.OPENAI_API_KEY
+  ) {
+    return null;
+  }
+
+  const payload = writtenResponses.slice(0, 80).map(response => ({
+    question: response.questionText,
+    response: response.value,
+  }));
+
+  const response = await fetch('https://api.openai.com/v1/responses', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model: process.env.OPENAI_MODEL || 'gpt-4.1-mini',
+      input: [
+        {
+          role: 'system',
+          content: 'Summarize open-ended discussion responses for a read-only post-discussion report. Be concise, neutral, and preserve unresolved tensions.',
+        },
+        {
+          role: 'user',
+          content: `Return JSON with keys synthesis, commonThemes, unresolvedQuestions, and notableDivergences. Responses: ${JSON.stringify(payload)}`,
+        },
+      ],
+      text: {
+        format: {
+          type: 'json_object',
+        },
+      },
+    }),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`LLM synthesis failed: ${response.status} ${errorText}`);
+  }
+
+  const data = await response.json();
+  const outputText = data.output_text;
+  if (!outputText) {
+    return null;
+  }
+
+  return {
+    mode: 'llm',
+    ...JSON.parse(outputText),
+  };
+}
+
+function buildSummary(discussion, questions, synthesis) {
+  const participantIds = new Set();
+  const typeCounts = {};
+  let totalResponses = 0;
+
+  const questionSummaries = questions.map((question) => {
+    const votes = question.votes || [];
+    votes.forEach((vote) => {
+      if (vote.userId) {
+        participantIds.add(vote.userId);
+      }
+    });
+    totalResponses += votes.length;
+    typeCounts[question.type] = (typeCounts[question.type] || 0) + 1;
+
+    const base = {
+      id: question.id,
+      text: question.text,
+      type: question.type,
+      createdAt: question.created_at,
+      responseCount: votes.length,
+    };
+
+    if (question.type === 'Agreement') {
+      const optionCounts = AGREEMENT_OPTIONS.reduce((acc, option) => {
+        acc[option] = votes.filter(vote => vote.value === option).length;
+        return acc;
+      }, {});
+      const agreeCount = optionCounts.Agree + optionCounts['Strongly Agree'];
+      const disagreeCount = optionCounts.Disagree + optionCounts['Strongly Disagree'];
+      const decidedCount = agreeCount + disagreeCount;
+      const consensusScore = decidedCount > 0 ? Math.max(agreeCount, disagreeCount) / decidedCount : 0;
+      const divisiveScore = decidedCount > 0 ? Math.min(agreeCount, disagreeCount) / decidedCount : 0;
+
+      return {
+        ...base,
+        optionCounts,
+        agreeCount,
+        disagreeCount,
+        unsureCount: optionCounts.Unsure,
+        decidedCount,
+        consensusScore,
+        divisiveScore,
+        label: decidedCount < 2 ? 'Not enough votes' : divisiveScore >= 0.4 ? 'Divisive' : consensusScore >= 0.85 ? 'Consensus' : 'Mixed',
+        leadingPosition: agreeCount === disagreeCount ? 'Split' : agreeCount > disagreeCount ? 'Agree' : 'Disagree',
+      };
+    }
+
+    if (question.type === 'Numerical') {
+      const values = votes
+        .map(vote => Number.parseFloat(vote.value))
+        .filter(value => !Number.isNaN(value));
+      const average = values.length > 0 ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
+      const variance = values.length > 0
+        ? values.reduce((sum, value) => sum + ((value - average) ** 2), 0) / values.length
+        : null;
+      const { minValue, maxValue } = getQuestionRange(question);
+
+      return {
+        ...base,
+        minValue,
+        maxValue,
+        average,
+        minResponse: values.length > 0 ? Math.min(...values) : null,
+        maxResponse: values.length > 0 ? Math.max(...values) : null,
+        standardDeviation: variance === null ? null : Math.sqrt(variance),
+      };
+    }
+
+    return {
+      ...base,
+      responses: votes.map(vote => ({
+        id: vote.id,
+        pseudonym: vote.pseudonym || 'Anonymous',
+        value: parseStoredVoteValue(vote.value),
+        createdAt: vote.created_at,
+      })),
+    };
+  });
+
+  const agreementSummaries = questionSummaries.filter(summary => summary.type === 'Agreement' && summary.decidedCount >= 2);
+  const topConsensus = [...agreementSummaries]
+    .sort((a, b) => b.consensusScore - a.consensusScore || b.responseCount - a.responseCount)
+    .slice(0, 5);
+  const topDivisive = [...agreementSummaries]
+    .sort((a, b) => b.divisiveScore - a.divisiveScore || b.responseCount - a.responseCount)
+    .slice(0, 5);
+
+  return {
+    discussion: {
+      id: discussion.id,
+      topic: discussion.topic,
+      createdAt: discussion.created_at,
+    },
+    counts: {
+      questions: questions.length,
+      responses: totalResponses,
+      participants: participantIds.size,
+      byType: typeCounts,
+    },
+    topConsensus,
+    topDivisive,
+    synthesis,
+    questions: questionSummaries,
+  };
+}
+
+async function getDiscussionByTopic(topic) {
+  const result = await pool.query(
+    'SELECT id, topic, created_at FROM discussions WHERE topic = $1 ORDER BY id DESC LIMIT 1',
+    [topic]
+  );
+  return result.rows[0] || null;
+}
+
 app.use(bodyParser.json());
 app.use(express.static(path.join(__dirname, 'dist')));
 
@@ -168,12 +415,14 @@ async function getQuestions(topic) {
       q.min_value, 
       q.max_value, 
       q.options,
+      q.created_at,
       COALESCE(json_agg(
         json_build_object(
           'id', v.id,
           'value', v.value,
           'userId', v.user_id,
-          'pseudonym', v.pseudonym
+          'pseudonym', v.pseudonym,
+          'created_at', v.created_at
         ) ORDER BY v.id
       ) FILTER (WHERE v.id IS NOT NULL), '[]'::json) as votes
     FROM questions q
@@ -187,6 +436,8 @@ async function getQuestions(topic) {
   const result = await pool.query(query, [topic]);
   return result.rows.map(row => ({
     ...row,
+    minValue: row.min_value,
+    maxValue: row.max_value,
     options: parseOptions(row.options)
   }));
 }
@@ -336,6 +587,150 @@ app.get('/api/discussions', async (req, res) => {
       'SELECT id, topic, created_at FROM discussions ORDER BY created_at DESC'
     );
     res.json(result.rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+async function getDiscussionSummary(topic, options = {}) {
+  const discussion = await getDiscussionByTopic(topic);
+  if (!discussion) {
+    return null;
+  }
+
+  const questions = await getQuestions(topic);
+  const writtenResponses = questions
+    .filter(question => question.type === 'Open Ended' || question.type === 'Brainstorm')
+    .flatMap(question => (question.votes || [])
+      .map(vote => ({
+        questionId: question.id,
+        questionText: question.text,
+        questionType: question.type,
+        pseudonym: vote.pseudonym || 'Anonymous',
+        value: String(parseStoredVoteValue(vote.value) || '').trim(),
+      }))
+      .filter(response => response.value !== ''));
+
+  let synthesis = buildDeterministicSynthesis(writtenResponses);
+  if (options.llm) {
+    if (
+      writtenResponses.length > 0 &&
+      (process.env.ENABLE_LLM_SYNTHESIS !== 'true' || !process.env.OPENAI_API_KEY)
+    ) {
+      synthesis = {
+        ...synthesis,
+        llmError: 'LLM synthesis is not configured, so the deterministic summary is shown.',
+      };
+    } else {
+      try {
+        const llmSynthesis = await buildLlmSynthesis(writtenResponses);
+        if (llmSynthesis) {
+          synthesis = llmSynthesis;
+        }
+      } catch (error) {
+        console.error('Error generating LLM synthesis:', error);
+        synthesis = {
+          ...synthesis,
+          llmError: 'LLM synthesis was unavailable, so the deterministic summary is shown.',
+        };
+      }
+    }
+  }
+
+  return buildSummary(discussion, questions, synthesis);
+}
+
+app.get('/api/discussions/:topic/summary', async (req, res) => {
+  try {
+    const summary = await getDiscussionSummary(req.params.topic, {
+      llm: req.query.synthesis === 'llm',
+    });
+
+    if (!summary) {
+      return res.status(404).json({ error: 'Discussion not found' });
+    }
+
+    res.json(summary);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.get('/api/discussions/:topic/export.json', async (req, res) => {
+  try {
+    const summary = await getDiscussionSummary(req.params.topic);
+
+    if (!summary) {
+      return res.status(404).json({ error: 'Discussion not found' });
+    }
+
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Content-Disposition', `attachment; filename="${sanitizeFilename(req.params.topic)}-summary.json"`);
+    res.send(JSON.stringify(summary, null, 2));
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.get('/api/discussions/:topic/export.csv', async (req, res) => {
+  try {
+    const discussion = await getDiscussionByTopic(req.params.topic);
+    if (!discussion) {
+      return res.status(404).json({ error: 'Discussion not found' });
+    }
+
+    const questions = await getQuestions(req.params.topic);
+    const headers = [
+      'discussion_topic',
+      'question_id',
+      'question_text',
+      'question_type',
+      'question_created_at',
+      'response_id',
+      'respondent',
+      'response_value',
+      'response_created_at',
+    ];
+    const rows = questions.flatMap(question => {
+      const votes = question.votes || [];
+      if (votes.length === 0) {
+        return [[
+          discussion.topic,
+          question.id,
+          question.text,
+          question.type,
+          question.created_at,
+          '',
+          '',
+          '',
+          '',
+        ]];
+      }
+
+      return votes.map(vote => [
+        discussion.topic,
+        question.id,
+        question.text,
+        question.type,
+        question.created_at,
+        vote.id,
+        vote.pseudonym || 'Anonymous',
+        parseStoredVoteValue(vote.value),
+        vote.created_at,
+      ]);
+    });
+
+    const csv = [
+      headers.map(escapeCsv).join(','),
+      ...rows.map(row => row.map(escapeCsv).join(',')),
+    ].join('\n');
+
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${sanitizeFilename(req.params.topic)}-responses.csv"`);
+    res.send(csv);
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Server error' });

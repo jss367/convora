@@ -2,6 +2,7 @@ import React from 'react';
 import { Link, Route, BrowserRouter as Router, Routes } from 'react-router-dom';
 import DiscussionPage from './DiscussionPage';
 import HomePage from './HomePage';
+import SummaryPage from './SummaryPage';
 
 const App = () => {
     return (
@@ -16,6 +17,7 @@ const App = () => {
                     <Routes>
                         <Route path="/" element={<HomePage />} />
                         <Route path="/discussion/:topic" element={<DiscussionPage />} />
+                        <Route path="/discussion/:topic/summary" element={<SummaryPage />} />
                     </Routes>
                 </main>
             </div>

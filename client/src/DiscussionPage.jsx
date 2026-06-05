@@ -1,6 +1,6 @@
 import PropTypes from 'prop-types';
 import React, { useCallback, useEffect, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import io from 'socket.io-client';
 import { getIdentity, regeneratePseudonym } from './identity';
 
@@ -221,7 +221,7 @@ const DiscussionPage = () => {
     const sortQuestions = (questions) => {
         switch (sortOption) {
             case SortOptions.MOST_RECENT:
-                return [...questions].sort((a, b) => b.timestamp - a.timestamp);
+                return [...questions].sort((a, b) => getQuestionSortTime(b) - getQuestionSortTime(a));
             case SortOptions.MOST_AGREEMENT:
                 return [...questions].sort((a, b) => getAgreementCount(b) - getAgreementCount(a));
             case SortOptions.MOST_DISAGREEMENT:
@@ -245,6 +245,14 @@ const DiscussionPage = () => {
         const agreementCount = getAgreementCount(question);
         const disagreementCount = getDisagreementCount(question);
         return Math.min(agreementCount, disagreementCount);
+    };
+
+    const getQuestionSortTime = (question) => {
+        if (question.timestamp) {
+            return question.timestamp;
+        }
+        const createdAt = Date.parse(question.created_at);
+        return Number.isNaN(createdAt) ? 0 : createdAt;
     };
 
     const filterQuestions = (questions) => {
@@ -358,13 +366,32 @@ const DiscussionPage = () => {
                 </button>
             </div>
 
-            {/* Duplicate Discussion Button */}
-            <button
-                onClick={() => setShowDuplicateModal(true)}
-                className="mb-4 bg-blue-500 text-white py-2 px-4 rounded hover:bg-blue-600 transition duration-300"
-            >
-                Duplicate Discussion
-            </button>
+            <div className="mb-4 flex flex-wrap gap-3">
+                <button
+                    onClick={() => setShowDuplicateModal(true)}
+                    className="bg-blue-500 text-white py-2 px-4 rounded hover:bg-blue-600 transition duration-300"
+                >
+                    Duplicate Discussion
+                </button>
+                <Link
+                    to={`/discussion/${topic}/summary`}
+                    className="bg-gray-800 text-white py-2 px-4 rounded hover:bg-gray-700 transition duration-300"
+                >
+                    View Summary
+                </Link>
+                <a
+                    href={`/api/discussions/${encodeURIComponent(topic)}/export.csv`}
+                    className="bg-primary text-white py-2 px-4 rounded hover:bg-opacity-90 transition duration-300"
+                >
+                    Export CSV
+                </a>
+                <a
+                    href={`/api/discussions/${encodeURIComponent(topic)}/export.json`}
+                    className="bg-secondary text-white py-2 px-4 rounded hover:bg-opacity-90 transition duration-300"
+                >
+                    Export JSON
+                </a>
+            </div>
 
             {/* Duplicate Modal */}
             {showDuplicateModal && (
