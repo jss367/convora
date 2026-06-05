@@ -205,20 +205,27 @@ const DiscussionPage = () => {
     const handleQuestionsUpdate = useCallback((updatedQuestions) => {
         console.log('Received updated questions:', updatedQuestions);
         setQuestions(prevQuestions => {
-            const questionMap = new Map(prevQuestions.map(q => [q.id, q]));
+            // The server always emits a full snapshot of the discussion's
+            // questions, so we rebuild the list from the incoming set. Building
+            // a fresh map (rather than merging into the previous one) prunes any
+            // question the moderator deleted — ids absent from the snapshot drop
+            // out instead of lingering as visible/votable stale entries.
+            const prevMap = new Map(prevQuestions.map(q => [q.id, q]));
+            const nextMap = new Map();
             updatedQuestions.forEach(q => {
-                if (questionMap.has(q.id)) {
+                const prev = prevMap.get(q.id);
+                if (prev) {
                     // Merge the new question data with the existing data,
                     // ensuring we keep the votes array and handle numerical values
-                    questionMap.set(q.id, {
-                        ...questionMap.get(q.id),
+                    nextMap.set(q.id, {
+                        ...prev,
                         ...q,
                         minValue: q.type === QuestionTypes.NUMERICAL ? parseInt(q.minValue) : undefined,
                         maxValue: q.type === QuestionTypes.NUMERICAL ? parseInt(q.maxValue) : undefined,
-                        votes: q.votes || questionMap.get(q.id).votes || []
+                        votes: q.votes || prev.votes || []
                     });
                 } else {
-                    questionMap.set(q.id, {
+                    nextMap.set(q.id, {
                         ...q,
                         timestamp: Date.now(),
                         votes: q.votes || [],
@@ -226,9 +233,9 @@ const DiscussionPage = () => {
                         maxValue: q.type === QuestionTypes.NUMERICAL ? parseInt(q.maxValue) : undefined
                     });
                 }
-                console.log('Updated question:', questionMap.get(q.id));
+                console.log('Updated question:', nextMap.get(q.id));
             });
-            return Array.from(questionMap.values());
+            return Array.from(nextMap.values());
         });
     }, []);
 

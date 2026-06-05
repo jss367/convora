@@ -156,7 +156,15 @@ io.on('connection', (socket) => {
 
   socket.on('vote', async (topic, questionId, vote, userId, pseudonym) => {
     try {
-      if (await isDiscussionLocked(topic)) {
+      // Verify the question actually belongs to this topic AND that the topic is
+      // not locked. Without this, a client could bypass a locked discussion by
+      // sending the locked question's id under some other (unlocked) topic.
+      const target = await getQuestionForTopic(topic, questionId);
+      if (!target) {
+        socket.emit('error', { message: 'Invalid question for this discussion.' });
+        return;
+      }
+      if (target.locked) {
         socket.emit('error', { message: 'Voting is closed for this discussion.' });
         return;
       }
@@ -192,8 +200,16 @@ io.on('connection', (socket) => {
         socket.emit('error', { message: 'Not authorized to moderate this discussion.' });
         return;
       }
-      // Remove votes first (response_votes cascade) to satisfy FK constraints.
-      await pool.query('DELETE FROM votes WHERE question_id = $1', [questionId]);
+      // Scope the vote delete through the question's discussion so a moderator of
+      // one discussion can never wipe another discussion's votes by passing a
+      // foreign questionId. Delete votes first to satisfy the FK constraint, then
+      // the question itself (also constrained by discussion_id).
+      await pool.query(
+        `DELETE FROM votes
+         WHERE question_id = $1
+           AND question_id IN (SELECT id FROM questions WHERE discussion_id = $2)`,
+        [questionId, discussionId]
+      );
       await pool.query('DELETE FROM questions WHERE id = $1 AND discussion_id = $2', [questionId, discussionId]);
       io.to(topic).emit('questions', await getQuestions(topic));
     } catch (error) {
@@ -471,6 +487,22 @@ async function claimModerator(topic) {
 async function isDiscussionLocked(topic) {
   const result = await pool.query('SELECT locked FROM discussions WHERE topic = $1', [topic]);
   return result.rows.length > 0 ? result.rows[0].locked === true : false;
+}
+
+// Confirm a question belongs to the given topic and report whether that
+// discussion is locked. Returns null when the question does not belong to the
+// topic, so callers can reject mismatched/forged questionIds. The join on
+// topic means a question id from a different discussion never matches.
+async function getQuestionForTopic(topic, questionId) {
+  const result = await pool.query(
+    `SELECT q.id, d.locked
+     FROM questions q
+     JOIN discussions d ON q.discussion_id = d.id
+     WHERE d.topic = $1 AND q.id = $2`,
+    [topic, questionId]
+  );
+  if (result.rows.length === 0) return null;
+  return { id: result.rows[0].id, locked: result.rows[0].locked === true };
 }
 
 // Return the text of the most similar existing statement in the discussion if
