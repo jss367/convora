@@ -202,6 +202,20 @@ test('Socket.IO sanitizes display names: anonymous stores null, long names are c
   }
 });
 
+test('client pure-JS SHA-256 fallback matches the server ownership-token hash', async () => {
+  // The client uses crypto.subtle when available, but falls back to this pure-JS
+  // SHA-256 in insecure contexts (e.g. served over a plain http:// LAN IP via the
+  // join-QR flow). The fallback MUST produce the same hex digest the server uses
+  // for ownership tokens, or participants there can't recognize their own votes.
+  const { sha256Hex } = await import('../client/src/sha256.js');
+  const inputs = ['123:abcDEF', '42:café 🦦', 'x:y', '', 'a'.repeat(200), '9f3a:Mellow Otter'];
+  for (const s of inputs) {
+    const fallback = sha256Hex(new TextEncoder().encode(s));
+    const node = crypto.createHash('sha256').update(s).digest('hex');
+    assert.equal(fallback, node, `SHA-256 mismatch for ${JSON.stringify(s)}`);
+  }
+});
+
 test('Socket.IO ownership tokens hide stable ids and differ per response', async () => {
   const topic = uniqueTopic('tokens');
   const author = await connectSocket();

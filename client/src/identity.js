@@ -10,6 +10,8 @@
 // together in localStorage so a page refresh keeps the same identity, the same
 // display name and the same votes.
 
+import { sha256Hex } from './sha256';
+
 const STORAGE_KEY = 'convora_identity';
 // Pre-pseudonym clients stored just the stable id under this key. We migrate it
 // into the new identity object so existing votes stay attributed after upgrade.
@@ -169,10 +171,17 @@ export function regeneratePseudonym() {
 export async function ownerToken(idPart, userId) {
     if (idPart === null || idPart === undefined || !userId) return null;
     const data = new TextEncoder().encode(`${idPart}:${userId}`);
-    const digest = await crypto.subtle.digest('SHA-256', data);
-    return Array.from(new Uint8Array(digest))
-        .map((b) => b.toString(16).padStart(2, '0'))
-        .join('');
+    // Prefer Web Crypto, but it only exists in secure contexts. When the app is
+    // served over a plain http:// LAN IP (e.g. via the join-QR flow),
+    // crypto.subtle is undefined — fall back to a pure-JS SHA-256 that yields
+    // the identical hex digest so own-vote recognition still works there.
+    if (globalThis.crypto && globalThis.crypto.subtle && globalThis.crypto.subtle.digest) {
+        const digest = await globalThis.crypto.subtle.digest('SHA-256', data);
+        return Array.from(new Uint8Array(digest))
+            .map((b) => b.toString(16).padStart(2, '0'))
+            .join('');
+    }
+    return sha256Hex(data);
 }
 
 // Switches which kind of name is shown, persisting the choice.
