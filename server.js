@@ -386,14 +386,22 @@ io.on('connection', (socket) => {
     emitPresence(roomToLeave);
   });
 
-  socket.on('addQuestion', async (topic, question, force) => {
+  socket.on('addQuestion', async (topic, question, force, ack) => {
     console.log('Received addQuestion event');
     console.log('topic:', topic);
     console.log('question:', question);
 
+    // Report the outcome back to the submitter so the client only clears its
+    // draft once the question is actually added — not when it's bounced as a
+    // near-duplicate or fails.
+    const reply = (result) => {
+      if (typeof ack === 'function') ack(result);
+    };
+
     try {
       if (await isDiscussionLocked(topic)) {
         socket.emit('error', { message: 'This discussion is locked.' });
+        reply({ added: false, reason: 'locked' });
         return;
       }
 
@@ -403,6 +411,7 @@ io.on('connection', (socket) => {
         const similar = await findSimilarQuestion(topic, question.text);
         if (similar) {
           socket.emit('similarQuestion', { candidate: similar, question });
+          reply({ added: false, reason: 'similar' });
           return;
         }
       }
@@ -412,9 +421,11 @@ io.on('connection', (socket) => {
       const updatedQuestions = await getQuestions(topic);
       console.log('Retrieved updated questions:', updatedQuestions);
       io.to(topic).emit('questions', updatedQuestions);
+      reply({ added: true });
     } catch (error) {
       console.error('Error adding question:', error);
       socket.emit('error', { message: 'Failed to add question' });
+      reply({ added: false, reason: 'error' });
     }
   });
 
@@ -908,7 +919,10 @@ async function addVote(questionId, vote, userId, pseudonym) {
           'UPDATE votes SET value = $1, pseudonym = $2 WHERE id = $3',
           [JSON.stringify(vote), pseudonym, existingVote.id]
         );
-      } else if (existingVote.value === vote) {
+      } else if (existingVote.value === vote && questionType === 'Agreement') {
+        // Agreement votes toggle: re-selecting your current option undoes it.
+        // This must stay scoped to Agreement — for Open Ended, re-submitting the
+        // same text means "keep it", not "delete it".
         console.log('Voting for a option they already voted for');
         await client.query(
           'DELETE FROM votes WHERE id = $1',

@@ -49,9 +49,12 @@ const AGREEMENT_SCALE = [
 ];
 
 // In production the client is served by the same server it talks to, so we
-// default to a same-origin connection. Set REACT_APP_SOCKET_URL only when the
+// default to a same-origin connection. Set VITE_SOCKET_URL only when the
 // client runs on a different origin than the API (e.g. `vite` dev server).
-const SOCKET_URL = process.env.REACT_APP_SOCKET_URL || undefined;
+// Use import.meta.env (Vite's mechanism) rather than process.env: `process` is
+// not defined in the browser, so an unreplaced process.env.* reference throws
+// at module load and blanks the page.
+const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || undefined;
 
 const socket = io(SOCKET_URL);
 
@@ -292,18 +295,20 @@ const DiscussionPage = () => {
 
     // Emits a question to the server. When force is false the server may reply
     // with a 'similarQuestion' event instead of adding it; when true it adds
-    // regardless of near-duplicates.
+    // regardless of near-duplicates. The form is reset only once the server acks
+    // that the question was actually added, so a near-duplicate bounce (or an
+    // error) leaves the user's draft intact for them to edit or re-post.
     const submitQuestion = (question, force) => {
         try {
-            socket.emit('addQuestion', topic, question, force);
-
-            // Reset form
-            setNewQuestion('');
-            setQuestionType(QuestionTypes.AGREEMENT);
-            setMinValue(0);
-            setMaxValue(100);
-            // Clear any previous errors
             setError(null);
+            socket.emit('addQuestion', topic, question, force, (resp) => {
+                if (resp && resp.added) {
+                    setNewQuestion('');
+                    setQuestionType(QuestionTypes.AGREEMENT);
+                    setMinValue(0);
+                    setMaxValue(100);
+                }
+            });
         } catch (error) {
             console.error('Error emitting addQuestion event:', error);
             setError('Failed to add question. Please try again.');
@@ -806,10 +811,15 @@ const OpenEndedQuestion = ({ question, userVote, handleVote, userId, handleRespo
                     />
                     <button
                         onClick={() => {
-                            console.log('Submitting open-ended response:', response);
-                            handleVote(question.id, response);
+                            const trimmed = response.trim();
+                            if (trimmed === '') {
+                                return;
+                            }
+                            console.log('Submitting open-ended response:', trimmed);
+                            handleVote(question.id, trimmed);
                         }}
-                        className="px-4 py-2 bg-primary text-white rounded hover:bg-opacity-90 transition duration-300 mb-4"
+                        disabled={response.trim() === ''}
+                        className="px-4 py-2 bg-primary text-white rounded hover:bg-opacity-90 transition duration-300 mb-4 disabled:opacity-50"
                     >
                         {userVote ? 'Update Response' : 'Submit Response'}
                     </button>

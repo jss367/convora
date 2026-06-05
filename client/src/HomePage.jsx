@@ -3,9 +3,12 @@ import { Link, useNavigate } from 'react-router-dom';
 import io from 'socket.io-client';
 
 // In production the client is served by the same server it talks to, so we
-// default to a same-origin connection. Set REACT_APP_SOCKET_URL only when the
+// default to a same-origin connection. Set VITE_SOCKET_URL only when the
 // client runs on a different origin than the API (e.g. `vite` dev server).
-const SOCKET_URL = process.env.REACT_APP_SOCKET_URL || undefined;
+// Use import.meta.env (Vite's mechanism) rather than process.env: `process` is
+// not defined in the browser, so an unreplaced process.env.* reference throws
+// at module load and blanks the page.
+const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || undefined;
 
 const HomePage = () => {
     const [discussions, setDiscussions] = useState([]);
@@ -39,20 +42,23 @@ const HomePage = () => {
     }, []);
 
     const handleCreateDiscussion = async () => {
-        if (newDiscussion.trim() !== '') {
-            const discussionId = newDiscussion.toLowerCase().replace(/\s+/g, '-');
+        const topic = newDiscussion.trim();
+        if (topic !== '') {
             try {
                 const response = await fetch('/api/discussions', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
                     },
-                    body: JSON.stringify({ topic: newDiscussion }),
+                    body: JSON.stringify({ topic }),
                 });
                 if (!response.ok) {
                     throw new Error('Failed to create discussion');
                 }
-                navigate(`/discussion/${discussionId}`);
+                // Navigate using the same topic the server stored (and that the
+                // existing-discussions links use), so the creator lands in the
+                // discussion they just created rather than a separate slugified one.
+                navigate(`/discussion/${encodeURIComponent(topic)}`);
             } catch (error) {
                 console.error('Error creating discussion:', error);
             }
