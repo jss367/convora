@@ -8,6 +8,32 @@ The frontend is React and the backend is Node.js.
 
 ## Running the Application Locally
 
+### Option A: Docker Postgres
+
+1. Start the local PostgreSQL container:
+   ```bash
+   npm run dev:db
+   ```
+
+2. Build the React app (if changes were made to the frontend):
+   ```bash
+   npm run build
+   ```
+
+3. Start the server against Docker Postgres:
+   ```bash
+   npm run dev:server:docker
+   ```
+
+4. Access the application at `http://localhost:3001`
+
+5. Stop Docker Postgres when you are done:
+   ```bash
+   npm run dev:db:down
+   ```
+
+### Option B: Local Postgres
+
 1. Start the PostgreSQL database server:
    ```
    brew services start postgresql@14
@@ -47,8 +73,10 @@ The frontend is React and the backend is Node.js.
 
 ## Databases
 
-- Name: `convora`
-- Connect: `psql -U julius -d convora`
+- Docker name: `convora`
+- Docker connect: `psql "postgresql://convora:convora@127.0.0.1:54329/convora"`
+- Local name: `convora`
+- Local connect: `psql -U julius -d convora`
 
 ### See tables
 
@@ -60,6 +88,29 @@ The frontend is React and the backend is Node.js.
 ### Connect to remote database
 
 `heroku pg:psql`
+
+## Tests
+
+This repo has a Postgres-backed integration harness that starts Docker Compose,
+boots the real server on an ephemeral port, and verifies both HTTP and Socket.IO
+flows.
+
+Run the full harness:
+```bash
+npm test
+```
+
+Run against an already-running database:
+```bash
+DATABASE_URL=postgresql://convora:convora@127.0.0.1:54330/convora_test npm run test:node
+```
+
+The default test harness uses a separate Docker Compose project and port
+(`convora-test`, `54330`) from the dev database (`54329`). Set `KEEP_TEST_DB=1`
+to leave the test database running after a failed run. Because the tests truncate
+tables between cases, they refuse to run unless `DATABASE_URL` points at a
+localhost database whose name ends with `_test`; set `ALLOW_NON_TEST_DATABASE=1`
+only for a disposable nonstandard test database.
 
 ## Production Deployment on Heroku
 
@@ -83,7 +134,7 @@ Push from a branch might make it a little easier to revert if it doesn't go well
 ## Other Notes
 
 The client and server are on the same domain, so I don't need to do things like this:
-```
+```javascript
 const socket = io(SOCKET_URL, {
     withCredentials: true,
 });

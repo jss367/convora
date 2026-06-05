@@ -49,9 +49,12 @@ const AGREEMENT_SCALE = [
 ];
 
 // In production the client is served by the same server it talks to, so we
-// default to a same-origin connection. Set REACT_APP_SOCKET_URL only when the
+// default to a same-origin connection. Set VITE_SOCKET_URL only when the
 // client runs on a different origin than the API (e.g. `vite` dev server).
-const SOCKET_URL = process.env.REACT_APP_SOCKET_URL || undefined;
+// Use import.meta.env (Vite's mechanism) rather than process.env: `process` is
+// not defined in the browser, so an unreplaced process.env.* reference throws
+// at module load and blanks the page.
+const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || undefined;
 
 const socket = io(SOCKET_URL);
 
@@ -82,11 +85,15 @@ const DiscussionPage = () => {
     // can be evaluated on a real discussion without exposing it to everyone. Once
     // enabled it's remembered per browser so the link survives navigation.
     const [showClusters, setShowClusters] = useState(false);
+    const [showJoinQr, setShowJoinQr] = useState(false);
 
     const isAdmin = !!adminToken;
     const { locked } = discussionState;
 
-    const shareUrl = typeof window !== 'undefined' ? window.location.href : '';
+    const joinUrl = typeof window !== 'undefined'
+        ? `${window.location.origin}${window.location.pathname}`
+        : '';
+    const shareUrl = joinUrl;
     const adminUrl = typeof window !== 'undefined' && adminToken
         ? `${window.location.origin}${window.location.pathname}?admin=${adminToken}`
         : '';
@@ -146,6 +153,27 @@ const DiscussionPage = () => {
             console.warn('Failed to read clusters flag:', e);
         }
     }, [topic]);
+
+    useEffect(() => {
+        try {
+            setShowJoinQr(localStorage.getItem(`convora_show_join_qr_${topic}`) === 'true');
+        } catch (e) {
+            console.warn('Failed to read QR visibility:', e);
+            setShowJoinQr(false);
+        }
+    }, [topic]);
+
+    const handleToggleJoinQr = () => {
+        setShowJoinQr(prev => {
+            const next = !prev;
+            try {
+                localStorage.setItem(`convora_show_join_qr_${topic}`, String(next));
+            } catch (e) {
+                console.warn('Failed to store QR visibility:', e);
+            }
+            return next;
+        });
+    };
 
     const handleRegeneratePseudonym = () => {
         const updated = regeneratePseudonym();
@@ -311,18 +339,20 @@ const DiscussionPage = () => {
 
     // Emits a question to the server. When force is false the server may reply
     // with a 'similarQuestion' event instead of adding it; when true it adds
-    // regardless of near-duplicates.
+    // regardless of near-duplicates. The form is reset only once the server acks
+    // that the question was actually added, so a near-duplicate bounce (or an
+    // error) leaves the user's draft intact for them to edit or re-post.
     const submitQuestion = (question, force) => {
         try {
-            socket.emit('addQuestion', topic, question, force);
-
-            // Reset form
-            setNewQuestion('');
-            setQuestionType(QuestionTypes.AGREEMENT);
-            setMinValue(0);
-            setMaxValue(100);
-            // Clear any previous errors
             setError(null);
+            socket.emit('addQuestion', topic, question, force, (resp) => {
+                if (resp && resp.added) {
+                    setNewQuestion('');
+                    setQuestionType(QuestionTypes.AGREEMENT);
+                    setMinValue(0);
+                    setMaxValue(100);
+                }
+            });
         } catch (error) {
             console.error('Error emitting addQuestion event:', error);
             setError('Failed to add question. Please try again.');
@@ -648,6 +678,12 @@ const DiscussionPage = () => {
                         >
                             {adminLinkCopied ? 'Link copied!' : 'Copy moderator link'}
                         </button>
+                        <button
+                            onClick={handleToggleJoinQr}
+                            className="px-3 py-1 rounded bg-white border border-indigo-300 text-indigo-700 hover:bg-indigo-100"
+                        >
+                            {showJoinQr ? 'Hide join QR' : 'Show join QR'}
+                        </button>
                     </div>
                 ) : !discussionState.hasModerator ? (
                     <button
@@ -663,6 +699,16 @@ const DiscussionPage = () => {
             {locked && (
                 <div className="mb-6 bg-amber-50 border border-amber-200 text-amber-800 rounded-md p-3 text-center">
                     🔒 This discussion is locked. Voting and new statements are closed.
+                </div>
+            )}
+
+            {isAdmin && showJoinQr && (
+                <div className="fixed bottom-4 left-4 z-40 w-44 rounded-md border border-gray-200 bg-white p-3 text-center shadow-xl">
+                    <div className="flex justify-center">
+                        <QRCodeSVG value={joinUrl} size={140} includeMargin />
+                    </div>
+                    <div className="mt-2 text-xs font-semibold uppercase tracking-wide text-gray-500">Scan to join</div>
+                    <div className="mt-1 truncate text-sm font-semibold text-gray-800" title={topic}>{topic}</div>
                 </div>
             )}
 
@@ -833,10 +879,15 @@ const OpenEndedQuestion = ({ question, userVote, handleVote, userId, handleRespo
                     />
                     <button
                         onClick={() => {
-                            console.log('Submitting open-ended response:', response);
-                            handleVote(question.id, response);
+                            const trimmed = response.trim();
+                            if (trimmed === '') {
+                                return;
+                            }
+                            console.log('Submitting open-ended response:', trimmed);
+                            handleVote(question.id, trimmed);
                         }}
-                        className="px-4 py-2 bg-primary text-white rounded hover:bg-opacity-90 transition duration-300 mb-4"
+                        disabled={response.trim() === ''}
+                        className="px-4 py-2 bg-primary text-white rounded hover:bg-opacity-90 transition duration-300 mb-4 disabled:opacity-50"
                     >
                         {userVote ? 'Update Response' : 'Submit Response'}
                     </button>
