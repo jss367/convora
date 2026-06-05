@@ -135,7 +135,7 @@ io.on('connection', (socket) => {
 
   socket.on('toggleResponseVote', async (topic, responseId, userId) => {
     try {
-      await toggleResponseVote(responseId, userId);
+      await toggleResponseVote(topic, responseId, userId);
       const questions = await getQuestions(topic);
       io.to(topic).emit('questions', questions);
     } catch (error) {
@@ -285,42 +285,13 @@ async function addQuestion(topic, question) {
   }
 }
 
-// might get rid of this
-async function migrateOptionsToJson() {
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-
-    const result = await client.query('SELECT id, options FROM questions WHERE options IS NOT NULL');
-
-    for (const row of result.rows) {
-      const parsedOptions = parseOptions(row.options);
-      await client.query('UPDATE questions SET options = $1 WHERE id = $2', [JSON.stringify(parsedOptions), row.id]);
-    }
-
-    await client.query('COMMIT');
-    console.log('Migration completed successfully');
-  } catch (e) {
-    await client.query('ROLLBACK');
-    console.error('Error during migration:', e);
-  } finally {
-    client.release();
-  }
-}
-migrateOptionsToJson().catch(console.error);
-// might get rid of above
-
 // Add the pseudonym column to votes if it doesn't already exist. Idempotent so
-// it's safe to run on every boot.
+// it's safe to run on every boot. Must complete before the server starts
+// serving questions, since getQuestions() selects v.pseudonym.
 async function migrateAddPseudonymColumn() {
-  try {
-    await pool.query('ALTER TABLE votes ADD COLUMN IF NOT EXISTS pseudonym TEXT');
-    console.log('Pseudonym column migration completed');
-  } catch (e) {
-    console.error('Error adding pseudonym column:', e);
-  }
+  await pool.query('ALTER TABLE votes ADD COLUMN IF NOT EXISTS pseudonym TEXT');
+  console.log('Pseudonym column migration completed');
 }
-migrateAddPseudonymColumn().catch(console.error);
 
 // Table for upvotes on individual open-ended responses. One row per
 // (response, user); a response is identified by its votes.id. Idempotent.
@@ -337,9 +308,9 @@ async function migrateResponseVotesTable() {
     console.log('response_votes table migration completed');
   } catch (e) {
     console.error('Error creating response_votes table:', e);
+    throw e;
   }
 }
-migrateResponseVotesTable().catch(console.error);
 
 async function addVote(questionId, vote, userId, pseudonym) {
   console.log('Adding vote:', questionId, vote, userId, pseudonym);
@@ -414,16 +385,24 @@ async function addVote(questionId, vote, userId, pseudonym) {
 
 // Toggle a user's upvote on an open-ended response. Adds the upvote if absent,
 // removes it if already present.
-async function toggleResponseVote(responseId, userId) {
-  // Reject self-upvotes: the UI disables the button for your own response, but
-  // the event can still be emitted from the console, so enforce it server-side.
+async function toggleResponseVote(topic, responseId, userId) {
+  // Confirm the response belongs to the room's discussion before mutating it.
+  // Without the topic join a client in one room could toggle a vote on a
+  // response id that lives in another discussion. Also fetch the owner so we
+  // can reject self-upvotes below.
   const ownerResult = await pool.query(
-    'SELECT user_id FROM votes WHERE id = $1',
-    [responseId]
+    `SELECT v.user_id
+     FROM votes v
+     JOIN questions q ON v.question_id = q.id
+     JOIN discussions d ON q.discussion_id = d.id
+     WHERE v.id = $1 AND d.topic = $2`,
+    [responseId, topic]
   );
   if (ownerResult.rows.length === 0) {
     return;
   }
+  // Reject self-upvotes: the UI disables the button for your own response, but
+  // the event can still be emitted from the console, so enforce it server-side.
   if (ownerResult.rows[0].user_id === userId) {
     console.log('Ignoring self-upvote on response', responseId);
     return;
@@ -522,4 +501,15 @@ app.get('*', (req, res) => {
 });
 
 const PORT = process.env.PORT || 3001;
-server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+
+// Run required migrations before accepting connections so that no client can
+// query a column or table that doesn't exist yet (e.g. votes.pseudonym, or the
+// response_votes table that getQuestions selects from on the first join).
+Promise.all([migrateAddPseudonymColumn(), migrateResponseVotesTable()])
+  .then(() => {
+    server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+  })
+  .catch((err) => {
+    console.error('Failed to run migrations, exiting:', err);
+    process.exit(1);
+  });

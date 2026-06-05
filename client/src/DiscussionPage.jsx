@@ -89,8 +89,8 @@ const DiscussionPage = () => {
     };
 
     useEffect(() => {
-        // getIdentity() persists a stable per-browser userId (so vote
-        // de-duplication survives reloads) along with a friendly pseudonym.
+        // getIdentity() persists a stable userId (so vote de-duplication survives
+        // reloads) together with a friendly pseudonym, both in localStorage.
         const identity = getIdentity();
         setUserId(identity.userId);
         setPseudonym(identity.pseudonym);
@@ -713,6 +713,12 @@ const AgreementResults = ({ question }) => {
     );
 };
 
+AgreementResults.propTypes = {
+    question: PropTypes.shape({
+        votes: PropTypes.array,
+    }).isRequired,
+};
+
 // Unlike Open Ended (one editable response per person), Brainstorm lets each
 // participant add any number of separate ideas and delete their own.
 const BrainstormQuestion = ({ question, userId, handleVote, handleDeleteVote }) => {
@@ -770,12 +776,6 @@ const BrainstormQuestion = ({ question, userId, handleVote, handleDeleteVote }) 
             )}
         </div>
     );
-};
-
-AgreementResults.propTypes = {
-    question: PropTypes.shape({
-        votes: PropTypes.array,
-    }).isRequired,
 };
 
 // Summary stats + histogram for a Numerical question.
