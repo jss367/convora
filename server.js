@@ -765,7 +765,9 @@ function emitPseudonymSync(slug, userId, pseudonym, exceptSocketId) {
     if (socketId === exceptSocketId) continue;
     const member = io.sockets.sockets.get(socketId);
     if (member && member.data.userId === userId) {
-      member.emit('pseudonymSync', { pseudonym });
+      // Include the slug so a tab that has since navigated to another discussion
+      // can recognize and ignore a sync meant for the room it just left.
+      member.emit('pseudonymSync', { slug, pseudonym });
     }
   }
 }

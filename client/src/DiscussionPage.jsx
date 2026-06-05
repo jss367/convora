@@ -726,6 +726,9 @@ const DiscussionPage = () => {
     // live handle (the server only sends this to our own sockets).
     const handlePseudonymSync = useCallback((payload) => {
         if (!payload?.pseudonym) return;
+        // Ignore a sync for a discussion we've since navigated away from — its
+        // handle is reserved only in that room and must not be adopted here.
+        if (payload.slug && payload.slug !== discussionSlugRef.current) return;
         setAssignedPseudonym(payload.pseudonym);
         setPseudonymReserved(true);
     }, []);
