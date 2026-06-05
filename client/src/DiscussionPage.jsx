@@ -554,25 +554,24 @@ const DiscussionPage = () => {
     // Persist it under the same per-slug key the create/share flows use so the
     // controls light up immediately and survive reloads.
     //
-    // Do NOT overwrite a token we already hold: the creator authenticates with
-    // the discussion's admin_token, and if they (or a shared-link moderator)
-    // click "Make moderator" on their own participant row, the per-user grant
-    // pushed back would otherwise replace that admin_token — downgrading the
-    // creator so verifyCreator no longer recognizes them and they lose the
-    // ability to remove moderators. A genuinely new promotee holds no token yet,
-    // so they still adopt it. (A stale token is cleared by the checkModerator
-    // load/reconnect check before any legitimate re-promotion.)
+    // Skip adoption only when WE are the creator (canDemote): the creator
+    // authenticates with the discussion's admin_token, and if they click "Make
+    // moderator" on their own participant row, the per-user grant pushed back
+    // would otherwise replace that admin_token — downgrading them so
+    // verifyCreator no longer recognizes them. Everyone else adopts the grant,
+    // overwriting any token they already hold — important because a re-promoted
+    // user may still have a stale, revoked token in localStorage that the
+    // checkModerator load check hasn't cleared yet; the fresh push is
+    // authoritative and must win, or they'd be left with no usable token.
     const handleModeratorGranted = useCallback(({ token }) => {
-        if (!token) return;
-        const key = `convora_admin_${discussionSlug}`;
+        if (!token || canDemote) return;
         try {
-            if (localStorage.getItem(key)) return;
-            localStorage.setItem(key, token);
+            localStorage.setItem(`convora_admin_${discussionSlug}`, token);
         } catch (e) {
             console.warn('Failed to store admin token:', e);
         }
         setAdminToken(token);
-    }, [discussionSlug]);
+    }, [discussionSlug, canDemote]);
 
     // The creator removed our moderator status: drop the stored token so the
     // controls disappear. (The token is already invalid server-side.)
