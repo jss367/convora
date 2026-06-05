@@ -588,6 +588,70 @@ test('a moderator can promote a participant, granting them working controls', as
   }
 });
 
+test('a moderator sets the discussion color theme and it broadcasts to everyone', async () => {
+  const topic = uniqueTopic('theme');
+  const mod = await connectSocket();
+  const guest = await connectSocket();
+
+  try {
+    mod.emit('joinDiscussion', topic);
+    guest.emit('joinDiscussion', topic);
+    const token = await claimModerator(mod, topic);
+
+    // A fresh discussion defaults to the original 'indigo' look.
+    const claimed = await waitForEvent(guest, 'discussionState', (s) => s.hasModerator === true);
+    assert.equal(claimed.theme, 'indigo');
+
+    // The moderator switches theme; every participant receives the new value.
+    const themed = waitForEvent(guest, 'discussionState', (s) => s.theme === 'orange');
+    mod.emit('setTheme', topic, 'orange', token);
+    assert.equal((await themed).theme, 'orange');
+
+    // An unknown theme is rejected (error to the sender) and never broadcast.
+    const rejected = waitForEvent(mod, 'error', (e) => /theme/i.test(e.message));
+    mod.emit('setTheme', topic, 'chartreuse', token);
+    await rejected;
+
+    // The stored theme is unchanged: a fresh join still reports 'orange'.
+    const rejoin = await connectSocket();
+    try {
+      rejoin.emit('joinDiscussion', topic);
+      const state = await waitForEvent(rejoin, 'discussionState');
+      assert.equal(state.theme, 'orange');
+    } finally {
+      rejoin.disconnect();
+    }
+  } finally {
+    mod.disconnect();
+    guest.disconnect();
+  }
+});
+
+test('a non-moderator cannot set the discussion theme', async () => {
+  const topic = uniqueTopic('theme-deny');
+  await jsonRequest('POST', '/api/discussions', { topic });
+
+  const stranger = await connectSocket();
+  try {
+    stranger.emit('joinDiscussion', topic);
+    const rejected = waitForEvent(stranger, 'error', (e) => /authoriz/i.test(e.message));
+    stranger.emit('setTheme', topic, 'orange', 'bogus-token');
+    await rejected;
+
+    // The theme stays at the default for everyone who joins afterward.
+    const observer = await connectSocket();
+    try {
+      observer.emit('joinDiscussion', topic);
+      const state = await waitForEvent(observer, 'discussionState');
+      assert.equal(state.theme, 'indigo');
+    } finally {
+      observer.disconnect();
+    }
+  } finally {
+    stranger.disconnect();
+  }
+});
+
 test('a non-moderator cannot list or promote participants', async () => {
   const topic = uniqueTopic('promote-deny');
   await jsonRequest('POST', '/api/discussions', { topic });

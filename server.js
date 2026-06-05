@@ -706,15 +706,25 @@ function emitPresence(topic) {
   io.to(topic).emit('presence', count);
 }
 
-// Read the lock state and whether a moderator has been claimed.
+// Color themes a moderator may apply to a discussion. Must stay in sync with
+// the [data-theme] palettes in client/src/index.css and THEME_KEYS in
+// client/src/DiscussionPage.jsx. 'indigo' is the default/original look.
+const ALLOWED_THEMES = ['indigo', 'orange', 'emerald', 'rose', 'slate'];
+const DEFAULT_THEME = 'indigo';
+
+// Read the lock state, chosen theme, and whether a moderator has been claimed.
 async function getDiscussionState(topic) {
   const slug = slugifyTopic(topic);
   const result = await pool.query(
-    'SELECT locked, admin_token IS NOT NULL AS has_moderator FROM discussions WHERE slug = $1',
+    'SELECT locked, theme, admin_token IS NOT NULL AS has_moderator FROM discussions WHERE slug = $1',
     [slug]
   );
-  if (result.rows.length === 0) return { locked: false, hasModerator: false };
-  return { locked: result.rows[0].locked === true, hasModerator: result.rows[0].has_moderator === true };
+  if (result.rows.length === 0) return { locked: false, hasModerator: false, theme: DEFAULT_THEME };
+  return {
+    locked: result.rows[0].locked === true,
+    hasModerator: result.rows[0].has_moderator === true,
+    theme: result.rows[0].theme || DEFAULT_THEME,
+  };
 }
 
 async function emitDiscussionState(topic) {
@@ -958,6 +968,28 @@ io.on('connection', (socket) => {
       await emitDiscussionState(discussionSlug);
     } catch (error) {
       console.error('Error setting lock state:', error);
+      socket.emit('error', { message: 'Failed to update discussion' });
+    }
+  });
+
+  // Moderator-only: set the discussion's color theme. The new theme rides the
+  // discussionState broadcast, so every connected participant recolors at once.
+  socket.on('setTheme', async (topic, theme, token) => {
+    const discussionSlug = slugifyTopic(topic);
+    try {
+      const discussionId = await verifyAdmin(discussionSlug, token);
+      if (!discussionId) {
+        socket.emit('error', { message: 'Not authorized to moderate this discussion.' });
+        return;
+      }
+      if (!ALLOWED_THEMES.includes(theme)) {
+        socket.emit('error', { message: 'Unknown theme.' });
+        return;
+      }
+      await pool.query('UPDATE discussions SET theme = $1 WHERE id = $2', [theme, discussionId]);
+      await emitDiscussionState(discussionSlug);
+    } catch (error) {
+      console.error('Error setting theme:', error);
       socket.emit('error', { message: 'Failed to update discussion' });
     }
   });
@@ -1884,6 +1916,8 @@ async function migrateBrainstormInteractions() {
 async function migrateModerationAndDedup() {
   await pool.query('ALTER TABLE discussions ADD COLUMN IF NOT EXISTS admin_token TEXT');
   await pool.query('ALTER TABLE discussions ADD COLUMN IF NOT EXISTS locked BOOLEAN NOT NULL DEFAULT FALSE');
+  // Per-discussion color theme the moderator picks; 'indigo' is the original look.
+  await pool.query("ALTER TABLE discussions ADD COLUMN IF NOT EXISTS theme TEXT NOT NULL DEFAULT 'indigo'");
   await pool.query('ALTER TABLE questions ADD COLUMN IF NOT EXISTS pinned BOOLEAN NOT NULL DEFAULT FALSE');
 
   try {

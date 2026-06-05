@@ -2,6 +2,52 @@
 @import 'tailwindcss/components';
 @import 'tailwindcss/utilities';
 
+/*
+ * Color themes. Each palette is just three RGB channel triplets (space
+ * separated so Tailwind's `rgb(var(--x) / <alpha-value>)` colors can apply
+ * opacity). A moderator picks a theme per discussion; the client mirrors the
+ * choice onto <html data-theme="..."> and every `primary`/`secondary`/
+ * `primary-dark` Tailwind class recolors instantly. The :root block is the
+ * default ("indigo") so pages with no theme set look unchanged.
+ *
+ * --color-primary       main action color (buttons, links, focus rings, bars)
+ * --color-secondary     accent used for the alternate vote-button state
+ * --color-primary-dark  darker shade for the header gradient's end stop
+ *
+ * Theme keys here MUST stay in sync with THEME_KEYS on the client
+ * (DiscussionPage.jsx) and ALLOWED_THEMES on the server (server.js).
+ */
+:root,
+[data-theme='indigo'] {
+    --color-primary: 79 70 229;     /* #4F46E5 */
+    --color-secondary: 16 185 129;  /* #10B981 */
+    --color-primary-dark: 67 56 202;/* #4338CA */
+}
+
+[data-theme='orange'] {
+    --color-primary: 255 60 0;      /* #FF3C00 */
+    --color-secondary: 13 148 136;  /* #0D9488 */
+    --color-primary-dark: 194 65 12;/* #C2410C */
+}
+
+[data-theme='emerald'] {
+    --color-primary: 5 150 105;     /* #059669 */
+    --color-secondary: 99 102 241;  /* #6366F1 */
+    --color-primary-dark: 4 120 87; /* #047857 */
+}
+
+[data-theme='rose'] {
+    --color-primary: 225 29 72;     /* #E11D48 */
+    --color-secondary: 245 158 11;  /* #F59E0B */
+    --color-primary-dark: 190 18 60;/* #BE123C */
+}
+
+[data-theme='slate'] {
+    --color-primary: 71 85 105;     /* #475569 */
+    --color-secondary: 14 165 233;  /* #0EA5E9 */
+    --color-primary-dark: 51 65 85; /* #334155 */
+}
+
 body {
     @apply bg-slate-100 text-slate-800 antialiased;
     min-height: 100vh;
