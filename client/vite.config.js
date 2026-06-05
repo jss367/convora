@@ -9,6 +9,15 @@ import { defineConfig } from 'vite';
 // leaking into the browser bundle.
 dotenv.config({ path: path.resolve(__dirname, '../.env') });
 
+// Backward compatibility: older split-origin deployments set the socket URL via
+// REACT_APP_SOCKET_URL. import.meta.env only exposes VITE_-prefixed vars, so map
+// the legacy name onto the new one (when the new one isn't already set) — Vite's
+// env loader reads VITE_-prefixed entries from process.env, so those deployments
+// keep working without a rename. New deployments should use VITE_SOCKET_URL.
+if (!process.env.VITE_SOCKET_URL && process.env.REACT_APP_SOCKET_URL) {
+  process.env.VITE_SOCKET_URL = process.env.REACT_APP_SOCKET_URL;
+}
+
 export default defineConfig({
   plugins: [react()],
   // The root .env lives one level up from this client directory, so point Vite's

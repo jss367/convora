@@ -73,8 +73,10 @@ redeploy. Nothing else to do.
 - **Region.** The web service and database must share a region (`oregon` here)
   so they talk over Render's private network. Change both together if you move.
 - **No URL config needed.** The client connects same-origin, so you do not need
-  to set `REACT_APP_SOCKET_URL` or `CLIENT_URL`. (`CLIENT_URL` only matters if
-  you later serve the frontend from a different origin.)
+  to set `VITE_SOCKET_URL` or `CLIENT_URL`. (`VITE_SOCKET_URL` only matters if
+  you serve the frontend from a different origin than the API; the legacy
+  `REACT_APP_SOCKET_URL` name is still honored for backward compatibility.
+  `CLIENT_URL` only matters in that split-origin case too.)
 - **Custom domain.** Add it under the web service's **Settings → Custom Domains**;
   Render provisions TLS automatically.
 - **Scaling past one instance.** If you ever outgrow a single instance, Socket.IO
