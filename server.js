@@ -1156,6 +1156,14 @@ io.on('connection', (socket) => {
       io.to(discussionSlug).emit('discussion', await getDiscussionBySlug(discussionSlug));
       reply({ updated: true });
     } catch (error) {
+      // discussions.topic is unique (discussions_topic_unique); renaming to an
+      // existing title raises a Postgres unique-violation. Surface it as a
+      // distinct, actionable reason so the moderator can pick another name
+      // instead of seeing a generic failure.
+      if (error?.code === '23505') {
+        reply({ updated: false, reason: 'duplicate' });
+        return;
+      }
       console.error('Error setting topic:', error);
       socket.emit('error', { message: 'Failed to rename discussion' });
       reply({ updated: false, reason: 'error' });

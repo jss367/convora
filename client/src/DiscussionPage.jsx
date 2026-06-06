@@ -765,9 +765,13 @@ const DiscussionPage = () => {
         });
     };
 
-    // Open the inline title editor, seeding it with the current title.
+    // Open the inline title editor, seeding it with the loaded discussion's
+    // actual title. Guard until the discussion has loaded so we never seed the
+    // editor from the route slug (or a previous room) and then save THAT as the
+    // new title; the Rename button is also disabled until then.
     const handleStartRename = () => {
-        setTitleDraft(discussion?.topic || discussionTitle);
+        if (!discussion?.topic) return;
+        setTitleDraft(discussion.topic);
         setEditingTitle(true);
     };
 
@@ -786,6 +790,9 @@ const DiscussionPage = () => {
                 setEditingTitle(false);
             } else if (resp && resp.reason === 'not_authorized') {
                 setError('You are no longer a moderator of this discussion.');
+            } else if (resp && resp.reason === 'duplicate') {
+                // Keep the editor open so the moderator can correct the name.
+                setError('A discussion with that name already exists. Choose a different name.');
             } else {
                 setError('Could not rename the discussion. Try again.');
             }
@@ -980,6 +987,15 @@ const DiscussionPage = () => {
         setPseudonymReserved(false);
         shufflePendingRef.current = false;
         setShufflePending(false);
+    }, [discussionSlug]);
+
+    // The rename editor is scoped to one discussion. This component is reused
+    // across /discussion/:topic routes (only the param changes), so close any
+    // open editor and clear its draft when the slug changes — otherwise a draft
+    // seeded in one room could be saved into another the next time it's opened.
+    useEffect(() => {
+        setEditingTitle(false);
+        setTitleDraft('');
     }, [discussionSlug]);
 
     // Ask the server for a handle that's unique within this discussion. We wait
@@ -1650,7 +1666,7 @@ const DiscussionPage = () => {
                         <span className="font-semibold text-indigo-800">You&apos;re the moderator</span>
                         <button
                             onClick={handleStartRename}
-                            disabled={editingTitle}
+                            disabled={editingTitle || !discussion?.topic}
                             className="px-3 py-1 rounded bg-white border border-indigo-300 text-indigo-700 hover:bg-indigo-100 disabled:opacity-50"
                             title="Change the discussion's name"
                         >

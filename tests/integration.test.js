@@ -894,6 +894,47 @@ test('renaming is rejected for non-moderators and blank titles', async () => {
   }
 });
 
+test('renaming to an existing discussion title is rejected as a duplicate', async () => {
+  // discussions.topic is unique, so renaming one discussion to another's exact
+  // title raises a Postgres unique-violation. The server should surface that as
+  // a distinct 'duplicate' reason (not a generic error) and leave both titles
+  // untouched so the moderator can pick a different name.
+  const topicA = uniqueTopic('rename-dup-a');
+  const topicB = uniqueTopic('rename-dup-b');
+  const creatorA = await jsonRequest('POST', '/api/discussions', { topic: topicA });
+  const creatorB = await jsonRequest('POST', '/api/discussions', { topic: topicB });
+  const adminTokenA = creatorA.body.adminToken;
+  const slugA = creatorA.body.slug;
+  const slugB = creatorB.body.slug;
+
+  const mod = await connectSocket();
+  try {
+    mod.emit('joinDiscussion', topicA);
+
+    // Moderator of A tries to rename A to B's exact title: rejected as duplicate.
+    const dupAck = await emitWithAck(mod, 'setTopic', slugA, topicB, adminTokenA);
+    assert.deepEqual(dupAck, { updated: false, reason: 'duplicate' });
+
+    // Neither title changed: A still reads topicA, B still reads topicB.
+    const observerA = await connectSocket();
+    const observerB = await connectSocket();
+    try {
+      observerA.emit('joinDiscussion', slugA);
+      const stateA = await waitForEvent(observerA, 'discussion', (d) => d && d.slug === slugA);
+      assert.equal(stateA.topic, topicA);
+
+      observerB.emit('joinDiscussion', slugB);
+      const stateB = await waitForEvent(observerB, 'discussion', (d) => d && d.slug === slugB);
+      assert.equal(stateB.topic, topicB);
+    } finally {
+      observerA.disconnect();
+      observerB.disconnect();
+    }
+  } finally {
+    mod.disconnect();
+  }
+});
+
 test('a non-moderator cannot list or promote participants', async () => {
   const topic = uniqueTopic('promote-deny');
   await jsonRequest('POST', '/api/discussions', { topic });
