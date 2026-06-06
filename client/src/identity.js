@@ -181,6 +181,24 @@ export async function ownerToken(idPart, userId) {
     return sha256Hex(data);
 }
 
+// The opaque handle the server lists a participant under: "participant-" plus
+// the first 16 hex chars of sha256(userId). MUST stay byte-for-byte identical to
+// participantHandle() in server.js. Lets a client recognize its OWN row in the
+// moderator panel so it can hide the self-promote / self-remove controls (acting
+// on your own row tangles the creator's admin_token with a per-user grant).
+export async function participantHandle(userId) {
+    if (!userId) return null;
+    const data = new TextEncoder().encode(String(userId));
+    let hex;
+    if (globalThis.crypto && globalThis.crypto.subtle && globalThis.crypto.subtle.digest) {
+        const digest = await globalThis.crypto.subtle.digest('SHA-256', data);
+        hex = Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, '0')).join('');
+    } else {
+        hex = sha256Hex(data);
+    }
+    return `participant-${hex.slice(0, 16)}`;
+}
+
 // Switches which kind of name is shown, persisting the choice.
 export function setNameMode(mode) {
     const next = Object.values(NameModes).includes(mode) ? mode : NameModes.PSEUDONYM;

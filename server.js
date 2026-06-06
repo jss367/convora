@@ -876,7 +876,9 @@ io.on('connection', (socket) => {
         cb({ success: false, error: 'not_authorized' });
         return;
       }
-      cb({ success: true, participants: await listParticipants(discussionSlug) });
+      // canDemote tells the UI whether to offer "Remove" — only the creator may.
+      const canDemote = !!(await verifyCreator(discussionSlug, token));
+      cb({ success: true, participants: await listParticipants(discussionSlug), canDemote });
     } catch (error) {
       console.error('Error listing participants:', error);
       cb({ success: false, error: 'server_error' });
@@ -913,11 +915,64 @@ io.on('connection', (socket) => {
       }
       await emitDiscussionState(discussionSlug);
       if (typeof cb === 'function') {
-        cb({ success: true, participants: await listParticipants(discussionSlug) });
+        const canDemote = !!(await verifyCreator(discussionSlug, token));
+        cb({ success: true, participants: await listParticipants(discussionSlug), canDemote });
       }
     } catch (error) {
       console.error('Error promoting moderator:', error);
       if (typeof cb === 'function') cb({ success: false, error: 'server_error' });
+    }
+  });
+
+  // Creator-only: remove a participant's moderator status (e.g. it was granted
+  // by mistake). Gated by verifyCreator so promoted moderators can't revoke each
+  // other or the creator. Takes effect immediately server-side — the grant is
+  // deleted, so verifyAdmin rejects that token on the next action even if the
+  // user is offline; the live moderatorRevoked push just updates their UI.
+  socket.on('demoteModerator', async (topic, token, participantId, cb) => {
+    const discussionSlug = slugifyTopic(topic);
+    try {
+      const discussionId = await verifyCreator(discussionSlug, token);
+      if (!discussionId) {
+        if (typeof cb === 'function') cb({ success: false, error: 'not_authorized' });
+        return;
+      }
+      const target = await resolveParticipant(discussionSlug, participantId);
+      if (!target) {
+        if (typeof cb === 'function') cb({ success: false, error: 'unknown_participant' });
+        return;
+      }
+      await revokeModerator(discussionId, target.userId);
+      revokeModeratorToken(discussionSlug, target.userId);
+      await emitDiscussionState(discussionSlug);
+      if (typeof cb === 'function') {
+        cb({ success: true, participants: await listParticipants(discussionSlug), canDemote: true });
+      }
+    } catch (error) {
+      console.error('Error demoting moderator:', error);
+      if (typeof cb === 'function') cb({ success: false, error: 'server_error' });
+    }
+  });
+
+  // Let a client confirm a stored moderator token is still valid. Used on load
+  // so a token revoked while the user was offline (they never got
+  // moderatorRevoked) is cleared instead of rendering a dead moderator UI.
+  // ok:false signals a server error so the client keeps the token rather than
+  // dropping a possibly-valid one on a transient failure.
+  socket.on('checkModerator', async (topic, token, cb) => {
+    if (typeof cb !== 'function') return;
+    try {
+      const slug = slugifyTopic(topic);
+      const discussionId = await verifyAdmin(slug, token);
+      // isCreator distinguishes the discussion's admin_token from a per-user
+      // moderator grant. The client uses it to initialize canDemote on load so a
+      // creator who hasn't opened the participant panel still won't have their
+      // creator token clobbered by a pushed moderatorGranted token.
+      const isCreator = discussionId ? !!(await verifyCreator(slug, token)) : false;
+      cb({ ok: true, isModerator: !!discussionId, isCreator });
+    } catch (error) {
+      console.error('Error checking moderator status:', error);
+      cb({ ok: false });
     }
   });
 
@@ -2164,6 +2219,20 @@ async function verifyAdmin(topic, token) {
   return result.rows.length > 0 ? result.rows[0].id : null;
 }
 
+// Verify that the supplied token is specifically the discussion's *creator*
+// token (admin_token), not a per-user grant. Returns the discussion id when it
+// is, else null. Used to gate creator-only actions like removing a moderator,
+// so promoted moderators can't revoke each other or the creator.
+async function verifyCreator(topic, token) {
+  if (!token) return null;
+  const slug = slugifyTopic(topic);
+  const result = await pool.query(
+    'SELECT id FROM discussions WHERE slug = $1 AND admin_token = $2',
+    [slug, token]
+  );
+  return result.rows.length > 0 ? result.rows[0].id : null;
+}
+
 // Create a discussion (or look up the existing one) and, when it has no
 // moderator yet, make the creator its moderator by minting a fresh admin token.
 // Returns the discussion id plus an adminToken that is non-null ONLY when this
@@ -2303,12 +2372,39 @@ async function getParticipants(topic) {
       ORDER BY MIN(v.created_at), v.user_id`,
     [slug]
   );
-  return result.rows.map((row) => ({
+  const participants = result.rows.map((row) => ({
     id: participantHandle(row.user_id),
     userId: row.user_id,
     pseudonym: row.pseudonym || 'Anonymous',
     isModerator: row.is_moderator === true,
   }));
+
+  // Include moderators who no longer have any votes — e.g. they were promoted
+  // after posting a Brainstorm idea, then deleted it. The list above is derived
+  // from votes, so without this they'd vanish from it while keeping a valid
+  // token, leaving the creator no row (and no way) to remove them. Append them
+  // after the voters so they can still be demoted.
+  const seen = new Set(participants.map((p) => p.userId));
+  const mods = await pool.query(
+    `SELECT m.user_id
+       FROM discussion_moderators m
+       JOIN discussions d ON m.discussion_id = d.id
+      WHERE d.slug = $1
+      ORDER BY m.id`,
+    [slug]
+  );
+  for (const row of mods.rows) {
+    if (!seen.has(row.user_id)) {
+      seen.add(row.user_id);
+      participants.push({
+        id: participantHandle(row.user_id),
+        userId: row.user_id,
+        pseudonym: 'Anonymous',
+        isModerator: true,
+      });
+    }
+  }
+  return participants;
 }
 
 // The moderator-facing view of getParticipants: opaque handle, display name,
@@ -2368,6 +2464,21 @@ function deliverModeratorToken(topic, userId, token) {
     }
   }
   return delivered;
+}
+
+// Tell a demoted user's connected sockets their moderation was revoked so their
+// UI drops the controls promptly. Best-effort/live-only: the grant is already
+// gone from the DB, so the token stops working immediately regardless of whether
+// the user is connected to receive this (verifyAdmin re-checks on every action).
+function revokeModeratorToken(topic, userId) {
+  const room = io.sockets.adapter.rooms.get(topic);
+  if (!room) return;
+  for (const socketId of room) {
+    const target = io.sockets.sockets.get(socketId);
+    if (target && target.data.userId === userId) {
+      target.emit('moderatorRevoked');
+    }
+  }
 }
 
 // Whether voting is currently closed for a discussion.
@@ -2865,7 +2976,7 @@ app.get('/api/discussions/:topic/summary', async (req, res) => {
 // the summary so the experimental clusters view can be removed cleanly.
 app.get('/api/discussions/:topic/clusters', async (req, res) => {
   try {
-    const discussion = await getDiscussionByTopic(req.params.topic);
+    const discussion = await getDiscussionBySlug(req.params.topic);
     if (!discussion) {
       return res.status(404).json({ error: 'Discussion not found' });
     }
