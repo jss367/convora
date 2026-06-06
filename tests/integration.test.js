@@ -285,6 +285,42 @@ test('Yes/No questions record a single choice that toggles off when reselected',
   }
 });
 
+test('a crafted Agreement/Yes-No vote with an unknown value is rejected, not stored', async () => {
+  const topic = uniqueTopic('vote-validation');
+  const author = await connectSocket();
+  const voter = await connectSocket();
+
+  try {
+    author.emit('joinDiscussion', topic);
+    voter.emit('joinDiscussion', topic);
+
+    const agreeAdded = waitForQuestions(author, (qs) => qs.some((q) => q.text === 'Agree?'), 'agreement added');
+    author.emit('addQuestion', topic, { text: 'Agree?', type: 'Agreement', minValue: null, maxValue: null, options: [] });
+    const agree = (await agreeAdded).find((q) => q.text === 'Agree?');
+
+    const ynAdded = waitForQuestions(author, (qs) => qs.some((q) => q.text === 'Ship?'), 'yes/no added');
+    author.emit('addQuestion', topic, { text: 'Ship?', type: 'Yes/No', minValue: null, maxValue: null, options: [] });
+    const yn = (await ynAdded).find((q) => q.text === 'Ship?');
+
+    // "constructor" is an Object.prototype key — the kind of value that used to
+    // slip through clustering's `in` check and corrupt the analysis.
+    const agreeRejected = waitForEvent(voter, 'error', (e) => /invalid vote/i.test(e.message));
+    voter.emit('vote', topic, agree.id, 'constructor', 'attacker', 'Mallory');
+    await agreeRejected;
+
+    const ynRejected = waitForEvent(voter, 'error', (e) => /invalid vote/i.test(e.message));
+    voter.emit('vote', topic, yn.id, 'Maybe', 'attacker', 'Mallory');
+    await ynRejected;
+
+    // Nothing was written for either crafted value.
+    const stored = await pool.query('SELECT COUNT(*)::int AS n FROM votes');
+    assert.equal(stored.rows[0].n, 0);
+  } finally {
+    author.disconnect();
+    voter.disconnect();
+  }
+});
+
 test('Socket.IO sanitizes display names: anonymous stores null, long names are clamped', async () => {
   const topic = uniqueTopic('names');
   const author = await connectSocket();
@@ -2028,6 +2064,41 @@ test('a moderator can edit a question before anyone responds', async () => {
     assert.equal(edited.type, 'Numerical');
     assert.equal(edited.minValue, 0);
     assert.equal(edited.maxValue, 10);
+  } finally {
+    mod.disconnect();
+  }
+});
+
+test('a moderator can edit a question to and from the Yes/No type', async () => {
+  const topic = uniqueTopic('edit-yesno');
+  const mod = await connectSocket();
+
+  try {
+    mod.emit('joinDiscussion', topic);
+    const token = await claimModerator(mod, topic);
+
+    const added = waitForQuestions(mod, (qs) => qs.some((q) => q.text === 'Agree?'), 'question added');
+    mod.emit('addQuestion', topic, { text: 'Agree?', type: 'Agreement', minValue: null, maxValue: null, options: [] });
+    const question = (await added).find((q) => q.text === 'Agree?');
+
+    // Switching an unanswered question to Yes/No must be accepted (Yes/No is a
+    // valid type, so the server-side edit validation has to allow it).
+    const toYesNo = waitForQuestions(mod, (qs) => qs[0] && qs[0].type === 'Yes/No', 'edit to Yes/No');
+    const ack = await emitWithAck(mod, 'editQuestion', topic, question.id,
+      { text: 'Yes or no?', type: 'Yes/No' }, token);
+    assert.equal(ack.updated, true);
+
+    const edited = (await toYesNo)[0];
+    assert.equal(edited.text, 'Yes or no?');
+    assert.equal(edited.type, 'Yes/No');
+
+    // Editing an existing Yes/No question (its form always re-submits type:
+    // 'Yes/No') must likewise succeed rather than be rejected as invalid.
+    const reword = waitForQuestions(mod, (qs) => qs[0] && qs[0].text === 'Yes or no, really?', 'reword broadcast');
+    const ack2 = await emitWithAck(mod, 'editQuestion', topic, question.id,
+      { text: 'Yes or no, really?', type: 'Yes/No' }, token);
+    assert.equal(ack2.updated, true);
+    assert.equal((await reword)[0].type, 'Yes/No');
   } finally {
     mod.disconnect();
   }

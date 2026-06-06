@@ -71,7 +71,11 @@ function buildVoteMatrix(questions) {
   const votedStatementIds = new Set();
   agreementQuestions.forEach(q => {
     (q.votes || []).forEach(v => {
-      if (!v.userId || !(v.value in AGREEMENT_SCORES)) {
+      // Use hasOwnProperty, not `in`: `in` also matches inherited Object
+      // prototype keys, so a crafted vote value like "constructor" or
+      // "toString" would pass the guard and pull a function off the prototype
+      // into the matrix, poisoning the clustering math with NaN.
+      if (!v.userId || !Object.prototype.hasOwnProperty.call(AGREEMENT_SCORES, v.value)) {
         return;
       }
       if (!byUser.has(v.userId)) {

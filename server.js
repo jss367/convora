@@ -837,6 +837,18 @@ io.on('connection', (socket) => {
         socket.emit('error', { message: 'Voting is closed for this discussion.' });
         return;
       }
+      // Single-choice opinion types only accept their known options. Without
+      // this, a crafted socket message could store an arbitrary string as an
+      // Agreement/Yes-No vote, skewing the results bars and the cluster
+      // analysis (which scores votes by their agreement label).
+      if (target.type === 'Agreement' && !AGREEMENT_OPTIONS.includes(vote)) {
+        socket.emit('error', { message: 'Invalid vote.' });
+        return;
+      }
+      if (target.type === 'Yes/No' && !YES_NO_OPTIONS.includes(vote)) {
+        socket.emit('error', { message: 'Invalid vote.' });
+        return;
+      }
       // Persist the reserved handle in pseudonym mode rather than the client's
       // (possibly pre-reservation, colliding) local pick — see canonicalPseudonym.
       const handle = await canonicalPseudonym(discussionSlug, target.discussionId, userId, mode, pseudonym);
@@ -1689,7 +1701,7 @@ function resolveReactionKeys(raw) {
 
 // The question types a discussion supports. Mirrors QuestionTypes in
 // client/src/DiscussionPage.jsx — used to validate edits server-side.
-const VALID_QUESTION_TYPES = new Set(['Agreement', 'Numerical', 'Open Ended', 'Brainstorm']);
+const VALID_QUESTION_TYPES = new Set(['Agreement', 'Yes/No', 'Numerical', 'Open Ended', 'Brainstorm']);
 
 // Enrich Brainstorm responses in place with aggregated interaction data:
 // quality up/down tallies, the agreement distribution, reaction counts, and
@@ -2515,7 +2527,7 @@ async function isModeratorOnlyQuestions(topic) {
 async function getQuestionForTopic(topic, questionId) {
   const slug = slugifyTopic(topic);
   const result = await pool.query(
-    `SELECT q.id, q.discussion_id, d.locked
+    `SELECT q.id, q.type, q.discussion_id, d.locked
      FROM questions q
      JOIN discussions d ON q.discussion_id = d.id
      WHERE d.slug = $1 AND q.id = $2`,
@@ -2524,6 +2536,7 @@ async function getQuestionForTopic(topic, questionId) {
   if (result.rows.length === 0) return null;
   return {
     id: result.rows[0].id,
+    type: result.rows[0].type,
     discussionId: result.rows[0].discussion_id,
     locked: result.rows[0].locked === true,
   };
