@@ -2611,9 +2611,11 @@ function* allPseudonyms() {
 // user in this discussion (UNIQUE(discussion_id, pseudonym) violation), so the
 // caller can try the next candidate. This is what makes concurrent joins safe:
 // the database, not a read-then-write in JS, is the arbiter of uniqueness.
-async function reservePseudonym(discussionId, userId, name) {
+// `executor` is the pool or a transaction client — assignPseudonym passes its
+// locked transaction so the insert participates in the per-user serialization.
+async function reservePseudonym(executor, discussionId, userId, name) {
   try {
-    const result = await pool.query(
+    const result = await executor.query(
       `INSERT INTO discussion_pseudonyms (discussion_id, user_id, pseudonym)
        VALUES ($1, $2, $3)
        ON CONFLICT (discussion_id, user_id)
@@ -2653,73 +2655,104 @@ async function assignPseudonym(slug, userId, preferred, { regenerate = false } =
   }
   const discussionId = discussionResult.rows[0].id;
 
-  const existingResult = await pool.query(
-    'SELECT pseudonym FROM discussion_pseudonyms WHERE discussion_id = $1 AND user_id = $2',
-    [discussionId, userId]
-  );
-  const current = existingResult.rows[0] ? existingResult.rows[0].pseudonym : null;
-  if (current && !regenerate) return { pseudonym: current, reserved: true };
+  // Serialize assignment for a single (discussion, user) across connections.
+  // Two assignments for the same participant can run concurrently — e.g. their
+  // initial requestPseudonym racing the write-time canonicalization of their
+  // first vote/comment (issue #57). Without serialization both could observe "no
+  // reservation", pick DIFFERENT free handles, and the later upsert would
+  // overwrite the row the response was already stored under — leaving the
+  // response on a now-noncanonical handle. A transaction-scoped advisory lock
+  // keyed on (discussion, user) makes the second caller wait, then see the first
+  // caller's committed row and return it. The lock is per-participant, so
+  // different users still reserve concurrently (the DB unique constraint remains
+  // the arbiter between users).
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('SELECT pg_advisory_xact_lock($1, hashtext($2))', [discussionId, userId]);
 
-  // Names already in use in this discussion, so we can skip them up front (the
-  // DB still has the final say via reservePseudonym's unique constraint). We
-  // union two sources: the reservation table, AND handles already shown on
-  // existing votes/comments by OTHER users. The latter matters for discussions
-  // that predate this migration (whose reservation table starts empty while old
-  // responses already display handles) — without it a newcomer could be handed a
-  // name already visible on someone else's old response. We exclude the
-  // requesting user's own responses so a returning participant can reclaim the
-  // handle their existing responses already show.
-  const takenResult = await pool.query(
-    `SELECT pseudonym FROM discussion_pseudonyms WHERE discussion_id = $1
-     UNION
-     SELECT v.pseudonym
-       FROM votes v
-       JOIN questions q ON v.question_id = q.id
-      WHERE q.discussion_id = $1 AND v.user_id <> $2 AND v.pseudonym IS NOT NULL
-     UNION
-     SELECT c.pseudonym
-       FROM response_comments c
-       JOIN votes v ON c.response_id = v.id
-       JOIN questions q ON v.question_id = q.id
-      WHERE q.discussion_id = $1 AND c.user_id <> $2 AND c.pseudonym IS NOT NULL`,
-    [discussionId, userId]
-  );
-  const taken = new Set(takenResult.rows.map((row) => row.pseudonym));
+    const existingResult = await client.query(
+      'SELECT pseudonym FROM discussion_pseudonyms WHERE discussion_id = $1 AND user_id = $2',
+      [discussionId, userId]
+    );
+    const current = existingResult.rows[0] ? existingResult.rows[0].pseudonym : null;
+    if (current && !regenerate) {
+      await client.query('COMMIT');
+      return { pseudonym: current, reserved: true };
+    }
 
-  // Candidates to try, in priority order: the user's preferred name (unless
-  // regenerating), then a few cheap random probes, then every remaining free
-  // combination so we never give up while a name is still available.
-  const candidates = [];
-  const sanitizedPreferred = sanitizePseudonym(preferred);
-  if (!regenerate && sanitizedPreferred && !taken.has(sanitizedPreferred)) {
-    candidates.push(sanitizedPreferred);
-  }
-  for (let i = 0; i < 16; i++) {
-    const probe = randomPseudonym();
-    if (probe !== current && !taken.has(probe)) candidates.push(probe);
-  }
-  for (const name of allPseudonyms()) {
-    if (name !== current && !taken.has(name)) candidates.push(name);
-  }
+    // Names already in use in this discussion, so we can skip them up front (the
+    // DB still has the final say via reservePseudonym's unique constraint). We
+    // union two sources: the reservation table, AND handles already shown on
+    // existing votes/comments by OTHER users. The latter matters for discussions
+    // that predate this migration (whose reservation table starts empty while old
+    // responses already display handles) — without it a newcomer could be handed a
+    // name already visible on someone else's old response. We exclude the
+    // requesting user's own responses so a returning participant can reclaim the
+    // handle their existing responses already show.
+    const takenResult = await client.query(
+      `SELECT pseudonym FROM discussion_pseudonyms WHERE discussion_id = $1
+       UNION
+       SELECT v.pseudonym
+         FROM votes v
+         JOIN questions q ON v.question_id = q.id
+        WHERE q.discussion_id = $1 AND v.user_id <> $2 AND v.pseudonym IS NOT NULL
+       UNION
+       SELECT c.pseudonym
+         FROM response_comments c
+         JOIN votes v ON c.response_id = v.id
+         JOIN questions q ON v.question_id = q.id
+        WHERE q.discussion_id = $1 AND c.user_id <> $2 AND c.pseudonym IS NOT NULL`,
+      [discussionId, userId]
+    );
+    const taken = new Set(takenResult.rows.map((row) => row.pseudonym));
 
-  for (const name of candidates) {
-    const reserved = await reservePseudonym(discussionId, userId, name);
-    if (reserved) return { pseudonym: reserved, reserved: true };
-  }
+    // Candidates to try, in priority order: the user's preferred name (unless
+    // regenerating), then a few cheap random probes, then every remaining free
+    // combination so we never give up while a name is still available.
+    const candidates = [];
+    const sanitizedPreferred = sanitizePseudonym(preferred);
+    if (!regenerate && sanitizedPreferred && !taken.has(sanitizedPreferred)) {
+      candidates.push(sanitizedPreferred);
+    }
+    for (let i = 0; i < 16; i++) {
+      const probe = randomPseudonym();
+      if (probe !== current && !taken.has(probe)) candidates.push(probe);
+    }
+    for (const name of allPseudonyms()) {
+      if (name !== current && !taken.has(name)) candidates.push(name);
+    }
 
-  // Every one of the ~2300 combinations is taken (>2300 participants in a single
-  // discussion). Only here do we resort to a numbered handle so the user still
-  // gets a name; log it because it means the pool should grow.
-  console.warn(`Pseudonym pool exhausted for discussion ${discussionId}; falling back to a numbered handle`);
-  const base = sanitizedPreferred || randomPseudonym();
-  for (let n = 2; ; n++) {
-    // Trim the base so the suffix survives the length cap — otherwise a base
-    // already at MAX_PSEUDONYM_LENGTH would slice the " <n>" back off, producing
-    // the same taken string every iteration and looping forever without acking.
-    const suffix = ` ${n}`;
-    const name = `${base.slice(0, MAX_PSEUDONYM_LENGTH - suffix.length)}${suffix}`;
-    const reserved = await reservePseudonym(discussionId, userId, name);
-    if (reserved) return { pseudonym: reserved, reserved: true };
+    for (const name of candidates) {
+      const reserved = await reservePseudonym(client, discussionId, userId, name);
+      if (reserved) {
+        await client.query('COMMIT');
+        return { pseudonym: reserved, reserved: true };
+      }
+    }
+
+    // Every one of the ~2300 combinations is taken (>2300 participants in a single
+    // discussion). Only here do we resort to a numbered handle so the user still
+    // gets a name; log it because it means the pool should grow.
+    console.warn(`Pseudonym pool exhausted for discussion ${discussionId}; falling back to a numbered handle`);
+    const base = sanitizedPreferred || randomPseudonym();
+    for (let n = 2; ; n++) {
+      // Trim the base so the suffix survives the length cap — otherwise a base
+      // already at MAX_PSEUDONYM_LENGTH would slice the " <n>" back off, producing
+      // the same taken string every iteration and looping forever without acking.
+      const suffix = ` ${n}`;
+      const name = `${base.slice(0, MAX_PSEUDONYM_LENGTH - suffix.length)}${suffix}`;
+      const reserved = await reservePseudonym(client, discussionId, userId, name);
+      if (reserved) {
+        await client.query('COMMIT');
+        return { pseudonym: reserved, reserved: true };
+      }
+    }
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    client.release();
   }
 }
 

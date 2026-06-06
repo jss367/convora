@@ -1950,6 +1950,52 @@ test('Issue #57: a pseudonym-mode vote with no prior reservation reserves a deco
   }
 });
 
+test('Issue #57: a vote racing the same user\'s requestPseudonym converges on one reserved handle', async () => {
+  const topic = uniqueTopic('canonicalize-concurrent');
+  const author = await connectSocket();
+  let question;
+  try {
+    author.emit('joinDiscussion', topic);
+    question = await addBrainstormQuestion(author, topic, 'Ideas?');
+  } finally {
+    author.disconnect();
+  }
+
+  const a = await connectSocket();
+  const b = await connectSocket();
+  try {
+    a.emit('joinDiscussion', topic);
+    // "Tidy Newt" is already taken, so both of user-a's concurrent assignments
+    // must deconflict — the case where, unserialized, they could pick different
+    // handles and leave the vote stored under a non-canonical one.
+    await emitWithAck(b, 'requestPseudonym', topic, 'user-b', 'Tidy Newt');
+
+    // Fire the reservation and the pseudonym-mode vote for the SAME user at once.
+    // The per-(discussion,user) advisory lock serializes them, so whichever runs
+    // second observes the first's row — the stored vote handle and the final
+    // reservation must agree, and there must be exactly one reservation.
+    const voteUpdate = waitForQuestions(
+      a,
+      (qs) => qs[0] && qs[0].votes.some((v) => v.value === 'concurrent idea'),
+      'concurrent vote'
+    );
+    const reqAck = emitWithAck(a, 'requestPseudonym', topic, 'user-a', 'Tidy Newt');
+    a.emit('vote', topic, question.id, 'concurrent idea', 'user-a', 'Tidy Newt', 'pseudonym');
+    const reserved = await reqAck;
+    const vote = (await voteUpdate)[0].votes.find((v) => v.value === 'concurrent idea');
+
+    const rows = await pool.query(
+      'SELECT pseudonym FROM discussion_pseudonyms WHERE user_id = $1', ['user-a']);
+    assert.equal(rows.rows.length, 1, 'exactly one reservation for user-a');
+    assert.equal(reserved.pseudonym, rows.rows[0].pseudonym, 'ack matches the reservation row');
+    assert.equal(vote.pseudonym, rows.rows[0].pseudonym, 'stored vote handle matches the reservation');
+    assert.notEqual(vote.pseudonym, 'Tidy Newt', 'deconflicted away from the taken handle');
+  } finally {
+    a.disconnect();
+    b.disconnect();
+  }
+});
+
 test('Issue #57: a pseudonym-mode comment sent under a stale colliding name persists under the reserved handle', async () => {
   const topic = uniqueTopic('canonicalize-comment');
   const mod = await connectSocket();
