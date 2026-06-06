@@ -702,6 +702,31 @@ async function emitDiscussionState(topic) {
   io.to(topic).emit('discussionState', await getDiscussionState(topic));
 }
 
+// Resolve the authoritative userId for a socket connection.
+//
+// Identity is a per-CONNECTION property, not a per-message one. We pin it to the
+// socket the first time the client presents its id (via `identify` on connect, or
+// the first ownership action), and from then on every vote / rating / reaction /
+// comment / delete / rename derives ownership from `socket.data.userId` — never
+// from a userId field re-supplied in each individual message. That is what stops
+// a participant from acting as someone else: a socket can only ever be the one
+// identity it first claimed and cannot switch mid-connection, so naming a
+// different id in a later message is ignored rather than honored.
+//
+// This is layered on top of the fact that userId is an unguessable per-browser
+// secret that is never put on the wire (getQuestions replaces it with per-response
+// ownership tokens — see the tokenization there), so a client cannot learn, and
+// therefore cannot claim, an identity that isn't its own in the first place.
+//
+// `claimed` is consulted ONLY to bootstrap an as-yet-unpinned socket; once pinned
+// it is ignored. Returns null if the socket has no identity and none was supplied.
+function bindSocketUser(socket, claimed) {
+  if (!socket.data.userId && claimed) {
+    socket.data.userId = claimed;
+  }
+  return socket.data.userId || null;
+}
+
 // WebSocket handlers
 io.on('connection', (socket) => {
   console.log('New client connected');
@@ -731,18 +756,17 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Associate this socket with the client's persistent userId so the server can
-  // route a live moderator grant to it when a moderator promotes this user.
+  // Pin this socket to the client's persistent userId (see bindSocketUser) so the
+  // server can route a live moderator grant to it when a moderator promotes this
+  // user, and so every ownership action on the connection is attributed correctly.
   //
-  // Deliberately does NOT hand back an existing moderator token here: userId is
-  // not a secret (getQuestions broadcasts each vote's userId to the whole room),
-  // so re-delivering a token to anyone who supplies a promoted user's id would
-  // let an observer steal moderator access. A genuinely promoted user receives
-  // their token live at promotion time and persists it locally (so it survives
-  // reloads/reconnects via verifyAdmin); we never re-mint it from the id alone.
+  // Deliberately does NOT hand back an existing moderator token here: re-delivering
+  // a token to anyone who merely supplies a promoted user's id would let a leaked
+  // id be replayed into moderator access. A genuinely promoted user receives their
+  // token live at promotion time and persists it locally (so it survives reloads /
+  // reconnects via verifyAdmin); we never re-mint it from the id alone.
   socket.on('identify', (topic, userId) => {
-    if (!userId) return;
-    socket.data.userId = userId;
+    bindSocketUser(socket, userId);
   });
 
   socket.on('leaveDiscussion', (topic) => {
@@ -822,8 +846,15 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('vote', async (topic, questionId, vote, userId, pseudonym, mode) => {
+  socket.on('vote', async (topic, questionId, vote, claimedUserId, pseudonym, mode) => {
     const discussionSlug = slugifyTopic(topic);
+    // Attribute the vote to the socket's pinned identity, not to whatever id the
+    // message carries, so a client can't cast votes as another participant.
+    const userId = bindSocketUser(socket, claimedUserId);
+    if (!userId) {
+      socket.emit('error', { message: 'Failed to handle vote' });
+      return;
+    }
     try {
       // Verify the question actually belongs to this topic AND that the topic is
       // not locked. Without this, a client could bypass a locked discussion by
@@ -1159,8 +1190,10 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('toggleResponseVote', async (topic, responseId, userId) => {
+  socket.on('toggleResponseVote', async (topic, responseId, claimedUserId) => {
     const discussionSlug = slugifyTopic(topic);
+    const userId = bindSocketUser(socket, claimedUserId);
+    if (!userId) return;
     try {
       await toggleResponseVote(discussionSlug, responseId, userId);
       const questions = await getQuestions(discussionSlug);
@@ -1174,8 +1207,10 @@ io.on('connection', (socket) => {
   // Set/clear one axis (quality or agreement) of a user's rating on a brainstorm
   // idea. Gated on the question being a Brainstorm with reactions currently
   // revealed, so a hidden/disabled phase can't be rated through a crafted event.
-  socket.on('setResponseRating', async (topic, responseId, axis, value, userId) => {
+  socket.on('setResponseRating', async (topic, responseId, axis, value, claimedUserId) => {
     const discussionSlug = slugifyTopic(topic);
+    const userId = bindSocketUser(socket, claimedUserId);
+    if (!userId) return;
     try {
       if (axis !== 'quality' && axis !== 'agreement') return;
       const ctx = await getResponseContext(topic, responseId);
@@ -1193,8 +1228,10 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('toggleResponseReaction', async (topic, responseId, reaction, userId) => {
+  socket.on('toggleResponseReaction', async (topic, responseId, reaction, claimedUserId) => {
     const discussionSlug = slugifyTopic(topic);
+    const userId = bindSocketUser(socket, claimedUserId);
+    if (!userId) return;
     try {
       const ctx = await getResponseContext(topic, responseId);
       if (!ctx || ctx.locked || ctx.type !== 'Brainstorm' || !ctx.reactionsEnabled || !ctx.reactionsVisible) return;
@@ -1210,13 +1247,18 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('addResponseComment', async (topic, responseId, body, userId, pseudonym, mode, ack) => {
+  socket.on('addResponseComment', async (topic, responseId, body, claimedUserId, pseudonym, mode, ack) => {
     const discussionSlug = slugifyTopic(topic);
     // socket.io always delivers the ack callback as the final argument. A client
     // that doesn't send a name `mode` (e.g. an older build) lands its ack in the
     // `mode` slot, so normalize: if `mode` is the callback, there was no mode.
     if (typeof mode === 'function') { ack = mode; mode = undefined; }
     const reply = (result) => { if (typeof ack === 'function') ack(result); };
+    const userId = bindSocketUser(socket, claimedUserId);
+    if (!userId) {
+      reply({ added: false });
+      return;
+    }
     try {
       const ctx = await getResponseContext(topic, responseId);
       // A locked discussion has new statements closed; comments are statements.
@@ -1248,8 +1290,10 @@ io.on('connection', (socket) => {
 
   // Delete a comment. Scoped through the discussion and to the comment's own
   // author, so a participant can only remove their own comments.
-  socket.on('deleteResponseComment', async (topic, commentId, userId) => {
+  socket.on('deleteResponseComment', async (topic, commentId, claimedUserId) => {
     const discussionSlug = slugifyTopic(topic);
+    const userId = bindSocketUser(socket, claimedUserId);
+    if (!userId) return;
     try {
       await pool.query(
         `DELETE FROM response_comments c
@@ -1360,7 +1404,8 @@ io.on('connection', (socket) => {
 
   // Return the requesting user's own ratings/reactions so the client can restore
   // its selected state after a reload or reconnect.
-  socket.on('getBrainstormState', async (topic, userId, ack) => {
+  socket.on('getBrainstormState', async (topic, claimedUserId, ack) => {
+    const userId = bindSocketUser(socket, claimedUserId);
     try {
       const state = await getMyBrainstormState(topic, userId);
       if (typeof ack === 'function') ack(state);
@@ -1370,8 +1415,10 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('deleteVote', async (topic, voteId, userId) => {
+  socket.on('deleteVote', async (topic, voteId, claimedUserId) => {
     const discussionSlug = slugifyTopic(topic);
+    const userId = bindSocketUser(socket, claimedUserId);
+    if (!userId) return;
     try {
       await deleteVote(voteId, userId);
       const questions = await getQuestions(discussionSlug);
@@ -1430,8 +1477,9 @@ io.on('connection', (socket) => {
   // it if free and substitutes a different one if it's already taken, so two
   // people never end up as the same "Tidy Newt". Stable across reloads (a user
   // who already has a reservation gets it back).
-  socket.on('requestPseudonym', async (topic, userId, preferred, cb) => {
+  socket.on('requestPseudonym', async (topic, claimedUserId, preferred, cb) => {
     if (typeof cb !== 'function') return;
+    const userId = bindSocketUser(socket, claimedUserId);
     try {
       if (!topic || !userId) {
         cb({ pseudonym: sanitizePseudonym(preferred), reserved: false });
@@ -1448,8 +1496,9 @@ io.on('connection', (socket) => {
 
   // Shuffle: give this user a brand-new handle, still unique within the
   // discussion and different from their current one.
-  socket.on('regeneratePseudonym', async (topic, userId, cb) => {
+  socket.on('regeneratePseudonym', async (topic, claimedUserId, cb) => {
     if (typeof cb !== 'function') return;
+    const userId = bindSocketUser(socket, claimedUserId);
     try {
       if (!topic || !userId) {
         cb({ pseudonym: null, reserved: false });
@@ -1471,8 +1520,9 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('updateDisplayName', async (topic, userId, displayName) => {
+  socket.on('updateDisplayName', async (topic, claimedUserId, displayName) => {
     const discussionSlug = slugifyTopic(topic);
+    const userId = bindSocketUser(socket, claimedUserId);
     try {
       if (!topic || !userId) return;
       const pseudonym = sanitizePseudonym(displayName);
