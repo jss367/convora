@@ -285,6 +285,42 @@ test('Yes/No questions record a single choice that toggles off when reselected',
   }
 });
 
+test('a crafted Agreement/Yes-No vote with an unknown value is rejected, not stored', async () => {
+  const topic = uniqueTopic('vote-validation');
+  const author = await connectSocket();
+  const voter = await connectSocket();
+
+  try {
+    author.emit('joinDiscussion', topic);
+    voter.emit('joinDiscussion', topic);
+
+    const agreeAdded = waitForQuestions(author, (qs) => qs.some((q) => q.text === 'Agree?'), 'agreement added');
+    author.emit('addQuestion', topic, { text: 'Agree?', type: 'Agreement', minValue: null, maxValue: null, options: [] });
+    const agree = (await agreeAdded).find((q) => q.text === 'Agree?');
+
+    const ynAdded = waitForQuestions(author, (qs) => qs.some((q) => q.text === 'Ship?'), 'yes/no added');
+    author.emit('addQuestion', topic, { text: 'Ship?', type: 'Yes/No', minValue: null, maxValue: null, options: [] });
+    const yn = (await ynAdded).find((q) => q.text === 'Ship?');
+
+    // "constructor" is an Object.prototype key — the kind of value that used to
+    // slip through clustering's `in` check and corrupt the analysis.
+    const agreeRejected = waitForEvent(voter, 'error', (e) => /invalid vote/i.test(e.message));
+    voter.emit('vote', topic, agree.id, 'constructor', 'attacker', 'Mallory');
+    await agreeRejected;
+
+    const ynRejected = waitForEvent(voter, 'error', (e) => /invalid vote/i.test(e.message));
+    voter.emit('vote', topic, yn.id, 'Maybe', 'attacker', 'Mallory');
+    await ynRejected;
+
+    // Nothing was written for either crafted value.
+    const stored = await pool.query('SELECT COUNT(*)::int AS n FROM votes');
+    assert.equal(stored.rows[0].n, 0);
+  } finally {
+    author.disconnect();
+    voter.disconnect();
+  }
+});
+
 test('Socket.IO sanitizes display names: anonymous stores null, long names are clamped', async () => {
   const topic = uniqueTopic('names');
   const author = await connectSocket();

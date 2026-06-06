@@ -837,6 +837,18 @@ io.on('connection', (socket) => {
         socket.emit('error', { message: 'Voting is closed for this discussion.' });
         return;
       }
+      // Single-choice opinion types only accept their known options. Without
+      // this, a crafted socket message could store an arbitrary string as an
+      // Agreement/Yes-No vote, skewing the results bars and the cluster
+      // analysis (which scores votes by their agreement label).
+      if (target.type === 'Agreement' && !AGREEMENT_OPTIONS.includes(vote)) {
+        socket.emit('error', { message: 'Invalid vote.' });
+        return;
+      }
+      if (target.type === 'Yes/No' && !YES_NO_OPTIONS.includes(vote)) {
+        socket.emit('error', { message: 'Invalid vote.' });
+        return;
+      }
       await addVote(questionId, vote, userId, pseudonym);
       const questions = await getQuestions(discussionSlug);
       io.to(discussionSlug).emit('questions', questions);
@@ -2502,14 +2514,14 @@ async function isModeratorOnlyQuestions(topic) {
 async function getQuestionForTopic(topic, questionId) {
   const slug = slugifyTopic(topic);
   const result = await pool.query(
-    `SELECT q.id, d.locked
+    `SELECT q.id, q.type, d.locked
      FROM questions q
      JOIN discussions d ON q.discussion_id = d.id
      WHERE d.slug = $1 AND q.id = $2`,
     [slug, questionId]
   );
   if (result.rows.length === 0) return null;
-  return { id: result.rows[0].id, locked: result.rows[0].locked === true };
+  return { id: result.rows[0].id, type: result.rows[0].type, locked: result.rows[0].locked === true };
 }
 
 // Return the text of the most similar existing statement in the discussion if
