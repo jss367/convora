@@ -759,22 +759,24 @@ function emitPresence(topic) {
 const ALLOWED_THEMES = ['indigo', 'orange', 'emerald', 'rose', 'slate'];
 const DEFAULT_THEME = 'indigo';
 
-// Read the lock state, chosen color theme, whether a moderator has been claimed,
-// and the discussion-wide brainstorm interaction flags. The flags live on the
-// discussion (not individual questions) so a moderator opens reactions/comments
-// for the whole room at once; this channel drives the moderator's toggle
-// buttons and gates the participant-facing reaction/comment UI.
+// Read the lock state, the moderator-only-questions state, the chosen color
+// theme, whether a moderator has been claimed, and the discussion-wide
+// brainstorm interaction flags. The flags live on the discussion (not
+// individual questions) so a moderator opens reactions/comments for the whole
+// room at once; this channel drives the moderator's toggle buttons and gates
+// the participant-facing reaction/comment UI.
 async function getDiscussionState(topic) {
   const slug = slugifyTopic(topic);
   const result = await pool.query(
-    `SELECT locked, theme, reaction_keys, admin_token IS NOT NULL AS has_moderator,
+    `SELECT locked, moderator_only_questions, theme, reaction_keys,
+            admin_token IS NOT NULL AS has_moderator,
             reactions_enabled, reactions_visible, comments_enabled
        FROM discussions WHERE slug = $1`,
     [slug]
   );
   if (result.rows.length === 0) {
     return {
-      locked: false, hasModerator: false, theme: DEFAULT_THEME,
+      locked: false, moderatorOnly: false, hasModerator: false, theme: DEFAULT_THEME,
       reactionsEnabled: false, reactionsVisible: true, commentsEnabled: false,
       reactionKeys: [...DEFAULT_REACTION_KEYS],
     };
@@ -782,6 +784,7 @@ async function getDiscussionState(topic) {
   const row = result.rows[0];
   return {
     locked: row.locked === true,
+    moderatorOnly: row.moderator_only_questions === true,
     hasModerator: row.has_moderator === true,
     theme: row.theme || DEFAULT_THEME,
     reactionsEnabled: row.reactions_enabled === true,
@@ -850,7 +853,15 @@ io.on('connection', (socket) => {
     emitPresence(roomToLeave);
   });
 
-  socket.on('addQuestion', async (topic, question, force, ack) => {
+  socket.on('addQuestion', async (topic, question, force, token, ack) => {
+    // Back-compat: pre-deploy clients (and external Socket.IO callers) used the
+    // old (topic, question, force, ack) signature, which binds their ack
+    // callback to `token`. Detect that and move it back to `ack`, clearing
+    // `token` so the submitter is simply treated as a non-moderator.
+    if (typeof token === 'function' && ack === undefined) {
+      ack = token;
+      token = undefined;
+    }
     const discussionSlug = slugifyTopic(topic);
     console.log('Received addQuestion event');
     console.log('topic:', discussionSlug);
@@ -868,6 +879,18 @@ io.on('connection', (socket) => {
         socket.emit('error', { message: 'This discussion is locked.' });
         reply({ added: false, reason: 'locked' });
         return;
+      }
+
+      // When the discussion is moderator-only, reject submissions from anyone who
+      // can't prove they moderate it. Voting stays open — this gates only new
+      // questions, so a moderator can curate the agenda then open it to the floor.
+      if (await isModeratorOnlyQuestions(discussionSlug)) {
+        const discussionId = await verifyAdmin(discussionSlug, token);
+        if (!discussionId) {
+          socket.emit('error', { message: 'Only the moderator can add questions right now.' });
+          reply({ added: false, reason: 'moderator_only' });
+          return;
+        }
       }
 
       // Surface a near-duplicate so the submitter can vote on the existing
@@ -1032,6 +1055,22 @@ io.on('connection', (socket) => {
       await emitDiscussionState(discussionSlug);
     } catch (error) {
       console.error('Error setting lock state:', error);
+      socket.emit('error', { message: 'Failed to update discussion' });
+    }
+  });
+
+  socket.on('setModeratorOnly', async (topic, moderatorOnly, token) => {
+    const discussionSlug = slugifyTopic(topic);
+    try {
+      const discussionId = await verifyAdmin(discussionSlug, token);
+      if (!discussionId) {
+        socket.emit('error', { message: 'Not authorized to moderate this discussion.' });
+        return;
+      }
+      await pool.query('UPDATE discussions SET moderator_only_questions = $1 WHERE id = $2', [!!moderatorOnly, discussionId]);
+      await emitDiscussionState(discussionSlug);
+    } catch (error) {
+      console.error('Error setting moderator-only state:', error);
       socket.emit('error', { message: 'Failed to update discussion' });
     }
   });
@@ -2093,12 +2132,16 @@ async function migrateBrainstormInteractions() {
   console.log('Brainstorm interactions migration completed');
 }
 
-// Moderation columns: a per-discussion admin token, a discussion lock, and a
-// per-question pin flag. Plus the pg_trgm extension for near-duplicate
-// statement detection. All idempotent.
+// Moderation columns: a per-discussion admin token, a discussion lock, a
+// moderator-only-questions flag, and a per-question pin flag. Plus the pg_trgm
+// extension for near-duplicate statement detection. All idempotent.
 async function migrateModerationAndDedup() {
   await pool.query('ALTER TABLE discussions ADD COLUMN IF NOT EXISTS admin_token TEXT');
   await pool.query('ALTER TABLE discussions ADD COLUMN IF NOT EXISTS locked BOOLEAN NOT NULL DEFAULT FALSE');
+  // When true, only moderators may add questions; everyone can still vote. Lets a
+  // moderator set the agenda ("here are the questions") and open it to the floor
+  // at will, independent of the all-or-nothing `locked` flag.
+  await pool.query('ALTER TABLE discussions ADD COLUMN IF NOT EXISTS moderator_only_questions BOOLEAN NOT NULL DEFAULT FALSE');
   // Per-discussion color theme the moderator picks; 'indigo' is the original look.
   await pool.query("ALTER TABLE discussions ADD COLUMN IF NOT EXISTS theme TEXT NOT NULL DEFAULT 'indigo'");
   await pool.query('ALTER TABLE questions ADD COLUMN IF NOT EXISTS pinned BOOLEAN NOT NULL DEFAULT FALSE');
@@ -2362,6 +2405,13 @@ async function isDiscussionLocked(topic) {
   const slug = slugifyTopic(topic);
   const result = await pool.query('SELECT locked FROM discussions WHERE slug = $1', [slug]);
   return result.rows.length > 0 ? result.rows[0].locked === true : false;
+}
+
+// Whether only moderators may currently add questions to a discussion.
+async function isModeratorOnlyQuestions(topic) {
+  const slug = slugifyTopic(topic);
+  const result = await pool.query('SELECT moderator_only_questions FROM discussions WHERE slug = $1', [slug]);
+  return result.rows.length > 0 ? result.rows[0].moderator_only_questions === true : false;
 }
 
 // Confirm a question belongs to the given topic and report whether that

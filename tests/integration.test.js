@@ -1092,6 +1092,101 @@ test('Brainstorm ratings, reactions, and comments are rejected once the discussi
   }
 });
 
+test('moderator-only mode lets only moderators add questions while voting stays open', async () => {
+  const topic = uniqueTopic('mod-only-questions');
+  const mod = await connectSocket();
+  const participant = await connectSocket();
+
+  try {
+    mod.emit('joinDiscussion', topic);
+    participant.emit('joinDiscussion', topic);
+    const token = await claimModerator(mod, topic);
+
+    // Turn on moderator-only questions and wait for the state to broadcast.
+    const restricted = waitForEvent(participant, 'discussionState', (s) => s.moderatorOnly === true);
+    mod.emit('setModeratorOnly', topic, true, token);
+    await restricted;
+
+    // A participant with no moderator token is bounced...
+    const rejected = await emitWithAck(
+      participant,
+      'addQuestion',
+      topic,
+      { text: 'Can I ask this?', type: 'Agreement', minValue: null, maxValue: null, options: [] },
+      false,
+      null
+    );
+    assert.equal(rejected.added, false, 'participant submission must be rejected');
+    assert.equal(rejected.reason, 'moderator_only');
+
+    // ...but the moderator can add a question with their token. Register the
+    // listener before emitting: the server broadcasts 'questions' before it acks.
+    const questionAdded = waitForQuestions(mod, (qs) => qs.length === 1, 'moderator question added');
+    const modAdded = await emitWithAck(
+      mod,
+      'addQuestion',
+      topic,
+      { text: 'Moderator agenda item', type: 'Agreement', minValue: null, maxValue: null, options: [] },
+      false,
+      token
+    );
+    assert.equal(modAdded.added, true, 'moderator submission must be accepted');
+
+    const questions = await questionAdded;
+    const questionId = questions[0].id;
+    assert.equal(questions[0].text, 'Moderator agenda item');
+
+    // Voting stays open for everyone even while questions are restricted.
+    const voted = waitForQuestions(mod, (qs) => qs[0] && qs[0].votes.length === 1, 'participant vote recorded');
+    participant.emit('vote', topic, questionId, 'Agree', 'user-voter', 'Voter');
+    await voted;
+
+    // Reopening lets participants add questions again.
+    const opened = waitForEvent(participant, 'discussionState', (s) => s.moderatorOnly === false);
+    mod.emit('setModeratorOnly', topic, false, token);
+    await opened;
+
+    const accepted = await emitWithAck(
+      participant,
+      'addQuestion',
+      topic,
+      { text: 'Now I can ask', type: 'Agreement', minValue: null, maxValue: null, options: [] },
+      false,
+      null
+    );
+    assert.equal(accepted.added, true, 'participant submission must be accepted once reopened');
+  } finally {
+    mod.disconnect();
+    participant.disconnect();
+  }
+});
+
+test('setModeratorOnly rejects callers without a valid moderator token', async () => {
+  const topic = uniqueTopic('mod-only-auth');
+  const mod = await connectSocket();
+  const intruder = await connectSocket();
+
+  try {
+    mod.emit('joinDiscussion', topic);
+    intruder.emit('joinDiscussion', topic);
+    await claimModerator(mod, topic);
+
+    // An attempt with a bogus token must not change the discussion's state.
+    const errored = waitForEvent(intruder, 'error');
+    intruder.emit('setModeratorOnly', topic, true, 'not-a-real-token');
+    await errored;
+
+    // beforeEach truncates, and only the moderator's claim created a discussion,
+    // so the single row reflects whether the bogus token managed to flip the flag.
+    const state = await pool.query('SELECT moderator_only_questions FROM discussions');
+    assert.equal(state.rows.length, 1);
+    assert.equal(state.rows[0].moderator_only_questions, false);
+  } finally {
+    mod.disconnect();
+    intruder.disconnect();
+  }
+});
+
 test('Renaming updates stored comment pseudonyms, and comment tokens are namespaced', async () => {
   const topic = uniqueTopic('brainstorm-rename');
   const mod = await connectSocket();
