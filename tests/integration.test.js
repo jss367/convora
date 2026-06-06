@@ -53,10 +53,11 @@ test('server startup creates schema and applies the pseudonym migration', async 
     SELECT column_name
     FROM information_schema.columns
     WHERE table_schema = 'public'
-      AND table_name = 'votes'
-      AND column_name = 'pseudonym'
+      AND ((table_name = 'votes' AND column_name = 'pseudonym')
+        OR (table_name = 'discussions' AND column_name = 'short_code'))
+    ORDER BY table_name, column_name
   `);
-  assert.equal(columns.rowCount, 1);
+  assert.deepEqual(columns.rows.map((row) => row.column_name), ['short_code', 'pseudonym']);
 });
 
 test('HTTP API creates and fetches discussions', async () => {
@@ -103,6 +104,49 @@ test('HTTP API resolves legacy title routes before falling back to canonical slu
   assert.equal(resolveSlug.status, 200);
   assert.equal(resolveSlug.body.topic, 'C++');
   assert.equal(resolveSlug.body.slug, 'c');
+});
+
+test('moderators can generate short links that redirect to the discussion', async () => {
+  const topic = uniqueTopic('short-link');
+  const createResponse = await jsonRequest('POST', '/api/discussions', { topic });
+  const { adminToken, slug } = createResponse.body;
+
+  const denied = await jsonRequest('POST', `/api/discussions/${slug}/short-link`, { adminToken: 'bogus-token' });
+  assert.equal(denied.status, 403);
+
+  const generated = await jsonRequest('POST', `/api/discussions/${slug}/short-link`, { adminToken });
+  assert.equal(generated.status, 200);
+  assert.equal(generated.body.success, true);
+  assert.equal(generated.body.slug, slug);
+  assert.match(generated.body.shortCode, /^[23456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz]{6}$/);
+  assert.equal(generated.body.shortPath, `/s/${generated.body.shortCode}`);
+
+  const repeated = await jsonRequest('POST', `/api/discussions/${slug}/short-link`, { adminToken });
+  assert.equal(repeated.status, 200);
+  assert.equal(repeated.body.shortCode, generated.body.shortCode);
+
+  const redirect = await fetch(`${baseUrl}${generated.body.shortPath}`, { redirect: 'manual' });
+  assert.equal(redirect.status, 302);
+  assert.equal(redirect.headers.get('location'), `/discussion/${slug}`);
+
+  const custom = await jsonRequest('POST', `/api/discussions/${slug}/short-link`, { adminToken, shortCode: 'AI' });
+  assert.equal(custom.status, 200);
+  assert.equal(custom.body.shortCode, 'ai');
+  assert.equal(custom.body.shortPath, '/s/ai');
+
+  const customRedirect = await fetch(`${baseUrl}/s/ai`, { redirect: 'manual' });
+  assert.equal(customRedirect.status, 302);
+  assert.equal(customRedirect.headers.get('location'), `/discussion/${slug}`);
+
+  const invalid = await jsonRequest('POST', `/api/discussions/${slug}/short-link`, { adminToken, shortCode: '-bad-' });
+  assert.equal(invalid.status, 400);
+
+  const other = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('short-link-other') });
+  const taken = await jsonRequest('POST', `/api/discussions/${other.body.slug}/short-link`, {
+    adminToken: other.body.adminToken,
+    shortCode: 'ai',
+  });
+  assert.equal(taken.status, 409);
 });
 
 test('slug migration preserves literal slug-shaped legacy titles', async () => {

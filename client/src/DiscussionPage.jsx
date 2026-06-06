@@ -185,6 +185,11 @@ const DiscussionPage = () => {
     const [showActionsMenu, setShowActionsMenu] = useState(false);
     const [presence, setPresence] = useState(0);
     const [copied, setCopied] = useState(false);
+    const [shortShareUrl, setShortShareUrl] = useState('');
+    const [shortCodeDraft, setShortCodeDraft] = useState('');
+    const [shortLinkError, setShortLinkError] = useState('');
+    const [shortLinkLoading, setShortLinkLoading] = useState(false);
+    const [shortLinkCopied, setShortLinkCopied] = useState(false);
     const [adminToken, setAdminToken] = useState(null);
     // Mirror of adminToken readable inside async callbacks, so an in-flight
     // checkModerator ack can tell whether the token it verified is still current.
@@ -237,6 +242,18 @@ const DiscussionPage = () => {
     const adminUrl = typeof window !== 'undefined' && adminToken
         ? `${window.location.origin}/discussion/${discussionSlug}?admin=${adminToken}`
         : '';
+    const shortUrlPrefix = typeof window !== 'undefined' ? `${window.location.origin}/s/` : '/s/';
+
+    useEffect(() => {
+        setShortShareUrl(
+            typeof window !== 'undefined' && discussion?.short_code
+                ? `${window.location.origin}/s/${discussion.short_code}`
+                : ''
+        );
+        setShortCodeDraft(discussion?.short_code || '');
+        setShortLinkError('');
+        setShortLinkCopied(false);
+    }, [discussionSlug, discussion?.short_code]);
 
     const handleCopyLink = async () => {
         try {
@@ -712,6 +729,67 @@ const DiscussionPage = () => {
         } catch (err) {
             console.error('Failed to copy admin link:', err);
             setError('Could not copy the moderator link.');
+        }
+    };
+
+    const saveShortLink = async (requestedCode) => {
+        if (!adminToken || shortLinkLoading) return;
+        setShortLinkLoading(true);
+        setShortLinkError('');
+        try {
+            const response = await fetch(`/api/discussions/${encodeURIComponent(discussionSlug)}/short-link`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ adminToken, ...(requestedCode ? { shortCode: requestedCode } : {}) }),
+            });
+            if (!response.ok) {
+                if (response.status === 409) {
+                    setShortLinkError('That short link is already taken.');
+                    return;
+                }
+                if (response.status === 400) {
+                    setShortLinkError('Use 2-40 letters, numbers, or hyphens.');
+                    return;
+                }
+                throw new Error('Failed to save short link');
+            }
+            const data = await response.json();
+            const nextShortUrl = `${window.location.origin}${data.shortPath}`;
+            setShortShareUrl(nextShortUrl);
+            setShortCodeDraft(data.shortCode);
+            try {
+                await navigator.clipboard.writeText(nextShortUrl);
+                setShortLinkCopied(true);
+                setTimeout(() => setShortLinkCopied(false), 2000);
+            } catch (copyErr) {
+                console.error('Failed to copy generated short link:', copyErr);
+                setError('Short link generated, but could not copy it automatically.');
+            }
+        } catch (err) {
+            console.error('Failed to save short link:', err);
+            setError('Could not save the short link.');
+        } finally {
+            setShortLinkLoading(false);
+        }
+    };
+
+    const handleGenerateShortLink = async () => {
+        await saveShortLink();
+    };
+
+    const handleSaveCustomShortLink = async () => {
+        await saveShortLink(shortCodeDraft);
+    };
+
+    const handleCopyShortLink = async () => {
+        if (!shortShareUrl) return;
+        try {
+            await navigator.clipboard.writeText(shortShareUrl);
+            setShortLinkCopied(true);
+            setTimeout(() => setShortLinkCopied(false), 2000);
+        } catch (err) {
+            console.error('Failed to copy short link:', err);
+            setError('Could not copy the short link. You can select and copy it manually.');
         }
     };
 
@@ -1649,6 +1727,78 @@ const DiscussionPage = () => {
                                 {copied ? 'Copied!' : 'Copy'}
                             </button>
                         </div>
+                        {isAdmin && (
+                            <div className="mb-4 max-w-2xl mx-auto rounded-md border border-indigo-100 bg-indigo-50 p-3 text-left">
+                                <div className="mb-2 flex items-center justify-between gap-3">
+                                    <p className="text-sm font-semibold text-indigo-800">Short link</p>
+                                    <button
+                                        type="button"
+                                        onClick={handleGenerateShortLink}
+                                        disabled={shortLinkLoading}
+                                        className="shrink-0 px-3 py-1.5 rounded bg-white border border-indigo-300 text-indigo-700 text-sm hover:bg-indigo-100 disabled:opacity-60"
+                                    >
+                                        {shortLinkLoading ? 'Saving…' : 'Generate'}
+                                    </button>
+                                </div>
+                                <div className="space-y-2">
+                                    <div className="flex items-center gap-0">
+                                        <span
+                                            className="max-w-[55%] shrink-0 truncate rounded-l border border-r-0 border-gray-300 bg-white px-2 py-2 text-sm text-gray-500"
+                                            title={shortUrlPrefix}
+                                        >
+                                            {shortUrlPrefix}
+                                        </span>
+                                        <input
+                                            type="text"
+                                            value={shortCodeDraft}
+                                            onChange={(e) => {
+                                                const next = e.target.value
+                                                    .toLowerCase()
+                                                    .replace(/^https?:\/\/[^/]+\/?/i, '')
+                                                    .replace(/^s\//i, '')
+                                                    .replace(/^\/+/, '');
+                                                setShortCodeDraft(next);
+                                                setShortLinkError('');
+                                            }}
+                                            placeholder="ai"
+                                            onFocus={(e) => e.target.select()}
+                                            className="flex-1 min-w-0 p-2 border text-sm bg-white"
+                                        />
+                                        <button
+                                            type="button"
+                                            onClick={handleSaveCustomShortLink}
+                                            disabled={shortLinkLoading || !shortCodeDraft.trim()}
+                                            className="shrink-0 px-3 py-2 bg-indigo-600 text-white rounded-r hover:bg-indigo-700 whitespace-nowrap text-sm disabled:opacity-60"
+                                        >
+                                            Save
+                                        </button>
+                                    </div>
+                                    {shortLinkError && (
+                                        <p className="text-sm text-red-600">{shortLinkError}</p>
+                                    )}
+                                    {shortShareUrl ? (
+                                        <div className="flex items-center gap-2">
+                                            <input
+                                                type="text"
+                                                readOnly
+                                                value={shortShareUrl}
+                                                onFocus={(e) => e.target.select()}
+                                                className="flex-1 min-w-0 p-2 border rounded text-sm bg-white"
+                                            />
+                                            <button
+                                                type="button"
+                                                onClick={handleCopyShortLink}
+                                                className="shrink-0 px-3 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700 whitespace-nowrap text-sm"
+                                            >
+                                                {shortLinkCopied ? 'Copied!' : 'Copy'}
+                                            </button>
+                                        </div>
+                                    ) : (
+                                        <p className="text-sm text-indigo-700">Create a shorter join URL for messages, slides, and room displays.</p>
+                                    )}
+                                </div>
+                            </div>
+                        )}
                         <button
                             onClick={() => setShowShareModal(false)}
                             className="px-4 py-2 bg-gray-300 rounded hover:bg-gray-400"
