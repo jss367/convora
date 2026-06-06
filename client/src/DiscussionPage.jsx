@@ -10,6 +10,7 @@ import {
     setCustomName,
     getDisplayName,
     ownerToken,
+    participantHandle,
     NameModes,
     MAX_CUSTOM_NAME_LENGTH,
 } from './identity';
@@ -154,6 +155,10 @@ const DiscussionPage = () => {
     const [presence, setPresence] = useState(0);
     const [copied, setCopied] = useState(false);
     const [adminToken, setAdminToken] = useState(null);
+    // Mirror of adminToken readable inside async callbacks, so an in-flight
+    // checkModerator ack can tell whether the token it verified is still current.
+    const adminTokenRef = useRef(adminToken);
+    useEffect(() => { adminTokenRef.current = adminToken; }, [adminToken]);
     const [discussionState, setDiscussionState] = useState({
         locked: false, moderatorOnly: false, hasModerator: false, theme: DEFAULT_THEME,
         reactionsEnabled: false, reactionsVisible: true, commentsEnabled: false,
@@ -169,6 +174,11 @@ const DiscussionPage = () => {
     const [showClusters, setShowClusters] = useState(false);
     const [participants, setParticipants] = useState([]);
     const [showParticipants, setShowParticipants] = useState(false);
+    // Whether this viewer is the creator (only the creator may remove moderators).
+    const [canDemote, setCanDemote] = useState(false);
+    // This browser's own participant handle, so we can hide promote/remove on our
+    // own row (acting on yourself tangles the creator's admin_token with a grant).
+    const [selfHandle, setSelfHandle] = useState(null);
     const [showJoinQr, setShowJoinQr] = useState(false);
     const [joinQrSize, setJoinQrSize] = useState(DEFAULT_JOIN_QR_SIZE);
     // Holds the in-flight resize drag (start pointer + start size + latest size)
@@ -250,6 +260,20 @@ const DiscussionPage = () => {
     // (derived from the chosen mode: pseudonym, anonymous, or a typed-in name).
     const userId = identity?.userId || null;
     const displayName = identity ? getDisplayName(identity) : '';
+
+    // Compute our own participant handle so the moderator panel can hide the
+    // promote/remove controls on our own row.
+    useEffect(() => {
+        if (!userId) {
+            setSelfHandle(null);
+            return undefined;
+        }
+        let cancelled = false;
+        participantHandle(userId).then((handle) => {
+            if (!cancelled) setSelfHandle(handle);
+        });
+        return () => { cancelled = true; };
+    }, [userId]);
 
     // The server no longer broadcasts raw user ids — each vote carries a
     // per-response ownership token (sha256(voteId + ':' + userId)) instead, so
@@ -351,6 +375,63 @@ const DiscussionPage = () => {
             console.warn('Failed to read admin token:', e);
         }
     }, [discussion?.topic, discussionSlug, topic]);
+
+    // Validate any adopted moderator token with the server. A token revoked
+    // while this user was offline (so they never got moderatorRevoked) would
+    // otherwise keep rendering a dead moderator UI; here we drop it once the
+    // server confirms it no longer grants moderation. We only clear on a
+    // definitive isModerator:false — never on a transient error. Re-run on
+    // reconnect too (like the identify effect), so a demotion missed during a
+    // disconnect is caught when Socket.IO reconnects rather than lingering
+    // until a reload.
+    useEffect(() => {
+        if (!adminToken) return;
+        let cancelled = false;
+        const verify = () => {
+            // Remember which token this check is about. A re-promotion can deliver
+            // a fresh token (handleModeratorGranted) while this check is in flight;
+            // only clear if the token we verified is still the current one, so a
+            // stale "not a moderator" ack can't wipe the newly adopted token the
+            // server pushed only once.
+            const checked = adminToken;
+            socket.emit('checkModerator', discussionSlug, checked, (resp) => {
+                if (cancelled || !resp || !resp.ok) return;
+                if (adminTokenRef.current !== checked) return;
+                if (resp.isModerator === false) {
+                    try {
+                        localStorage.removeItem(`convora_admin_${discussionSlug}`);
+                    } catch (e) {
+                        console.warn('Failed to clear admin token:', e);
+                    }
+                    setAdminToken(null);
+                    return;
+                }
+                // Initialize canDemote from the token itself, not from opening the
+                // participant panel. Without this, a creator who never opened the
+                // panel keeps canDemote=false, and a moderatorGranted push (e.g. an
+                // admin-link holder promotes the creator's row) would overwrite the
+                // real creator token with a weaker per-user grant — locking the
+                // creator out of removing moderators after a reload.
+                setCanDemote(resp.isCreator === true);
+            });
+        };
+        verify();
+        socket.on('connect', verify);
+        return () => { cancelled = true; socket.off('connect', verify); };
+    }, [discussionSlug, adminToken]);
+
+    // Reset the creator flag whenever the discussion changes. This component is
+    // reused (not remounted) when navigating between /discussion/:topic routes —
+    // React Router keeps the same instance and only the topic param changes — so
+    // canDemote would otherwise carry over from a previous discussion. The verify
+    // effect above only updates canDemote when adminToken is set, so navigating to
+    // a discussion with no/invalid token would leave a stale canDemote=true; that
+    // would make handleModeratorGranted drop a legitimate one-time grant if this
+    // user is promoted in the new discussion. Clearing here lets verify() (or a
+    // participant-list response) re-establish the correct value for the new topic.
+    useEffect(() => {
+        setCanDemote(false);
+    }, [discussionSlug]);
 
     useEffect(() => {
         const key = 'convora_show_clusters';
@@ -573,6 +654,7 @@ const DiscussionPage = () => {
         socket.emit('listParticipants', discussionSlug, adminToken, (resp) => {
             if (resp && resp.success) {
                 setParticipants(resp.participants);
+                setCanDemote(!!resp.canDemote);
             } else if (resp && resp.error === 'not_authorized') {
                 setError('You are no longer a moderator of this discussion.');
             }
@@ -591,10 +673,26 @@ const DiscussionPage = () => {
         socket.emit('promoteModerator', discussionSlug, adminToken, participantId, (resp) => {
             if (resp && resp.success) {
                 setParticipants(resp.participants);
+                setCanDemote(!!resp.canDemote);
             } else if (resp && resp.error === 'participant_offline') {
                 setError('That participant needs to have the discussion open to be made a moderator. Ask them to open it, then try again.');
             } else {
                 setError('Could not promote that participant. Try refreshing the list.');
+            }
+        });
+    };
+
+    // Remove a participant's moderator status. Creator-only; the server pushes a
+    // moderatorRevoked event to that user so their controls disappear live.
+    const handleDemoteParticipant = (participantId) => {
+        socket.emit('demoteModerator', discussionSlug, adminToken, participantId, (resp) => {
+            if (resp && resp.success) {
+                setParticipants(resp.participants);
+                setCanDemote(!!resp.canDemote);
+            } else if (resp && resp.error === 'not_authorized') {
+                setError('Only the discussion creator can remove a moderator.');
+            } else {
+                setError('Could not remove that moderator. Try refreshing the list.');
             }
         });
     };
@@ -674,19 +772,48 @@ const DiscussionPage = () => {
         });
     }, []);
 
-    // Adopt a moderator token the server pushes to us — either because another
-    // moderator just promoted this user, or because a previously promoted user
-    // (re)connected. Persist it under the same per-slug key the create/share
-    // flows use so the controls light up immediately and survive reloads.
+    // Adopt a moderator token the server pushes to us when this user is promoted.
+    // Persist it under the same per-slug key the create/share flows use so the
+    // controls light up immediately and survive reloads.
+    //
+    // Skip adoption only when WE are the creator (canDemote): the creator
+    // authenticates with the discussion's admin_token, and if they click "Make
+    // moderator" on their own participant row, the per-user grant pushed back
+    // would otherwise replace that admin_token — downgrading them so
+    // verifyCreator no longer recognizes them. Everyone else adopts the grant,
+    // overwriting any token they already hold — important because a re-promoted
+    // user may still have a stale, revoked token in localStorage that the
+    // checkModerator load check hasn't cleared yet; the fresh push is
+    // authoritative and must win, or they'd be left with no usable token.
     const handleModeratorGranted = useCallback(({ token }) => {
-        if (!token) return;
+        if (!token || canDemote) return;
         try {
             localStorage.setItem(`convora_admin_${discussionSlug}`, token);
         } catch (e) {
             console.warn('Failed to store admin token:', e);
         }
         setAdminToken(token);
-    }, [discussionSlug]);
+    }, [discussionSlug, canDemote]);
+
+    // A moderator we were granted was revoked: drop the stored token so the
+    // controls disappear. (That token is already invalid server-side.)
+    //
+    // Skip this when WE are the creator (canDemote): our credential is the
+    // discussion's admin_token, not a per-user grant. If the creator self-promotes
+    // (creating a dangling per-user grant on their own row) and then removes it,
+    // the server emits moderatorRevoked to their socket too — but only the
+    // per-user grant was deleted; the admin_token is still valid, so clearing it
+    // would wrongly strip the creator's controls after a reload.
+    const handleModeratorRevoked = useCallback(() => {
+        if (canDemote) return;
+        try {
+            localStorage.removeItem(`convora_admin_${discussionSlug}`);
+        } catch (e) {
+            console.warn('Failed to clear admin token:', e);
+        }
+        setAdminToken(null);
+        setShowParticipants(false);
+    }, [discussionSlug, canDemote]);
 
     useEffect(() => {
         if (topic !== discussionSlug) return undefined;
@@ -698,6 +825,7 @@ const DiscussionPage = () => {
         socket.on('discussionState', setDiscussionState);
         socket.on('similarQuestion', setSimilarPrompt);
         socket.on('moderatorGranted', handleModeratorGranted);
+        socket.on('moderatorRevoked', handleModeratorRevoked);
         return () => {
             // Leave the room so the server stops counting this client toward the
             // discussion's presence once the page unmounts (e.g. navigating home).
@@ -708,8 +836,9 @@ const DiscussionPage = () => {
             socket.off('discussionState', setDiscussionState);
             socket.off('similarQuestion', setSimilarPrompt);
             socket.off('moderatorGranted', handleModeratorGranted);
+            socket.off('moderatorRevoked', handleModeratorRevoked);
         };
-    }, [topic, discussionSlug, handleQuestionsUpdate, handleModeratorGranted]);
+    }, [topic, discussionSlug, handleQuestionsUpdate, handleModeratorGranted, handleModeratorRevoked]);
 
     // Mirror the discussion's chosen theme onto <html data-theme="..."> so the
     // CSS-variable palette (index.css) recolors every primary/secondary class,
@@ -1470,11 +1599,35 @@ const DiscussionPage = () => {
                         <ul className="divide-y divide-gray-100">
                             {participants.map((participant) => (
                                 <li key={participant.id} className="flex items-center justify-between py-2">
-                                    <span className="text-gray-800">{participant.pseudonym}</span>
-                                    {participant.isModerator ? (
-                                        <span className="text-xs font-medium text-indigo-700 bg-indigo-50 px-2 py-1 rounded">
-                                            Moderator
-                                        </span>
+                                    <span className="text-gray-800">
+                                        {participant.pseudonym}
+                                        {participant.id === selfHandle && (
+                                            <span className="text-gray-400"> (you)</span>
+                                        )}
+                                    </span>
+                                    {/* Never offer promote/remove on your own row: self-promote or
+                                        self-remove tangles the creator's admin_token with a per-user
+                                        grant. Show only the Moderator badge if applicable. */}
+                                    {participant.id === selfHandle ? (
+                                        participant.isModerator ? (
+                                            <span className="text-xs font-medium text-indigo-700 bg-indigo-50 px-2 py-1 rounded">
+                                                Moderator
+                                            </span>
+                                        ) : null
+                                    ) : participant.isModerator ? (
+                                        <div className="flex items-center gap-2">
+                                            <span className="text-xs font-medium text-indigo-700 bg-indigo-50 px-2 py-1 rounded">
+                                                Moderator
+                                            </span>
+                                            {canDemote && (
+                                                <button
+                                                    onClick={() => handleDemoteParticipant(participant.id)}
+                                                    className="text-xs px-2 py-1 rounded bg-white border border-red-300 text-red-600 hover:bg-red-50"
+                                                >
+                                                    Remove
+                                                </button>
+                                            )}
+                                        </div>
                                     ) : (
                                         <button
                                             onClick={() => handlePromoteParticipant(participant.id)}
