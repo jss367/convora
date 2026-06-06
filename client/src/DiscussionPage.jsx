@@ -186,6 +186,8 @@ const DiscussionPage = () => {
     const [presence, setPresence] = useState(0);
     const [copied, setCopied] = useState(false);
     const [shortShareUrl, setShortShareUrl] = useState('');
+    const [shortCodeDraft, setShortCodeDraft] = useState('');
+    const [shortLinkError, setShortLinkError] = useState('');
     const [shortLinkLoading, setShortLinkLoading] = useState(false);
     const [shortLinkCopied, setShortLinkCopied] = useState(false);
     const [adminToken, setAdminToken] = useState(null);
@@ -240,6 +242,7 @@ const DiscussionPage = () => {
     const adminUrl = typeof window !== 'undefined' && adminToken
         ? `${window.location.origin}/discussion/${discussionSlug}?admin=${adminToken}`
         : '';
+    const shortUrlPrefix = typeof window !== 'undefined' ? `${window.location.origin}/s/` : '/s/';
 
     useEffect(() => {
         setShortShareUrl(
@@ -247,6 +250,8 @@ const DiscussionPage = () => {
                 ? `${window.location.origin}/s/${discussion.short_code}`
                 : ''
         );
+        setShortCodeDraft(discussion?.short_code || '');
+        setShortLinkError('');
         setShortLinkCopied(false);
     }, [discussionSlug, discussion?.short_code]);
 
@@ -727,21 +732,31 @@ const DiscussionPage = () => {
         }
     };
 
-    const handleGenerateShortLink = async () => {
+    const saveShortLink = async (requestedCode) => {
         if (!adminToken || shortLinkLoading) return;
         setShortLinkLoading(true);
+        setShortLinkError('');
         try {
             const response = await fetch(`/api/discussions/${encodeURIComponent(discussionSlug)}/short-link`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ adminToken }),
+                body: JSON.stringify({ adminToken, ...(requestedCode ? { shortCode: requestedCode } : {}) }),
             });
             if (!response.ok) {
-                throw new Error('Failed to generate short link');
+                if (response.status === 409) {
+                    setShortLinkError('That short link is already taken.');
+                    return;
+                }
+                if (response.status === 400) {
+                    setShortLinkError('Use 2-40 letters, numbers, or hyphens.');
+                    return;
+                }
+                throw new Error('Failed to save short link');
             }
             const data = await response.json();
             const nextShortUrl = `${window.location.origin}${data.shortPath}`;
             setShortShareUrl(nextShortUrl);
+            setShortCodeDraft(data.shortCode);
             try {
                 await navigator.clipboard.writeText(nextShortUrl);
                 setShortLinkCopied(true);
@@ -751,11 +766,19 @@ const DiscussionPage = () => {
                 setError('Short link generated, but could not copy it automatically.');
             }
         } catch (err) {
-            console.error('Failed to generate short link:', err);
-            setError('Could not generate the short link.');
+            console.error('Failed to save short link:', err);
+            setError('Could not save the short link.');
         } finally {
             setShortLinkLoading(false);
         }
+    };
+
+    const handleGenerateShortLink = async () => {
+        await saveShortLink();
+    };
+
+    const handleSaveCustomShortLink = async () => {
+        await saveShortLink(shortCodeDraft);
     };
 
     const handleCopyShortLink = async () => {
@@ -1708,37 +1731,72 @@ const DiscussionPage = () => {
                             <div className="mb-4 max-w-2xl mx-auto rounded-md border border-indigo-100 bg-indigo-50 p-3 text-left">
                                 <div className="mb-2 flex items-center justify-between gap-3">
                                     <p className="text-sm font-semibold text-indigo-800">Short link</p>
-                                    {!shortShareUrl && (
-                                        <button
-                                            type="button"
-                                            onClick={handleGenerateShortLink}
-                                            disabled={shortLinkLoading}
-                                            className="shrink-0 px-3 py-1.5 rounded bg-indigo-600 text-white text-sm hover:bg-indigo-700 disabled:opacity-60"
-                                        >
-                                            {shortLinkLoading ? 'Generating…' : 'Generate'}
-                                        </button>
-                                    )}
+                                    <button
+                                        type="button"
+                                        onClick={handleGenerateShortLink}
+                                        disabled={shortLinkLoading}
+                                        className="shrink-0 px-3 py-1.5 rounded bg-white border border-indigo-300 text-indigo-700 text-sm hover:bg-indigo-100 disabled:opacity-60"
+                                    >
+                                        {shortLinkLoading ? 'Saving…' : 'Generate'}
+                                    </button>
                                 </div>
-                                {shortShareUrl ? (
-                                    <div className="flex items-center gap-2">
+                                <div className="space-y-2">
+                                    <div className="flex items-center gap-0">
+                                        <span
+                                            className="max-w-[55%] shrink-0 truncate rounded-l border border-r-0 border-gray-300 bg-white px-2 py-2 text-sm text-gray-500"
+                                            title={shortUrlPrefix}
+                                        >
+                                            {shortUrlPrefix}
+                                        </span>
                                         <input
                                             type="text"
-                                            readOnly
-                                            value={shortShareUrl}
+                                            value={shortCodeDraft}
+                                            onChange={(e) => {
+                                                const next = e.target.value
+                                                    .toLowerCase()
+                                                    .replace(/^https?:\/\/[^/]+\/?/i, '')
+                                                    .replace(/^s\//i, '')
+                                                    .replace(/^\/+/, '');
+                                                setShortCodeDraft(next);
+                                                setShortLinkError('');
+                                            }}
+                                            placeholder="ai"
                                             onFocus={(e) => e.target.select()}
-                                            className="flex-1 min-w-0 p-2 border rounded text-sm bg-white"
+                                            className="flex-1 min-w-0 p-2 border text-sm bg-white"
                                         />
                                         <button
                                             type="button"
-                                            onClick={handleCopyShortLink}
-                                            className="shrink-0 px-3 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700 whitespace-nowrap text-sm"
+                                            onClick={handleSaveCustomShortLink}
+                                            disabled={shortLinkLoading || !shortCodeDraft.trim()}
+                                            className="shrink-0 px-3 py-2 bg-indigo-600 text-white rounded-r hover:bg-indigo-700 whitespace-nowrap text-sm disabled:opacity-60"
                                         >
-                                            {shortLinkCopied ? 'Copied!' : 'Copy'}
+                                            Save
                                         </button>
                                     </div>
-                                ) : (
-                                    <p className="text-sm text-indigo-700">Create a shorter join URL for messages, slides, and room displays.</p>
-                                )}
+                                    {shortLinkError && (
+                                        <p className="text-sm text-red-600">{shortLinkError}</p>
+                                    )}
+                                    {shortShareUrl ? (
+                                        <div className="flex items-center gap-2">
+                                            <input
+                                                type="text"
+                                                readOnly
+                                                value={shortShareUrl}
+                                                onFocus={(e) => e.target.select()}
+                                                className="flex-1 min-w-0 p-2 border rounded text-sm bg-white"
+                                            />
+                                            <button
+                                                type="button"
+                                                onClick={handleCopyShortLink}
+                                                className="shrink-0 px-3 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700 whitespace-nowrap text-sm"
+                                            >
+                                                {shortLinkCopied ? 'Copied!' : 'Copy'}
+                                            </button>
+                                        </div>
+                                    ) : (
+                                        <p className="text-sm text-indigo-700">Create a shorter join URL for messages, slides, and room displays.</p>
+                                    )}
+                                </div>
                             </div>
                         )}
                         <button

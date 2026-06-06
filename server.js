@@ -122,6 +122,7 @@ function suffixSlug(baseSlug, suffix) {
 
 const SHORT_CODE_ALPHABET = '23456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
 const SHORT_CODE_LENGTH = 6;
+const CUSTOM_SHORT_CODE_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])$/;
 
 function generateShortCode() {
   let code = '';
@@ -130,6 +131,19 @@ function generateShortCode() {
     code += SHORT_CODE_ALPHABET[byte % SHORT_CODE_ALPHABET.length];
   }
   return code;
+}
+
+function normalizeCustomShortCode(value) {
+  const trimmed = String(value || '').trim().toLowerCase();
+  if (!trimmed) return null;
+
+  const withoutOrigin = trimmed.replace(/^https?:\/\/[^/]+\/?/i, '');
+  const withoutPrefix = withoutOrigin.replace(/^s\//i, '');
+  return withoutPrefix.replace(/^\/+|\/+$/g, '');
+}
+
+function isValidCustomShortCode(value) {
+  return CUSTOM_SHORT_CODE_PATTERN.test(value);
 }
 
 function escapeCsv(value) {
@@ -1688,10 +1702,16 @@ app.get('/api/discussions/resolve/:topic', async (req, res) => {
 
 app.post('/api/discussions/:topic/short-link', async (req, res) => {
   try {
-    const result = await generateDiscussionShortCode(req.params.topic, req.body?.adminToken);
+    const result = await generateDiscussionShortCode(req.params.topic, req.body?.adminToken, req.body?.shortCode);
     if (!result.success) {
       if (result.error === 'not_authorized') {
         return res.status(403).json({ error: 'Not authorized' });
+      }
+      if (result.error === 'invalid') {
+        return res.status(400).json({ error: 'Use 2-40 letters, numbers, or hyphens; start and end with a letter or number.' });
+      }
+      if (result.error === 'taken') {
+        return res.status(409).json({ error: 'Short link already taken' });
       }
       return res.status(404).json({ error: 'Discussion not found' });
     }
@@ -2548,10 +2568,18 @@ async function createDiscussion(topic) {
   }
 }
 
-async function generateDiscussionShortCode(topic, token) {
+async function generateDiscussionShortCode(topic, token, requestedCode) {
   const discussionId = await verifyAdmin(topic, token);
   if (!discussionId) {
     return { success: false, error: 'not_authorized' };
+  }
+
+  const customCode = normalizeCustomShortCode(requestedCode);
+  if (requestedCode !== undefined && !customCode) {
+    return { success: false, error: 'invalid' };
+  }
+  if (customCode && !isValidCustomShortCode(customCode)) {
+    return { success: false, error: 'invalid' };
   }
 
   const client = await pool.connect();
@@ -2570,12 +2598,12 @@ async function generateDiscussionShortCode(topic, token) {
         }
 
         const row = existing.rows[0];
-        if (row.short_code) {
+        if (!customCode && row.short_code) {
           await client.query('COMMIT');
           return { success: true, slug: row.slug, shortCode: row.short_code };
         }
 
-        const shortCode = generateShortCode();
+        const shortCode = customCode || generateShortCode();
         const updated = await client.query(
           `UPDATE discussions
               SET short_code = $1
@@ -2587,6 +2615,9 @@ async function generateDiscussionShortCode(topic, token) {
         return { success: true, slug: updated.rows[0].slug, shortCode: updated.rows[0].short_code };
       } catch (e) {
         await client.query('ROLLBACK');
+        if (customCode && e.code === '23505') {
+          return { success: false, error: 'taken' };
+        }
         if (e.code === '23505') {
           continue;
         }

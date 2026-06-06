@@ -128,6 +128,25 @@ test('moderators can generate short links that redirect to the discussion', asyn
   const redirect = await fetch(`${baseUrl}${generated.body.shortPath}`, { redirect: 'manual' });
   assert.equal(redirect.status, 302);
   assert.equal(redirect.headers.get('location'), `/discussion/${slug}`);
+
+  const custom = await jsonRequest('POST', `/api/discussions/${slug}/short-link`, { adminToken, shortCode: 'AI' });
+  assert.equal(custom.status, 200);
+  assert.equal(custom.body.shortCode, 'ai');
+  assert.equal(custom.body.shortPath, '/s/ai');
+
+  const customRedirect = await fetch(`${baseUrl}/s/ai`, { redirect: 'manual' });
+  assert.equal(customRedirect.status, 302);
+  assert.equal(customRedirect.headers.get('location'), `/discussion/${slug}`);
+
+  const invalid = await jsonRequest('POST', `/api/discussions/${slug}/short-link`, { adminToken, shortCode: '-bad-' });
+  assert.equal(invalid.status, 400);
+
+  const other = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('short-link-other') });
+  const taken = await jsonRequest('POST', `/api/discussions/${other.body.slug}/short-link`, {
+    adminToken: other.body.adminToken,
+    shortCode: 'ai',
+  });
+  assert.equal(taken.status, 409);
 });
 
 test('slug migration preserves literal slug-shaped legacy titles', async () => {
