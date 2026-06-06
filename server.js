@@ -143,54 +143,6 @@ function getQuestionRange(question) {
   };
 }
 
-function extractResponseText(data) {
-  if (typeof data.output_text === 'string') {
-    return data.output_text;
-  }
-
-  const contentItems = (data.output || [])
-    .flatMap(item => Array.isArray(item.content) ? item.content : []);
-  const text = contentItems
-    .map(item => typeof item.text === 'string' ? item.text : '')
-    .filter(Boolean)
-    .join('\n')
-    .trim();
-
-  return text || null;
-}
-
-function buildDeterministicSynthesis(writtenResponses) {
-  if (writtenResponses.length === 0) {
-    return null;
-  }
-
-  const byQuestion = writtenResponses.reduce((acc, response) => {
-    if (!acc.has(response.questionText)) {
-      acc.set(response.questionText, []);
-    }
-    acc.get(response.questionText).push(response.value);
-    return acc;
-  }, new Map());
-
-  const longestResponses = [...writtenResponses]
-    .sort((a, b) => b.value.length - a.value.length)
-    .slice(0, 3)
-    .map(response => ({
-      question: response.questionText,
-      excerpt: response.value.length > 180 ? `${response.value.slice(0, 177)}...` : response.value,
-    }));
-
-  return {
-    mode: 'deterministic',
-    text: `${writtenResponses.length} written ${writtenResponses.length === 1 ? 'response' : 'responses'} across ${byQuestion.size} ${byQuestion.size === 1 ? 'prompt' : 'prompts'}.`,
-    highlights: [...byQuestion.entries()].map(([question, responses]) => ({
-      question,
-      responseCount: responses.length,
-    })),
-    excerpts: longestResponses,
-  };
-}
-
 function roundMetric(value, digits = 2) {
   if (!Number.isFinite(value)) {
     return 0;
@@ -375,7 +327,7 @@ function buildFacilitatorDashboard(questionSummaries, participantStats) {
     recommendedNextActions.push('Balance the room by inviting quieter visible participants to respond before closing.');
   }
   if (recommendedNextActions.length === 0) {
-    recommendedNextActions.push('Review the consensus and written synthesis, then close with owners and next steps.');
+    recommendedNextActions.push('Review the consensus, then close with owners and next steps.');
   }
 
   return {
@@ -389,64 +341,7 @@ function buildFacilitatorDashboard(questionSummaries, participantStats) {
   };
 }
 
-async function buildLlmSynthesis(writtenResponses) {
-  if (
-    writtenResponses.length === 0 ||
-    process.env.ENABLE_LLM_SYNTHESIS !== 'true' ||
-    !process.env.OPENAI_API_KEY
-  ) {
-    return null;
-  }
-
-  const payload = writtenResponses.slice(0, 80).map(response => ({
-    question: response.questionText,
-    response: response.value,
-  }));
-
-  const response = await fetch('https://api.openai.com/v1/responses', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-    },
-    body: JSON.stringify({
-      model: process.env.OPENAI_MODEL || 'gpt-4.1-mini',
-      input: [
-        {
-          role: 'system',
-          content: 'Summarize open-ended discussion responses for a read-only post-discussion report. Be concise, neutral, and preserve unresolved tensions.',
-        },
-        {
-          role: 'user',
-          content: `Return JSON with keys synthesis, commonThemes, unresolvedQuestions, and notableDivergences. Responses: ${JSON.stringify(payload)}`,
-        },
-      ],
-      text: {
-        format: {
-          type: 'json_object',
-        },
-      },
-    }),
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`LLM synthesis failed: ${response.status} ${errorText}`);
-  }
-
-  const data = await response.json();
-  const outputText = extractResponseText(data);
-  if (!outputText) {
-    return null;
-  }
-
-  return {
-    mode: 'llm',
-    ...JSON.parse(outputText),
-  };
-}
-
-function buildSummary(discussion, questions, synthesis) {
+function buildSummary(discussion, questions) {
   const participantIds = new Set();
   const participantMap = new Map();
   const typeCounts = {};
@@ -603,17 +498,12 @@ function buildSummary(discussion, questions, synthesis) {
     topConsensus,
     topDivisive,
     facilitatorDashboard,
-    synthesis,
     questions: questionSummaries,
   };
 }
 
 function renderReportHtml(summary) {
   const dashboard = summary.facilitatorDashboard || {};
-  const synthesis = summary.synthesis;
-  const synthesisText = synthesis?.mode === 'llm'
-    ? synthesis.synthesis
-    : synthesis?.text;
   const generatedAt = new Date().toLocaleString();
 
   const renderList = (items, emptyText, renderItem) => {
@@ -715,11 +605,6 @@ function renderReportHtml(summary) {
         <h2>Unanswered Prompts</h2>
         ${renderList(dashboard.unansweredPrompts, 'Every prompt has at least one response.', item => `<li>${escapeHtml(item.text)} <span class="muted">(${escapeHtml(item.type)})</span></li>`)}
       </div>
-    </section>
-
-    <section>
-      <h2>Written Response Synthesis</h2>
-      <p>${escapeHtml(synthesisText || 'No open-ended responses yet.')}</p>
     </section>
 
     <section>
@@ -2652,7 +2537,7 @@ app.get('/api/discussions', async (req, res) => {
   }
 });
 
-async function getDiscussionSummary(topic, options = {}) {
+async function getDiscussionSummary(topic) {
   const discussion = await getDiscussionBySlug(topic);
   if (!discussion) {
     return null;
@@ -2663,52 +2548,13 @@ async function getDiscussionSummary(topic, options = {}) {
   // collapse). buildFacilitatorDashboard re-keys to participant-N before any
   // of this reaches a client, so the raw ids never leave the server.
   const questions = await getQuestions(topic, { includeUserIds: true });
-  const writtenResponses = questions
-    .filter(question => question.type === 'Open Ended' || question.type === 'Brainstorm')
-    .flatMap(question => (question.votes || [])
-      .map(vote => ({
-        questionId: question.id,
-        questionText: question.text,
-        questionType: question.type,
-        pseudonym: vote.pseudonym || 'Anonymous',
-        value: String(parseStoredVoteValue(vote.value) || '').trim(),
-      }))
-      .filter(response => response.value !== ''));
 
-  let synthesis = buildDeterministicSynthesis(writtenResponses);
-  if (options.llm) {
-    if (
-      writtenResponses.length > 0 &&
-      (process.env.ENABLE_LLM_SYNTHESIS !== 'true' || !process.env.OPENAI_API_KEY)
-    ) {
-      synthesis = {
-        ...synthesis,
-        llmError: 'LLM synthesis is not configured, so the deterministic summary is shown.',
-      };
-    } else {
-      try {
-        const llmSynthesis = await buildLlmSynthesis(writtenResponses);
-        if (llmSynthesis) {
-          synthesis = llmSynthesis;
-        }
-      } catch (error) {
-        console.error('Error generating LLM synthesis:', error);
-        synthesis = {
-          ...synthesis,
-          llmError: 'LLM synthesis was unavailable, so the deterministic summary is shown.',
-        };
-      }
-    }
-  }
-
-  return buildSummary(discussion, questions, synthesis);
+  return buildSummary(discussion, questions);
 }
 
 app.get('/api/discussions/:topic/summary', async (req, res) => {
   try {
-    const summary = await getDiscussionSummary(req.params.topic, {
-      llm: req.query.synthesis === 'llm',
-    });
+    const summary = await getDiscussionSummary(req.params.topic);
 
     if (!summary) {
       return res.status(404).json({ error: 'Discussion not found' });
