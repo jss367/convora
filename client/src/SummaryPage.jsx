@@ -1,5 +1,5 @@
 import PropTypes from 'prop-types';
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { slugifyTopic } from './slugs';
 
@@ -35,13 +35,95 @@ function formatDate(value) {
     return new Date(value).toLocaleString();
 }
 
+const ExportMenu = ({ encodedTopic }) => {
+    const [open, setOpen] = useState(false);
+    const menuRef = useRef(null);
+
+    useEffect(() => {
+        if (!open) {
+            return undefined;
+        }
+        const handlePointer = event => {
+            if (menuRef.current && !menuRef.current.contains(event.target)) {
+                setOpen(false);
+            }
+        };
+        const handleKey = event => {
+            if (event.key === 'Escape') {
+                setOpen(false);
+            }
+        };
+        document.addEventListener('mousedown', handlePointer);
+        document.addEventListener('keydown', handleKey);
+        return () => {
+            document.removeEventListener('mousedown', handlePointer);
+            document.removeEventListener('keydown', handleKey);
+        };
+    }, [open]);
+
+    const items = [
+        {
+            href: `/api/discussions/${encodedTopic}/report.html`,
+            title: 'Formatted report (HTML)',
+            description: 'Print-ready summary to share or save as PDF.',
+        },
+        {
+            href: `/api/discussions/${encodedTopic}/export.csv`,
+            title: 'Raw responses (CSV)',
+            description: 'One row per response — open in a spreadsheet.',
+        },
+        {
+            href: `/api/discussions/${encodedTopic}/export.json`,
+            title: 'Full data (JSON)',
+            description: 'Complete structured data for analysis or re-import.',
+        },
+    ];
+
+    return (
+        <div className="relative" ref={menuRef}>
+            <button
+                type="button"
+                onClick={() => setOpen(value => !value)}
+                aria-haspopup="menu"
+                aria-expanded={open}
+                className="bg-primary text-white px-4 py-2 rounded-md hover:bg-opacity-90 transition duration-300 flex items-center gap-2"
+            >
+                Export
+                <span aria-hidden="true" className="text-xs">▾</span>
+            </button>
+            {open && (
+                <div
+                    role="menu"
+                    className="absolute left-0 z-10 mt-2 w-72 rounded-md border border-gray-200 bg-white shadow-lg py-1"
+                >
+                    {items.map(item => (
+                        <a
+                            key={item.href}
+                            href={item.href}
+                            role="menuitem"
+                            onClick={() => setOpen(false)}
+                            className="block px-4 py-3 hover:bg-gray-50 transition"
+                        >
+                            <span className="block text-sm font-semibold text-gray-800">{item.title}</span>
+                            <span className="block text-xs text-gray-500 mt-0.5">{item.description}</span>
+                        </a>
+                    ))}
+                </div>
+            )}
+        </div>
+    );
+};
+
+ExportMenu.propTypes = {
+    encodedTopic: PropTypes.string.isRequired,
+};
+
 const SummaryPage = () => {
     const { topic } = useParams();
     const navigate = useNavigate();
     const discussionSlug = slugifyTopic(topic);
     const [summary, setSummary] = useState(null);
     const [loading, setLoading] = useState(true);
-    const [synthesisLoading, setSynthesisLoading] = useState(false);
     const [error, setError] = useState(null);
 
     const encodedTopic = encodeURIComponent(discussionSlug);
@@ -78,21 +160,16 @@ const SummaryPage = () => {
         };
     }, [topic, discussionSlug, navigate]);
 
-    const loadSummary = useCallback(async ({ llm = false } = {}) => {
+    const loadSummary = useCallback(async () => {
         if (topic !== discussionSlug) {
             return;
         }
 
-        if (llm) {
-            setSynthesisLoading(true);
-        } else {
-            setLoading(true);
-        }
+        setLoading(true);
         setError(null);
 
         try {
-            const suffix = llm ? '?synthesis=llm' : '';
-            const response = await fetch(`/api/discussions/${encodedTopic}/summary${suffix}`);
+            const response = await fetch(`/api/discussions/${encodedTopic}/summary`);
             if (!response.ok) {
                 throw new Error('Failed to load summary');
             }
@@ -103,7 +180,6 @@ const SummaryPage = () => {
             setError('Could not load the discussion summary.');
         } finally {
             setLoading(false);
-            setSynthesisLoading(false);
         }
     }, [encodedTopic, topic, discussionSlug]);
 
@@ -138,32 +214,8 @@ const SummaryPage = () => {
                 <p className="text-sm text-gray-500">Created {formatDate(summary.discussion.createdAt)}</p>
             </div>
 
-            <div className="flex flex-wrap gap-3 mb-8">
-                <a
-                    href={`/api/discussions/${encodedTopic}/export.csv`}
-                    className="bg-primary text-white px-4 py-2 rounded-md hover:bg-opacity-90 transition duration-300"
-                >
-                    Export CSV
-                </a>
-                <a
-                    href={`/api/discussions/${encodedTopic}/export.json`}
-                    className="bg-secondary text-white px-4 py-2 rounded-md hover:bg-opacity-90 transition duration-300"
-                >
-                    Export JSON
-                </a>
-                <a
-                    href={`/api/discussions/${encodedTopic}/report.html`}
-                    className="bg-white border border-gray-300 text-gray-800 px-4 py-2 rounded-md hover:bg-gray-50 transition duration-300"
-                >
-                    Final Report
-                </a>
-                <button
-                    onClick={() => loadSummary({ llm: true })}
-                    disabled={synthesisLoading}
-                    className="bg-gray-800 text-white px-4 py-2 rounded-md hover:bg-gray-700 transition duration-300 disabled:opacity-50"
-                >
-                    {synthesisLoading ? 'Generating...' : 'Generate Synthesis'}
-                </button>
+            <div className="flex flex-wrap items-start gap-3 mb-8">
+                <ExportMenu encodedTopic={encodedTopic} />
             </div>
 
             <section className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
