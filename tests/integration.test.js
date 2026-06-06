@@ -346,7 +346,17 @@ test('a Numerical vote outside the question range (or non-numeric) is rejected, 
     voter.emit('vote', topic, question.id, 'lots', 'attacker', 'Mallory');
     await notNumeric;
 
-    // Neither crafted value was written.
+    // Payloads that Number() silently coerces to 0 ('' and []) must NOT slip
+    // through just because this question's range includes 0.
+    const blank = waitForEvent(voter, 'error', (e) => /invalid vote/i.test(e.message));
+    voter.emit('vote', topic, question.id, '', 'attacker', 'Mallory');
+    await blank;
+
+    const nonScalar = waitForEvent(voter, 'error', (e) => /invalid vote/i.test(e.message));
+    voter.emit('vote', topic, question.id, [], 'attacker', 'Mallory');
+    await nonScalar;
+
+    // None of the crafted values were written.
     const rejected = await pool.query('SELECT COUNT(*)::int AS n FROM votes');
     assert.equal(rejected.rows[0].n, 0);
 

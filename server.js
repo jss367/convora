@@ -887,7 +887,13 @@ io.on('connection', (socket) => {
       // create/edit time, never when a vote is cast. getQuestionRange supplies
       // the 0..100 default for legacy questions with null bounds.
       if (target.type === 'Numerical') {
-        const num = Number(vote);
+        // Require a real scalar numeric value before range-checking. Number('')
+        // / Number([]) / Number(null) all coerce to 0, which would otherwise
+        // slip past the range check for any range that includes 0 and let
+        // addVote persist the original non-numeric payload.
+        const isNumber = typeof vote === 'number';
+        const isNumericString = typeof vote === 'string' && vote.trim() !== '';
+        const num = isNumber ? vote : isNumericString ? Number(vote) : NaN;
         const { minValue, maxValue } = getQuestionRange({ min_value: target.minValue, max_value: target.maxValue });
         if (!Number.isFinite(num) || num < minValue || num > maxValue) {
           socket.emit('error', { message: 'Invalid vote.' });
@@ -2967,13 +2973,17 @@ async function toggleResponseVote(topic, responseId, userId) {
     console.log('Ignoring self-upvote on response', responseId);
     return;
   }
-  // Run the delete-or-insert as one transaction on a single connection so two
-  // concurrent toggles from the same user (double-click, two tabs) can't
-  // interleave their DELETE/INSERT across separate pooled connections and land
-  // in the wrong on/off state.
+  // Serialize concurrent toggles from the same user (double-click, two tabs) on
+  // this response. A plain transaction is not enough under Read Committed: when
+  // no row exists yet, both toggles' DELETEs see 0 rows, both INSERT, and
+  // ON CONFLICT silently drops one — leaving the vote ON after two toggles that
+  // should cancel out. A transaction-scoped advisory lock keyed on
+  // (response, user) forces the second toggle to wait for the first to commit,
+  // then re-read the now-current state and flip it correctly.
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`response_vote:${responseId}:${userId}`]);
     const deleteResult = await client.query(
       'DELETE FROM response_votes WHERE response_id = $1 AND user_id = $2',
       [responseId, userId]
@@ -3044,11 +3054,13 @@ async function setResponseRating(responseId, userId, axis, value) {
 // Toggle a single epistemic reaction for a user on a response: remove it if
 // present, add it otherwise.
 async function toggleResponseReaction(responseId, userId, reaction) {
-  // Atomic delete-or-insert (see toggleResponseVote) so concurrent toggles of
-  // the same reaction can't interleave into the wrong on/off state.
+  // Serialize concurrent toggles of the same reaction (see toggleResponseVote);
+  // the advisory lock is keyed on (response, user, reaction) so it also closes
+  // the absent-row race a bare transaction leaves open.
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`response_reaction:${responseId}:${userId}:${reaction}`]);
     const deleteResult = await client.query(
       'DELETE FROM response_reactions WHERE response_id = $1 AND user_id = $2 AND reaction = $3',
       [responseId, userId, reaction]
