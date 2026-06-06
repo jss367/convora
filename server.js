@@ -803,6 +803,13 @@ io.on('connection', (socket) => {
     };
 
     try {
+      const normalizedQuestion = normalizeQuestionPayload(question);
+      if (!normalizedQuestion) {
+        socket.emit('error', { message: 'Invalid question.' });
+        reply({ added: false, reason: 'invalid' });
+        return;
+      }
+
       if (await isDiscussionLocked(discussionSlug)) {
         socket.emit('error', { message: 'This discussion is locked.' });
         reply({ added: false, reason: 'locked' });
@@ -824,15 +831,15 @@ io.on('connection', (socket) => {
       // Surface a near-duplicate so the submitter can vote on the existing
       // statement instead — unless they explicitly chose to post anyway.
       if (!force) {
-        const similar = await findSimilarQuestion(discussionSlug, question.text);
+        const similar = await findSimilarQuestion(discussionSlug, normalizedQuestion.text);
         if (similar) {
-          socket.emit('similarQuestion', { candidate: similar, question });
+          socket.emit('similarQuestion', { candidate: similar, question: normalizedQuestion });
           reply({ added: false, reason: 'similar' });
           return;
         }
       }
 
-      await addQuestion(discussionSlug, question);
+      await addQuestion(discussionSlug, normalizedQuestion);
       console.log('Question added successfully');
       const updatedQuestions = await getQuestions(discussionSlug);
       console.log('Retrieved updated questions:', updatedQuestions);
@@ -1172,21 +1179,10 @@ io.on('connection', (socket) => {
 
       // Validate the same way creation does: non-empty text, a known type, and
       // (for Numerical) a valid min < max range.
-      const text = String(updates && updates.text != null ? updates.text : '').trim();
-      const type = updates && updates.type;
-      if (!text || !VALID_QUESTION_TYPES.has(type)) {
+      const normalizedUpdates = normalizeQuestionPayload(updates);
+      if (!normalizedUpdates) {
         reply({ updated: false, reason: 'invalid' });
         return;
-      }
-      let minValue = null;
-      let maxValue = null;
-      if (type === 'Numerical') {
-        minValue = parseInt(updates.minValue, 10);
-        maxValue = parseInt(updates.maxValue, 10);
-        if (!Number.isInteger(minValue) || !Number.isInteger(maxValue) || minValue >= maxValue) {
-          reply({ updated: false, reason: 'invalid' });
-          return;
-        }
       }
 
       // The NOT EXISTS guard closes the race between the response check above and
@@ -1196,7 +1192,14 @@ io.on('connection', (socket) => {
         `UPDATE questions SET text = $1, type = $2, min_value = $3, max_value = $4
          WHERE id = $5 AND discussion_id = $6
            AND NOT EXISTS (SELECT 1 FROM votes WHERE question_id = $5)`,
-        [text, type, minValue, maxValue, questionId, discussionId]
+        [
+          normalizedUpdates.text,
+          normalizedUpdates.type,
+          normalizedUpdates.minValue,
+          normalizedUpdates.maxValue,
+          questionId,
+          discussionId,
+        ]
       );
       if (result.rowCount === 0) {
         socket.emit('error', { message: 'This question already has responses and can no longer be edited.' });
@@ -1770,8 +1773,48 @@ function resolveReactionKeys(raw) {
 }
 
 // The question types a discussion supports. Mirrors QuestionTypes in
-// client/src/DiscussionPage.jsx — used to validate edits server-side.
+// client/src/DiscussionPage.jsx — used to validate creates/edits server-side.
 const VALID_QUESTION_TYPES = new Set(['Agreement', 'Yes/No', 'Numerical', 'Open Ended', 'Brainstorm']);
+
+function parseIntegerInput(value) {
+  if (typeof value === 'number' && Number.isInteger(value)) {
+    return value;
+  }
+  if (typeof value === 'string' && /^-?\d+$/.test(value.trim())) {
+    return Number(value);
+  }
+  return NaN;
+}
+
+function normalizeQuestionPayload(question) {
+  if (!question || typeof question !== 'object') {
+    return null;
+  }
+
+  const text = String(question.text ?? '').trim();
+  const type = question.type;
+  if (!text || !VALID_QUESTION_TYPES.has(type)) {
+    return null;
+  }
+
+  let minValue = null;
+  let maxValue = null;
+  if (type === 'Numerical') {
+    minValue = parseIntegerInput(question.minValue);
+    maxValue = parseIntegerInput(question.maxValue);
+    if (!Number.isInteger(minValue) || !Number.isInteger(maxValue) || minValue >= maxValue) {
+      return null;
+    }
+  }
+
+  return {
+    text,
+    type,
+    minValue,
+    maxValue,
+    options: Array.isArray(question.options) ? question.options : [],
+  };
+}
 
 // Enrich Brainstorm responses in place with aggregated interaction data:
 // quality up/down tallies, the agreement distribution, reaction counts, and
@@ -1908,6 +1951,11 @@ async function addQuestion(topic, question) {
   console.log('Topic:', topic);
   console.log('Question:', question);
 
+  const normalizedQuestion = normalizeQuestionPayload(question);
+  if (!normalizedQuestion) {
+    throw new Error('Invalid question payload');
+  }
+
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -1916,12 +1964,19 @@ async function addQuestion(topic, question) {
     const discussionId = discussion.id;
 
     // Ensure options is a valid JSON array
-    const optionsJson = JSON.stringify(Array.isArray(question.options) ? question.options : []);
+    const optionsJson = JSON.stringify(normalizedQuestion.options);
 
     // Insert the question
     const questionResult = await client.query(
       'INSERT INTO questions (discussion_id, text, type, min_value, max_value, options) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
-      [discussionId, question.text, question.type, question.minValue, question.maxValue, optionsJson]
+      [
+        discussionId,
+        normalizedQuestion.text,
+        normalizedQuestion.type,
+        normalizedQuestion.minValue,
+        normalizedQuestion.maxValue,
+        optionsJson,
+      ]
     );
 
     await client.query('COMMIT');

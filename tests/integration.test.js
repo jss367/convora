@@ -285,6 +285,35 @@ test('Yes/No questions record a single choice that toggles off when reselected',
   }
 });
 
+test('crafted invalid questions are rejected, not stored', async () => {
+  const topic = uniqueTopic('question-validation');
+  const author = await connectSocket();
+
+  async function expectInvalidQuestion(payload) {
+    const error = waitForEvent(author, 'error', (e) => /invalid question/i.test(e.message));
+    const ack = await new Promise((resolve) => {
+      author.emit('addQuestion', topic, payload, false, null, resolve);
+    });
+    await error;
+    assert.deepEqual(ack, { added: false, reason: 'invalid' });
+  }
+
+  try {
+    const initialQuestions = waitForQuestions(author, (questions) => Array.isArray(questions), 'author join');
+    author.emit('joinDiscussion', topic);
+    await initialQuestions;
+
+    await expectInvalidQuestion({ text: '', type: 'Agreement', minValue: null, maxValue: null, options: [] });
+    await expectInvalidQuestion({ text: 'Mystery?', type: 'NotAType', minValue: null, maxValue: null, options: [] });
+    await expectInvalidQuestion({ text: 'Budget?', type: 'Numerical', minValue: 10, maxValue: 0, options: [] });
+
+    const stored = await pool.query('SELECT COUNT(*)::int AS n FROM questions');
+    assert.equal(stored.rows[0].n, 0);
+  } finally {
+    author.disconnect();
+  }
+});
+
 test('a crafted Agreement/Yes-No vote with an unknown value is rejected, not stored', async () => {
   const topic = uniqueTopic('vote-validation');
   const author = await connectSocket();
