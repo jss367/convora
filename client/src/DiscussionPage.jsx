@@ -19,6 +19,20 @@ import { slugifyTopic } from './slugs';
 const VERSION = '0.1.8';
 console.log('Convora version:', VERSION);
 
+// Color themes a moderator can apply to a discussion. Keys and the palettes
+// they map to are defined in client/src/index.css ([data-theme] blocks) and
+// validated server-side (ALLOWED_THEMES in server.js); `swatch` is only the
+// picker dot color and mirrors each theme's primary. Keep all three in sync.
+const THEMES = [
+    { key: 'indigo', label: 'Indigo', swatch: '#4F46E5' },
+    { key: 'orange', label: 'Orange', swatch: '#FF3C00' },
+    { key: 'emerald', label: 'Emerald', swatch: '#059669' },
+    { key: 'rose', label: 'Rose', swatch: '#E11D48' },
+    { key: 'slate', label: 'Slate', swatch: '#475569' },
+];
+const THEME_KEYS = THEMES.map((t) => t.key);
+const DEFAULT_THEME = 'indigo';
+
 // The floating "Scan to join" QR the moderator can pop up. It starts large so
 // it's readable across a room and can be drag-resized by the moderator to fit
 // whatever screen they're presenting on.
@@ -37,6 +51,7 @@ const clampJoinQrSize = (size) => Math.min(maxJoinQrSize(), Math.max(MIN_JOIN_QR
 
 const QuestionTypes = {
     AGREEMENT: 'Agreement',
+    YES_NO: 'Yes/No',
     NUMERICAL: 'Numerical',
     OPEN_ENDED: 'Open Ended',
     BRAINSTORM: 'Brainstorm'
@@ -44,7 +59,8 @@ const QuestionTypes = {
 
 // Shown under the type picker so creators understand what each type does.
 const QuestionTypeDescriptions = {
-    [QuestionTypes.AGREEMENT]: 'Each participant picks one option from Strongly Agree to Strongly Disagree.',
+    [QuestionTypes.AGREEMENT]: 'Each participant picks one option on the five-point scale from Strongly Agree to Strongly Disagree.',
+    [QuestionTypes.YES_NO]: 'Each participant picks a simple Yes or No — a binary alternative to the five-point agreement scale.',
     [QuestionTypes.NUMERICAL]: 'Each participant submits a single number on a slider between your min and max.',
     [QuestionTypes.OPEN_ENDED]: 'Each participant gives one free-text response, which they can edit later. One answer per person.',
     [QuestionTypes.BRAINSTORM]: 'Each participant can add as many separate ideas as they want, and remove their own. Many answers per person.'
@@ -56,6 +72,13 @@ const VoteOptions = {
     UNSURE: 'Unsure',
     DISAGREE: 'Disagree',
     STRONGLY_DISAGREE: 'Strongly Disagree',
+};
+
+// The two choices for a Yes/No question. Listed Yes-first so the green/red
+// divergence bar reads left-to-right the same way the agreement bar does.
+const YesNoOptions = {
+    YES: 'Yes',
+    NO: 'No',
 };
 
 const SortOptions = {
@@ -136,7 +159,11 @@ const DiscussionPage = () => {
     // checkModerator ack can tell whether the token it verified is still current.
     const adminTokenRef = useRef(adminToken);
     useEffect(() => { adminTokenRef.current = adminToken; }, [adminToken]);
-    const [discussionState, setDiscussionState] = useState({ locked: false, hasModerator: false, reactionKeys: ALL_REACTION_KEYS });
+    const [discussionState, setDiscussionState] = useState({
+        locked: false, hasModerator: false, theme: DEFAULT_THEME,
+        reactionsEnabled: false, reactionsVisible: true, commentsEnabled: false,
+        reactionKeys: ALL_REACTION_KEYS,
+    });
     const [similarPrompt, setSimilarPrompt] = useState(null);
     const [adminLinkCopied, setAdminLinkCopied] = useState(false);
     // Id of the question a moderator is currently editing inline (null when none).
@@ -165,6 +192,7 @@ const DiscussionPage = () => {
 
     const isAdmin = !!adminToken;
     const { locked } = discussionState;
+    const theme = THEME_KEYS.includes(discussionState.theme) ? discussionState.theme : DEFAULT_THEME;
     // Which epistemic reactions are active for this session (creator-configurable,
     // a subset of the catalog). Falls back to the full catalog until the server's
     // discussionState arrives.
@@ -368,14 +396,23 @@ const DiscussionPage = () => {
             const checked = adminToken;
             socket.emit('checkModerator', discussionSlug, checked, (resp) => {
                 if (cancelled || !resp || !resp.ok) return;
-                if (resp.isModerator === false && adminTokenRef.current === checked) {
+                if (adminTokenRef.current !== checked) return;
+                if (resp.isModerator === false) {
                     try {
                         localStorage.removeItem(`convora_admin_${discussionSlug}`);
                     } catch (e) {
                         console.warn('Failed to clear admin token:', e);
                     }
                     setAdminToken(null);
+                    return;
                 }
+                // Initialize canDemote from the token itself, not from opening the
+                // participant panel. Without this, a creator who never opened the
+                // panel keeps canDemote=false, and a moderatorGranted push (e.g. an
+                // admin-link holder promotes the creator's row) would overwrite the
+                // real creator token with a weaker per-user grant — locking the
+                // creator out of removing moderators after a reload.
+                setCanDemote(resp.isCreator === true);
             });
         };
         verify();
@@ -558,6 +595,10 @@ const DiscussionPage = () => {
 
     const handleToggleLock = () => {
         socket.emit('setLocked', discussionSlug, !locked, adminToken);
+    };
+
+    const handleSetTheme = (themeKey) => {
+        socket.emit('setTheme', discussionSlug, themeKey, adminToken);
     };
 
     const handleDeleteQuestion = (questionId) => {
@@ -782,6 +823,17 @@ const DiscussionPage = () => {
         };
     }, [topic, discussionSlug, handleQuestionsUpdate, handleModeratorGranted, handleModeratorRevoked]);
 
+    // Mirror the discussion's chosen theme onto <html data-theme="..."> so the
+    // CSS-variable palette (index.css) recolors every primary/secondary class,
+    // including the app-wide header that lives outside this page. Cleared on
+    // unmount so navigating away (e.g. back to the home page) returns to the
+    // default look rather than leaving another discussion's colors stuck on.
+    useEffect(() => {
+        const root = document.documentElement;
+        root.setAttribute('data-theme', theme);
+        return () => root.removeAttribute('data-theme');
+    }, [theme]);
+
     // Tell the server which persistent user this socket is, so it can route
     // moderator grants to us. Re-sent after any reconnect so a promoted user
     // doesn't silently lose their controls on a network blip.
@@ -928,8 +980,8 @@ const DiscussionPage = () => {
         socket.emit('moderatorDeleteResponseComment', topic, commentId, adminToken);
     };
 
-    const handleSetQuestionFlags = (questionId, flags) => {
-        socket.emit('setQuestionFlags', topic, questionId, flags, adminToken);
+    const handleSetDiscussionFlags = (flags) => {
+        socket.emit('setDiscussionFlags', topic, flags, adminToken);
     };
 
     // Set the active epistemic reactions for the whole session. The server
@@ -953,12 +1005,22 @@ const DiscussionPage = () => {
         }
     };
 
+    // Only Agreement and Yes/No are opinion prompts; the agreement sorts ignore
+    // other types so an Open Ended / Brainstorm answer that happens to read
+    // "Yes", "No", "Agree", etc. can't mis-rank a non-opinion question.
+    const isOpinionQuestion = (question) =>
+        question?.type === QuestionTypes.AGREEMENT || question?.type === QuestionTypes.YES_NO;
+
+    // Yes/No votes count toward the same agreement/disagreement sorts as the
+    // five-point scale: Yes reads as agreement, No as disagreement.
     const getAgreementCount = (question) => {
-        return (question.votes || []).filter(v => v.value === VoteOptions.STRONGLY_AGREE || v.value === VoteOptions.AGREE).length;
+        if (!isOpinionQuestion(question)) return 0;
+        return (question.votes || []).filter(v => v.value === VoteOptions.STRONGLY_AGREE || v.value === VoteOptions.AGREE || v.value === YesNoOptions.YES).length;
     };
 
     const getDisagreementCount = (question) => {
-        return (question.votes || []).filter(v => v.value === VoteOptions.STRONGLY_DISAGREE || v.value === VoteOptions.DISAGREE).length;
+        if (!isOpinionQuestion(question)) return 0;
+        return (question.votes || []).filter(v => v.value === VoteOptions.STRONGLY_DISAGREE || v.value === VoteOptions.DISAGREE || v.value === YesNoOptions.NO).length;
     };
 
     const getControversyScore = (question) => {
@@ -1000,6 +1062,32 @@ const DiscussionPage = () => {
                         {!locked && (
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                 {Object.values(VoteOptions).map((option) => (
+                                    <div key={option} className="flex items-center justify-between bg-gray-100 p-3 rounded-md">
+                                        <span className="font-medium">
+                                            {option}: {question.votes ? question.votes.filter(v => v.value === option).length : 0}
+                                        </span>
+                                        <button
+                                            onClick={() => handleVote(question.id, option)}
+                                            className={`px-4 py-2 rounded-md transition duration-300 ${userVote && userVote.value === option
+                                                ? 'bg-primary text-white hover:bg-opacity-90'
+                                                : 'bg-secondary text-white hover:bg-opacity-90'
+                                                }`}
+                                        >
+                                            {userVote && userVote.value === option ? 'Undo Vote' : 'Vote'}
+                                        </button>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+                );
+            case QuestionTypes.YES_NO:
+                return (
+                    <div>
+                        <YesNoResults question={question} />
+                        {!locked && (
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                {Object.values(YesNoOptions).map((option) => (
                                     <div key={option} className="flex items-center justify-between bg-gray-100 p-3 rounded-md">
                                         <span className="font-medium">
                                             {option}: {question.votes ? question.votes.filter(v => v.value === option).length : 0}
@@ -1075,8 +1163,6 @@ const DiscussionPage = () => {
                     isAdmin={isAdmin}
                     myBrainstorm={myBrainstorm}
                     activeReactionKeys={activeReactionKeys}
-                    onSetFlags={handleSetQuestionFlags}
-                    onSetReactionKeys={handleSetReactionKeys}
                     onSetRating={handleSetRating}
                     onToggleReaction={handleToggleReaction}
                     onAddComment={handleAddComment}
@@ -1372,6 +1458,86 @@ const DiscussionPage = () => {
                         >
                             {showJoinQr ? 'Hide join QR' : 'Show join QR'}
                         </button>
+                        {/* Color theme picker: clicking a swatch recolors the
+                            discussion for everyone in the room. */}
+                        <div className="flex items-center gap-1.5 pl-1" role="group" aria-label="Color theme">
+                            <span className="font-medium text-indigo-800">Theme</span>
+                            {THEMES.map((t) => (
+                                <button
+                                    key={t.key}
+                                    type="button"
+                                    onClick={() => handleSetTheme(t.key)}
+                                    title={t.label}
+                                    aria-label={`${t.label} theme`}
+                                    aria-pressed={theme === t.key}
+                                    className={`h-6 w-6 rounded-full border border-white shadow-sm transition ${
+                                        theme === t.key
+                                            ? 'ring-2 ring-offset-1 ring-gray-700'
+                                            : 'hover:scale-110'
+                                    }`}
+                                    style={{ backgroundColor: t.swatch }}
+                                />
+                            ))}
+                        </div>
+                        {/* Discussion-wide brainstorm phasing: these apply to
+                            every brainstorm prompt at once (read silently, then
+                            open reactions, then open comments). */}
+                        <span className="w-px self-stretch bg-indigo-200" aria-hidden="true" />
+                        <span className="text-indigo-700">Brainstorms:</span>
+                        <button
+                            onClick={() => handleSetDiscussionFlags({ reactions_enabled: !discussionState.reactionsEnabled })}
+                            className="px-3 py-1 rounded bg-white border border-indigo-300 text-indigo-700 hover:bg-indigo-100"
+                        >
+                            {discussionState.reactionsEnabled ? 'Disable reactions' : 'Enable reactions'}
+                        </button>
+                        {discussionState.reactionsEnabled && (
+                            <button
+                                onClick={() => handleSetDiscussionFlags({ reactions_visible: !discussionState.reactionsVisible })}
+                                className="px-3 py-1 rounded bg-white border border-indigo-300 text-indigo-700 hover:bg-indigo-100"
+                            >
+                                {discussionState.reactionsVisible ? 'Hide reactions' : 'Show reactions'}
+                            </button>
+                        )}
+                        <button
+                            onClick={() => handleSetDiscussionFlags({ comments_enabled: !discussionState.commentsEnabled })}
+                            className="px-3 py-1 rounded bg-white border border-indigo-300 text-indigo-700 hover:bg-indigo-100"
+                        >
+                            {discussionState.commentsEnabled ? 'Disable comments' : 'Enable comments'}
+                        </button>
+                        {/* Creator-configurable reaction set (whole session): which
+                            epistemic reactions participants may use. Discussion-wide,
+                            so it lives here alongside the other brainstorm toggles. */}
+                        {discussionState.reactionsEnabled && (
+                            <div className="w-full flex flex-wrap items-center gap-1 mt-1 border-t border-indigo-200 pt-2 text-xs">
+                                <span className="text-indigo-700">Reaction set (whole session):</span>
+                                {EPISTEMIC_REACTIONS.map(r => {
+                                    const on = activeReactionKeys.includes(r.key);
+                                    return (
+                                        <button
+                                            key={r.key}
+                                            type="button"
+                                            // Toggling rebuilds the active list in catalog order; the
+                                            // last remaining reaction can't be removed (the server
+                                            // ignores an empty set, so guard the UI to match).
+                                            onClick={() => {
+                                                const next = on
+                                                    ? activeReactionKeys.filter(k => k !== r.key)
+                                                    : EPISTEMIC_REACTIONS.map(c => c.key)
+                                                        .filter(k => k === r.key || activeReactionKeys.includes(k));
+                                                if (next.length === 0) return;
+                                                handleSetReactionKeys(next);
+                                            }}
+                                            title={on ? `Hide "${r.label}"` : `Show "${r.label}"`}
+                                            className={`px-2 py-0.5 rounded-full border ${on
+                                                ? 'bg-indigo-100 border-indigo-400 text-indigo-800'
+                                                : 'bg-white border-gray-300 text-gray-400 line-through'}`}
+                                        >
+                                            <span className="mr-1">{r.emoji}</span>{r.label}
+                                        </button>
+                                    );
+                                })}
+                            </div>
+                        )}
                     </div>
                 ) : !discussionState.hasModerator ? (
                     <button
@@ -1962,6 +2128,74 @@ AgreementResults.propTypes = {
     }).isRequired,
 };
 
+// Stacked divergence bar + summary for a Yes/No question — the binary sibling of
+// AgreementResults. Yes is green, No is red, mirroring the agreement scale.
+const YesNoResults = ({ question }) => {
+    const votes = question.votes || [];
+    const total = votes.length;
+
+    if (total === 0) {
+        return <p className="text-sm text-gray-500 mb-4">No votes yet — be the first to weigh in.</p>;
+    }
+
+    const yesCount = votes.filter(v => v.value === YesNoOptions.YES).length;
+    const noCount = votes.filter(v => v.value === YesNoOptions.NO).length;
+    const yesPct = Math.round((yesCount / total) * 100);
+    const noPct = Math.round((noCount / total) * 100);
+
+    // Divisive when the room is split roughly evenly; consensus when one side
+    // clearly dominates. Mirrors the thresholds used for agreement questions.
+    let badge = null;
+    if (total >= 2) {
+        const split = Math.min(yesCount, noCount) / total; // 0..0.5
+        if (split >= 0.4) {
+            badge = <span className="px-2 py-0.5 text-xs font-semibold rounded-full bg-amber-100 text-amber-800">Divisive</span>;
+        } else if (split <= 0.15) {
+            badge = <span className="px-2 py-0.5 text-xs font-semibold rounded-full bg-emerald-100 text-emerald-800">Consensus</span>;
+        }
+    }
+
+    const segments = [
+        { key: YesNoOptions.NO, label: 'No', count: noCount, bar: 'bg-red-500', dot: 'bg-red-500' },
+        { key: YesNoOptions.YES, label: 'Yes', count: yesCount, bar: 'bg-green-500', dot: 'bg-green-500' },
+    ];
+
+    return (
+        <div className="mb-4">
+            <div className="flex items-center justify-between mb-2">
+                <span className="text-sm text-gray-600">
+                    {total} {total === 1 ? 'vote' : 'votes'} · {yesPct}% yes · {noPct}% no
+                </span>
+                {badge}
+            </div>
+            <div className="flex w-full h-4 rounded-full overflow-hidden bg-gray-200">
+                {segments.map(seg => seg.count > 0 && (
+                    <div
+                        key={seg.key}
+                        className={seg.bar}
+                        style={{ width: `${(seg.count / total) * 100}%` }}
+                        title={`${seg.label}: ${seg.count}`}
+                    />
+                ))}
+            </div>
+            <div className="flex flex-wrap gap-x-4 gap-y-1 mt-2">
+                {segments.map(seg => (
+                    <span key={seg.key} className="flex items-center text-xs text-gray-600">
+                        <span className={`inline-block w-2.5 h-2.5 rounded-full mr-1 ${seg.dot}`} />
+                        {seg.label}: {seg.count}
+                    </span>
+                ))}
+            </div>
+        </div>
+    );
+};
+
+YesNoResults.propTypes = {
+    question: PropTypes.shape({
+        votes: PropTypes.array,
+    }).isRequired,
+};
+
 // Compact agreement-distribution bar for a single brainstorm idea. Shows how the
 // room splits without naming anyone — the whole point of the agreement axis.
 const AgreementMiniBar = ({ counts }) => {
@@ -2185,11 +2419,14 @@ BrainstormIdea.propTypes = {
 // evaluating them.
 const BrainstormQuestion = ({
     question, ownedVoteIds, ownedCommentIds, handleVote, handleDeleteVote, locked, isAdmin, myBrainstorm,
-    activeReactionKeys, onSetFlags, onSetReactionKeys, onSetRating, onToggleReaction, onAddComment, onDeleteComment,
+    activeReactionKeys, onSetRating, onToggleReaction, onAddComment, onDeleteComment,
     onModeratorDeleteVote, onModeratorDeleteComment,
 }) => {
     const [idea, setIdea] = useState('');
     const votes = question.votes || [];
+    // Whether reactions/comments are available is set discussion-wide by the
+    // moderator (see the moderator bar in DiscussionPage); each question carries
+    // the resolved flags via getQuestions.
     const reactionsEnabled = question.reactionsEnabled;
     const reactionsVisible = question.reactionsVisible;
     const commentsEnabled = question.commentsEnabled;
@@ -2204,58 +2441,8 @@ const BrainstormQuestion = ({
         setIdea('');
     };
 
-    const modButton = 'px-2 py-1 rounded bg-white border border-indigo-300 text-indigo-700 hover:bg-indigo-100';
-
     return (
         <div>
-            {isAdmin && (
-                <div className="flex flex-wrap items-center gap-2 mb-4 bg-indigo-50 border border-indigo-100 rounded-md p-2 text-xs">
-                    <span className="font-semibold text-indigo-800">Moderator:</span>
-                    <button onClick={() => onSetFlags(question.id, { reactions_enabled: !reactionsEnabled })} className={modButton}>
-                        {reactionsEnabled ? 'Disable reactions' : 'Enable reactions'}
-                    </button>
-                    {reactionsEnabled && (
-                        <button onClick={() => onSetFlags(question.id, { reactions_visible: !reactionsVisible })} className={modButton}>
-                            {reactionsVisible ? 'Hide reactions' : 'Show reactions'}
-                        </button>
-                    )}
-                    <button onClick={() => onSetFlags(question.id, { comments_enabled: !commentsEnabled })} className={modButton}>
-                        {commentsEnabled ? 'Disable comments' : 'Enable comments'}
-                    </button>
-                    {reactionsEnabled && (
-                        <div className="w-full flex flex-wrap items-center gap-1 mt-1 border-t border-indigo-100 pt-2">
-                            <span className="text-indigo-800">Reaction set (whole session):</span>
-                            {EPISTEMIC_REACTIONS.map(r => {
-                                const on = activeReactionKeys.includes(r.key);
-                                return (
-                                    <button
-                                        key={r.key}
-                                        type="button"
-                                        // Toggling rebuilds the active list in catalog order; the
-                                        // last remaining reaction can't be removed (the server
-                                        // ignores an empty set, so guard the UI to match).
-                                        onClick={() => {
-                                            const next = on
-                                                ? activeReactionKeys.filter(k => k !== r.key)
-                                                : EPISTEMIC_REACTIONS.map(c => c.key)
-                                                    .filter(k => k === r.key || activeReactionKeys.includes(k));
-                                            if (next.length === 0) return;
-                                            onSetReactionKeys(next);
-                                        }}
-                                        title={on ? `Hide "${r.label}"` : `Show "${r.label}"`}
-                                        className={`px-2 py-0.5 rounded-full border ${on
-                                            ? 'bg-indigo-100 border-indigo-400 text-indigo-800'
-                                            : 'bg-white border-gray-300 text-gray-400 line-through'}`}
-                                    >
-                                        <span className="mr-1">{r.emoji}</span>{r.label}
-                                    </button>
-                                );
-                            })}
-                        </div>
-                    )}
-                </div>
-            )}
-
             {!locked && (
                 <>
                     <textarea
@@ -2342,20 +2529,51 @@ const NumericalResults = ({ question, minValue, maxValue }) => {
     });
     const tallestBin = Math.max(...bins);
 
+    // Up to three integer y-axis ticks (top, middle, baseline) positioned
+    // proportionally so they line up with the bar heights.
+    const yTicks = tallestBin <= 1
+        ? [1, 0]
+        : [...new Set([tallestBin, Math.round(tallestBin / 2), 0])].sort((a, b) => b - a);
+
     return (
         <div className="mb-2">
             <div className="text-sm text-gray-600 mb-2">
                 {total} {total === 1 ? 'response' : 'responses'} · average <span className="font-semibold">{average.toFixed(1)}</span>
             </div>
-            <div className="flex items-end gap-1 h-16">
-                {bins.map((count, i) => (
-                    <div
-                        key={i}
-                        className="flex-1 bg-primary rounded-t"
-                        style={{ height: tallestBin > 0 ? `${(count / tallestBin) * 100}%` : '0%' }}
-                        title={`${count} ${count === 1 ? 'response' : 'responses'}`}
-                    />
-                ))}
+            <div className="flex gap-1">
+                {/* Y-axis count labels. Each is anchored by its bottom edge at the
+                    tick's proportional height, then nudged vertically so it stays
+                    inside the box: the top tick hangs down from the top line, the
+                    baseline tick sits on the bottom, and middle ticks are centered. */}
+                <div className="relative w-6 h-16 text-[10px] leading-none text-gray-400">
+                    {yTicks.map((t, idx) => {
+                        const nudge = idx === 0 ? 'translate-y-full' : t === 0 ? '' : 'translate-y-1/2';
+                        return (
+                            <span
+                                key={t}
+                                className={`absolute right-0 ${nudge}`}
+                                style={{ bottom: `${(t / tallestBin) * 100}%` }}
+                            >
+                                {t}
+                            </span>
+                        );
+                    })}
+                </div>
+                <div className="flex items-end gap-1 h-16 flex-1">
+                    {bins.map((count, i) => (
+                        <div
+                            key={i}
+                            className="flex-1 bg-primary rounded-t"
+                            style={{ height: tallestBin > 0 ? `${(count / tallestBin) * 100}%` : '0%' }}
+                            title={`${count} ${count === 1 ? 'response' : 'responses'}`}
+                        />
+                    ))}
+                </div>
+            </div>
+            {/* X-axis min/max labels, offset to align with the bars */}
+            <div className="ml-7 flex justify-between text-[10px] text-gray-400 mt-1">
+                <span>{minValue}</span>
+                <span>{maxValue}</span>
             </div>
         </div>
     );
@@ -2392,8 +2610,6 @@ BrainstormQuestion.propTypes = {
         reactions: PropTypes.object,
     }).isRequired,
     activeReactionKeys: PropTypes.array.isRequired,
-    onSetFlags: PropTypes.func.isRequired,
-    onSetReactionKeys: PropTypes.func.isRequired,
     onSetRating: PropTypes.func.isRequired,
     onToggleReaction: PropTypes.func.isRequired,
     onAddComment: PropTypes.func.isRequired,
