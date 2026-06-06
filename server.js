@@ -98,6 +98,12 @@ function formatTopicTitle(value) {
   return 'Discussion';
 }
 
+// Upper bound on a discussion's display title. The slug (the real routing key)
+// is already capped at 80 chars in slugifyTopic; the title can be longer and
+// more readable, but we still bound it so a rename can't store an unbounded
+// blob. Kept in sync with the maxLength on the client's rename input.
+const MAX_TOPIC_LENGTH = 200;
+
 function titleFromSlug(slug) {
   return slugifyTopic(slug)
     .split('-')
@@ -1119,6 +1125,48 @@ io.on('connection', (socket) => {
     } catch (error) {
       console.error('Error setting theme:', error);
       socket.emit('error', { message: 'Failed to update discussion' });
+    }
+  });
+
+  // Moderator-only: rename the discussion (change its display title). Only the
+  // `topic` column is touched — the slug is the stable identifier every
+  // participant's URL and socket room is keyed on, so we deliberately leave it
+  // unchanged. A rename therefore never invalidates existing links or evicts
+  // anyone from the room. The new title is broadcast on the same `discussion`
+  // channel that carries it on join, so every open tab updates live.
+  socket.on('setTopic', async (topic, newTopic, token, ack) => {
+    const discussionSlug = slugifyTopic(topic);
+    const reply = (result) => { if (typeof ack === 'function') ack(result); };
+    try {
+      const discussionId = await verifyAdmin(discussionSlug, token);
+      if (!discussionId) {
+        socket.emit('error', { message: 'Not authorized to moderate this discussion.' });
+        reply({ updated: false, reason: 'not_authorized' });
+        return;
+      }
+      // formatTopicTitle substitutes 'Discussion' for blank input, so guard on
+      // the raw value first: a blank submission is invalid, not a silent rename
+      // to the placeholder. Also bound the length to match the client input.
+      const title = formatTopicTitle(newTopic);
+      if (!String(newTopic || '').trim() || title.length > MAX_TOPIC_LENGTH) {
+        reply({ updated: false, reason: 'invalid' });
+        return;
+      }
+      await pool.query('UPDATE discussions SET topic = $1 WHERE id = $2', [title, discussionId]);
+      io.to(discussionSlug).emit('discussion', await getDiscussionBySlug(discussionSlug));
+      reply({ updated: true });
+    } catch (error) {
+      // discussions.topic is unique (discussions_topic_unique); renaming to an
+      // existing title raises a Postgres unique-violation. Surface it as a
+      // distinct, actionable reason so the moderator can pick another name
+      // instead of seeing a generic failure.
+      if (error?.code === '23505') {
+        reply({ updated: false, reason: 'duplicate' });
+        return;
+      }
+      console.error('Error setting topic:', error);
+      socket.emit('error', { message: 'Failed to rename discussion' });
+      reply({ updated: false, reason: 'error' });
     }
   });
 
