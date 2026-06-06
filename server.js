@@ -663,11 +663,25 @@ async function getDiscussionBySlug(slug) {
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'dist')));
 
-// Emit the number of clients currently in a discussion room to everyone there.
+// Emit the number of distinct PEOPLE currently in a discussion room to everyone
+// there. We count by identity, not by raw socket: a single person routinely
+// holds several sockets at once — a second browser tab, or (very common on
+// mobile) a connection that just dropped but whose server-side timeout hasn't
+// fired yet while its reconnected replacement is already in the room. Counting
+// sockets reported those as extra "people" — the "it says 2 but there's no one
+// else here" symptom. Sockets that haven't run `identify` yet fall back to
+// their own id, so several genuinely anonymous viewers still each count once.
 function emitPresence(topic) {
   if (!topic) return;
-  const count = io.sockets.adapter.rooms.get(topic)?.size || 0;
-  io.to(topic).emit('presence', count);
+  const room = io.sockets.adapter.rooms.get(topic);
+  const people = new Set();
+  if (room) {
+    for (const socketId of room) {
+      const member = io.sockets.sockets.get(socketId);
+      people.add(member?.data.userId || socketId);
+    }
+  }
+  io.to(topic).emit('presence', people.size);
 }
 
 // Push a freshly reserved handle to a user's OTHER sockets in a discussion (all
@@ -798,7 +812,15 @@ io.on('connection', (socket) => {
   // token live at promotion time and persists it locally (so it survives reloads /
   // reconnects via verifyAdmin); we never re-mint it from the id alone.
   socket.on('identify', (topic, userId) => {
+    const wasAnonymous = !socket.data.userId;
     bindSocketUser(socket, userId);
+    // `joinDiscussion` usually arrives before `identify`, so the presence count
+    // broadcast on join may have counted this socket as its own anonymous person.
+    // Now that we know who it is, recompute so it merges with the user's other
+    // sockets instead of inflating the count until the next join/leave.
+    if (wasAnonymous && socket.data.userId && socket.data.topic) {
+      emitPresence(socket.data.topic);
+    }
   });
 
   socket.on('leaveDiscussion', (topic) => {

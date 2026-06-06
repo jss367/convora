@@ -1073,6 +1073,44 @@ test('promoting an offline participant fails and does not leave a dangling grant
   }
 });
 
+test('presence counts distinct people, not sockets', async () => {
+  const topic = uniqueTopic('presence-dedup');
+  await jsonRequest('POST', '/api/discussions', { topic });
+
+  const tabA = await connectSocket();
+  const tabB = await connectSocket();
+  const other = await connectSocket();
+
+  // Join + identify a socket, then wait until its presence count settles to
+  // `expected`. Also wait for the server's per-join 'questions' emit so the
+  // join's DB reads have flushed before we move on — otherwise a read left in
+  // flight when the test ends can deadlock the next test's TRUNCATE.
+  const joinAs = async (sock, userId, expected) => {
+    const ready = waitForQuestions(sock, () => true, `${userId} join`);
+    const settled = waitForEvent(sock, 'presence', (count) => count === expected);
+    sock.emit('joinDiscussion', topic);
+    sock.emit('identify', topic, userId);
+    await ready;
+    assert.equal(await settled, expected);
+  };
+
+  try {
+    await joinAs(tabA, 'person-1', 1);  // one person opens the discussion
+    await joinAs(tabB, 'person-1', 1);  // same person, second tab → still one person
+    await joinAs(other, 'person-2', 2); // a genuinely different person → two
+
+    // The first person closes one of their two tabs. They are still here via the
+    // other tab, so the count broadcast on that disconnect must remain 2.
+    const afterTabClose = waitForEvent(other, 'presence');
+    tabB.disconnect();
+    assert.equal(await afterTabClose, 2);
+  } finally {
+    tabA.disconnect();
+    tabB.disconnect();
+    other.disconnect();
+  }
+});
+
 test('the creator can remove a moderator, revoking their access live', async () => {
   const topic = uniqueTopic('demote');
   const creator = await jsonRequest('POST', '/api/discussions', { topic });
