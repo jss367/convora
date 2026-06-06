@@ -2641,23 +2641,51 @@ function* allPseudonyms() {
   }
 }
 
-// Claim `name` for (discussionId, userId): inserts a reservation, or updates this
-// user's existing reservation to the new name (the regenerate path). Returns the
-// reserved name on success, or null when `name` is already held by a DIFFERENT
-// user in this discussion (UNIQUE(discussion_id, pseudonym) violation), so the
-// caller can try the next candidate. This is what makes concurrent joins safe:
-// the database, not a read-then-write in JS, is the arbiter of uniqueness.
-async function reservePseudonym(discussionId, userId, name) {
+// Claim `name` for (discussionId, userId). Returns the reserved name on success,
+// or null when `name` is already held by a DIFFERENT user in this discussion
+// (UNIQUE(discussion_id, pseudonym) violation), so the caller can try the next
+// candidate. The database, not a read-then-write in JS, is the arbiter of
+// uniqueness — that's what makes concurrent joins safe.
+//
+// Two conflict semantics on the (discussion_id, user_id) key:
+//   - overwrite:false (default, initial allocation) — FIRST-WINS. If this user
+//     already has a reservation (e.g. a racing vote and its own requestPseudonym
+//     both allocated), we keep the existing one and return it rather than
+//     replacing it. Replacing would let the loser clobber a handle the winner
+//     already acked to the client (and that the client may have used to rename
+//     its prior responses), splitting the user's name across responses (#58).
+//   - overwrite:true (the regenerate/shuffle button) — the user deliberately
+//     wants a NEW handle, so we update their existing row.
+async function reservePseudonym(discussionId, userId, name, { overwrite = false } = {}) {
   try {
+    if (overwrite) {
+      const result = await pool.query(
+        `INSERT INTO discussion_pseudonyms (discussion_id, user_id, pseudonym)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (discussion_id, user_id)
+         DO UPDATE SET pseudonym = EXCLUDED.pseudonym
+         RETURNING pseudonym`,
+        [discussionId, userId, name]
+      );
+      return result.rows[0] ? result.rows[0].pseudonym : null;
+    }
     const result = await pool.query(
       `INSERT INTO discussion_pseudonyms (discussion_id, user_id, pseudonym)
        VALUES ($1, $2, $3)
-       ON CONFLICT (discussion_id, user_id)
-       DO UPDATE SET pseudonym = EXCLUDED.pseudonym
+       ON CONFLICT (discussion_id, user_id) DO NOTHING
        RETURNING pseudonym`,
       [discussionId, userId, name]
     );
-    return result.rows[0] ? result.rows[0].pseudonym : null;
+    if (result.rows[0]) return result.rows[0].pseudonym; // we inserted — we won
+    // No row returned ⇒ this user already had a reservation (the other racer won).
+    // A name-already-taken-by-someone-else conflict is on the (discussion_id,
+    // pseudonym) constraint instead, which DO NOTHING doesn't catch — it raises
+    // 23505 and is handled below. So re-read and return the winning handle.
+    const existing = await pool.query(
+      'SELECT pseudonym FROM discussion_pseudonyms WHERE discussion_id = $1 AND user_id = $2',
+      [discussionId, userId]
+    );
+    return existing.rows[0] ? existing.rows[0].pseudonym : null;
   } catch (e) {
     if (e.code === '23505') return null; // name taken by someone else; try the next
     throw e;
@@ -2739,7 +2767,7 @@ async function assignPseudonym(slug, userId, preferred, { regenerate = false } =
   }
 
   for (const name of candidates) {
-    const reserved = await reservePseudonym(discussionId, userId, name);
+    const reserved = await reservePseudonym(discussionId, userId, name, { overwrite: regenerate });
     if (reserved) return { pseudonym: reserved, reserved: true };
   }
 
@@ -2754,7 +2782,7 @@ async function assignPseudonym(slug, userId, preferred, { regenerate = false } =
     // the same taken string every iteration and looping forever without acking.
     const suffix = ` ${n}`;
     const name = `${base.slice(0, MAX_PSEUDONYM_LENGTH - suffix.length)}${suffix}`;
-    const reserved = await reservePseudonym(discussionId, userId, name);
+    const reserved = await reservePseudonym(discussionId, userId, name, { overwrite: regenerate });
     if (reserved) return { pseudonym: reserved, reserved: true };
   }
 }

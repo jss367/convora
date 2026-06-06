@@ -1891,6 +1891,42 @@ test('A pseudonym-mode vote with NO prior reservation still gets a unique handle
   }
 });
 
+test('Concurrent reservations for the same user converge to one handle, not an overwrite (#58)', async () => {
+  const topic = uniqueTopic('pseudonym-converge');
+  const holder = await connectSocket();
+  const tabA = await connectSocket();
+  const tabB = await connectSocket();
+  try {
+    holder.emit('joinDiscussion', topic);
+    tabA.emit('joinDiscussion', topic);
+    tabB.emit('joinDiscussion', topic);
+    await addBrainstormQuestion(holder, topic, 'Ideas?');
+
+    // "Tidy Newt" is taken, so the same new user gets deconflicted either way —
+    // forcing the allocation path, not the cheap "already reserved" early return.
+    await emitWithAck(holder, 'requestPseudonym', topic, 'user-holder', 'Tidy Newt');
+
+    // Two tabs of the SAME user race their reservation at once (the vote/comment
+    // write path and requestPseudonym hit this same allocator). First-wins must
+    // make them agree; the old DO UPDATE could let the second overwrite the first,
+    // splitting the handle across the user's responses.
+    const [ra, rb] = await Promise.all([
+      emitWithAck(tabA, 'requestPseudonym', topic, 'race-user', 'Tidy Newt'),
+      emitWithAck(tabB, 'requestPseudonym', topic, 'race-user', 'Tidy Newt'),
+    ]);
+    assert.notEqual(ra.pseudonym, 'Tidy Newt');
+    assert.equal(ra.pseudonym, rb.pseudonym, 'both tabs must converge on one handle');
+
+    const rows = await pool.query(
+      "SELECT COUNT(*)::int AS n FROM discussion_pseudonyms WHERE user_id = 'race-user'");
+    assert.equal(rows.rows[0].n, 1, 'exactly one reservation row for the user');
+  } finally {
+    holder.disconnect();
+    tabA.disconnect();
+    tabB.disconnect();
+  }
+});
+
 test('A pseudonym-mode comment sent before the reservation ack persists under the reserved handle (#57)', async () => {
   const topic = uniqueTopic('pseudonym-canon-comment');
   const mod = await connectSocket();
