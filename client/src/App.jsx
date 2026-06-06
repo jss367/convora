@@ -9,7 +9,7 @@ const App = () => {
     return (
         <Router>
             <div className="app">
-                <header className="bg-gradient-to-r from-primary to-indigo-700 text-white p-4 shadow-md">
+                <header className="bg-gradient-to-r from-primary to-primary-dark text-white p-4 shadow-md">
                     <Link to="/" className="text-white hover:text-gray-200 transition duration-300">
                         <h1 className="text-2xl font-bold">Convora</h1>
                     </Link>

@@ -753,22 +753,28 @@ function emitPresence(topic) {
   io.to(topic).emit('presence', count);
 }
 
-// Read the lock state, whether a moderator has been claimed, and the
-// discussion-wide brainstorm interaction flags. The flags live on the
+// Color themes a moderator may apply to a discussion. Must stay in sync with
+// the [data-theme] palettes in client/src/index.css and THEME_KEYS in
+// client/src/DiscussionPage.jsx. 'indigo' is the default/original look.
+const ALLOWED_THEMES = ['indigo', 'orange', 'emerald', 'rose', 'slate'];
+const DEFAULT_THEME = 'indigo';
+
+// Read the lock state, chosen color theme, whether a moderator has been claimed,
+// and the discussion-wide brainstorm interaction flags. The flags live on the
 // discussion (not individual questions) so a moderator opens reactions/comments
 // for the whole room at once; this channel drives the moderator's toggle
 // buttons and gates the participant-facing reaction/comment UI.
 async function getDiscussionState(topic) {
   const slug = slugifyTopic(topic);
   const result = await pool.query(
-    `SELECT locked, reaction_keys, admin_token IS NOT NULL AS has_moderator,
+    `SELECT locked, theme, reaction_keys, admin_token IS NOT NULL AS has_moderator,
             reactions_enabled, reactions_visible, comments_enabled
        FROM discussions WHERE slug = $1`,
     [slug]
   );
   if (result.rows.length === 0) {
     return {
-      locked: false, hasModerator: false,
+      locked: false, hasModerator: false, theme: DEFAULT_THEME,
       reactionsEnabled: false, reactionsVisible: true, commentsEnabled: false,
       reactionKeys: [...DEFAULT_REACTION_KEYS],
     };
@@ -777,6 +783,7 @@ async function getDiscussionState(topic) {
   return {
     locked: row.locked === true,
     hasModerator: row.has_moderator === true,
+    theme: row.theme || DEFAULT_THEME,
     reactionsEnabled: row.reactions_enabled === true,
     reactionsVisible: row.reactions_visible === true,
     commentsEnabled: row.comments_enabled === true,
@@ -1025,6 +1032,28 @@ io.on('connection', (socket) => {
       await emitDiscussionState(discussionSlug);
     } catch (error) {
       console.error('Error setting lock state:', error);
+      socket.emit('error', { message: 'Failed to update discussion' });
+    }
+  });
+
+  // Moderator-only: set the discussion's color theme. The new theme rides the
+  // discussionState broadcast, so every connected participant recolors at once.
+  socket.on('setTheme', async (topic, theme, token) => {
+    const discussionSlug = slugifyTopic(topic);
+    try {
+      const discussionId = await verifyAdmin(discussionSlug, token);
+      if (!discussionId) {
+        socket.emit('error', { message: 'Not authorized to moderate this discussion.' });
+        return;
+      }
+      if (!ALLOWED_THEMES.includes(theme)) {
+        socket.emit('error', { message: 'Unknown theme.' });
+        return;
+      }
+      await pool.query('UPDATE discussions SET theme = $1 WHERE id = $2', [theme, discussionId]);
+      await emitDiscussionState(discussionSlug);
+    } catch (error) {
+      console.error('Error setting theme:', error);
       socket.emit('error', { message: 'Failed to update discussion' });
     }
   });
@@ -2070,6 +2099,8 @@ async function migrateBrainstormInteractions() {
 async function migrateModerationAndDedup() {
   await pool.query('ALTER TABLE discussions ADD COLUMN IF NOT EXISTS admin_token TEXT');
   await pool.query('ALTER TABLE discussions ADD COLUMN IF NOT EXISTS locked BOOLEAN NOT NULL DEFAULT FALSE');
+  // Per-discussion color theme the moderator picks; 'indigo' is the original look.
+  await pool.query("ALTER TABLE discussions ADD COLUMN IF NOT EXISTS theme TEXT NOT NULL DEFAULT 'indigo'");
   await pool.query('ALTER TABLE questions ADD COLUMN IF NOT EXISTS pinned BOOLEAN NOT NULL DEFAULT FALSE');
 
   try {
@@ -2833,7 +2864,7 @@ app.post('/api/duplicate-discussion', async (req, res) => {
     // preserves whether reactions/comments were enabled (and reactions
     // revealed) rather than silently resetting them to the defaults.
     const originalDiscussionResult = await client.query(
-      'SELECT id, reactions_enabled, reactions_visible, comments_enabled FROM discussions WHERE slug = $1',
+      'SELECT id, reactions_enabled, reactions_visible, comments_enabled, theme FROM discussions WHERE slug = $1',
       [slugifyTopic(originalTopic)]
     );
 
@@ -2867,14 +2898,15 @@ app.post('/api/duplicate-discussion', async (req, res) => {
     for (let suffix = 1; suffix <= 1000; suffix += 1) {
       const newSlug = suffixSlug(baseNewSlug, suffix);
       const newDiscussionResult = await client.query(
-        `INSERT INTO discussions (topic, slug, admin_token, reactions_enabled, reactions_visible, comments_enabled)
-         VALUES ($1, $2, $3, $4, $5, $6)
+        `INSERT INTO discussions (topic, slug, admin_token, reactions_enabled, reactions_visible, comments_enabled, theme)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
          ON CONFLICT (slug) DO NOTHING
          RETURNING id, topic, slug`,
         [displayNewTopic, newSlug, newAdminToken,
           originalDiscussion.reactions_enabled,
           originalDiscussion.reactions_visible,
-          originalDiscussion.comments_enabled]
+          originalDiscussion.comments_enabled,
+          originalDiscussion.theme]
       );
 
       if (newDiscussionResult.rows.length > 0) {
