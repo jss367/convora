@@ -814,6 +814,86 @@ test('a non-moderator cannot set the discussion theme', async () => {
   }
 });
 
+test('a moderator can rename the discussion while the slug stays stable', async () => {
+  const topic = uniqueTopic('rename');
+  const creator = await jsonRequest('POST', '/api/discussions', { topic });
+  const adminToken = creator.body.adminToken;
+  const slug = creator.body.slug;
+
+  const mod = await connectSocket();
+  const guest = await connectSocket();
+
+  try {
+    mod.emit('joinDiscussion', topic);
+    guest.emit('joinDiscussion', topic);
+    await waitForEvent(guest, 'discussion', (d) => d && d.topic === topic);
+
+    // The moderator renames; everyone in the room receives the new title on the
+    // same 'discussion' channel that delivered it on join.
+    const renamed = waitForEvent(guest, 'discussion', (d) => d && d.topic === 'Renamed Topic');
+    const ack = await emitWithAck(mod, 'setTopic', slug, 'Renamed Topic', adminToken);
+    assert.deepEqual(ack, { updated: true });
+    const broadcast = await renamed;
+
+    // Only the display title changed: the slug (the routing key every URL and
+    // socket room is keyed on) is untouched, so existing links stay valid.
+    assert.equal(broadcast.slug, slug);
+
+    // The rename persists: a fresh join, addressing the discussion by its
+    // unchanged slug, reports the new title.
+    const rejoin = await connectSocket();
+    try {
+      rejoin.emit('joinDiscussion', slug);
+      const state = await waitForEvent(rejoin, 'discussion', (d) => d && d.slug === slug);
+      assert.equal(state.topic, 'Renamed Topic');
+    } finally {
+      rejoin.disconnect();
+    }
+  } finally {
+    mod.disconnect();
+    guest.disconnect();
+  }
+});
+
+test('renaming is rejected for non-moderators and blank titles', async () => {
+  const topic = uniqueTopic('rename-deny');
+  const creator = await jsonRequest('POST', '/api/discussions', { topic });
+  const adminToken = creator.body.adminToken;
+  const slug = creator.body.slug;
+
+  const stranger = await connectSocket();
+  const mod = await connectSocket();
+
+  try {
+    stranger.emit('joinDiscussion', topic);
+    mod.emit('joinDiscussion', topic);
+
+    // No valid moderator token: rejected, with an error surfaced to the sender.
+    const rejected = waitForEvent(stranger, 'error', (e) => /authoriz/i.test(e.message));
+    const denyAck = await emitWithAck(stranger, 'setTopic', slug, 'Hijacked', 'bogus-token');
+    assert.deepEqual(denyAck, { updated: false, reason: 'not_authorized' });
+    await rejected;
+
+    // A moderator submitting a blank title is rejected rather than renamed to
+    // the 'Discussion' placeholder formatTopicTitle would otherwise produce.
+    const blankAck = await emitWithAck(mod, 'setTopic', slug, '   ', adminToken);
+    assert.deepEqual(blankAck, { updated: false, reason: 'invalid' });
+
+    // Neither attempt changed the stored title.
+    const observer = await connectSocket();
+    try {
+      observer.emit('joinDiscussion', slug);
+      const state = await waitForEvent(observer, 'discussion', (d) => d && d.slug === slug);
+      assert.equal(state.topic, topic);
+    } finally {
+      observer.disconnect();
+    }
+  } finally {
+    stranger.disconnect();
+    mod.disconnect();
+  }
+});
+
 test('a non-moderator cannot list or promote participants', async () => {
   const topic = uniqueTopic('promote-deny');
   await jsonRequest('POST', '/api/discussions', { topic });

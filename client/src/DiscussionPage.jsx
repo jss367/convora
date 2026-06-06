@@ -176,6 +176,10 @@ const DiscussionPage = () => {
     const [editingIdentity, setEditingIdentity] = useState(false);
     const [error, setError] = useState(null);
     const [newTopicName, setNewTopicName] = useState('');
+    // Inline moderator rename of the discussion title. titleDraft holds the
+    // in-progress edit; editingTitle swaps the <h1> for the editor.
+    const [editingTitle, setEditingTitle] = useState(false);
+    const [titleDraft, setTitleDraft] = useState('');
     const [showDuplicateModal, setShowDuplicateModal] = useState(false);
     const [showShareModal, setShowShareModal] = useState(false);
     const [showActionsMenu, setShowActionsMenu] = useState(false);
@@ -761,6 +765,33 @@ const DiscussionPage = () => {
         });
     };
 
+    // Open the inline title editor, seeding it with the current title.
+    const handleStartRename = () => {
+        setTitleDraft(discussion?.topic || discussionTitle);
+        setEditingTitle(true);
+    };
+
+    // Persist a renamed discussion. Only the display title changes server-side;
+    // the slug (and thus this page's URL and everyone's room) stays put, so the
+    // ack is the only thing we wait on before closing the editor. The new title
+    // arrives for everyone — us included — over the broadcast 'discussion' event.
+    const handleRenameDiscussion = () => {
+        const trimmed = titleDraft.trim();
+        if (!trimmed) {
+            setError('Discussion name cannot be empty.');
+            return;
+        }
+        socket.emit('setTopic', discussionSlug, trimmed, adminToken, (resp) => {
+            if (resp && resp.updated) {
+                setEditingTitle(false);
+            } else if (resp && resp.reason === 'not_authorized') {
+                setError('You are no longer a moderator of this discussion.');
+            } else {
+                setError('Could not rename the discussion. Try again.');
+            }
+        });
+    };
+
     const handleDuplicateDiscussion = async () => {
         if (newTopicName.trim() === '') {
             setError('New topic name cannot be empty.');
@@ -1337,7 +1368,40 @@ const DiscussionPage = () => {
 
     return (
         <div className="max-w-4xl mx-auto mt-10 px-4">
-            <h1 className="text-4xl font-bold mb-2 text-center text-gray-800">Discussion: {discussionTitle}</h1>
+            {isAdmin && editingTitle ? (
+                <div className="mb-2 flex flex-col items-center gap-2">
+                    <input
+                        type="text"
+                        value={titleDraft}
+                        onChange={(e) => setTitleDraft(e.target.value)}
+                        onKeyDown={(e) => {
+                            if (e.key === 'Enter') handleRenameDiscussion();
+                            if (e.key === 'Escape') setEditingTitle(false);
+                        }}
+                        autoFocus
+                        maxLength={200}
+                        placeholder="Discussion name"
+                        aria-label="Discussion name"
+                        className="w-full max-w-xl p-2 border rounded text-3xl font-bold text-center text-gray-800"
+                    />
+                    <div className="flex gap-2">
+                        <button
+                            onClick={handleRenameDiscussion}
+                            className="px-3 py-1 rounded bg-primary text-white hover:bg-opacity-90"
+                        >
+                            Save
+                        </button>
+                        <button
+                            onClick={() => setEditingTitle(false)}
+                            className="px-3 py-1 rounded bg-gray-300 hover:bg-gray-400"
+                        >
+                            Cancel
+                        </button>
+                    </div>
+                </div>
+            ) : (
+                <h1 className="text-4xl font-bold mb-2 text-center text-gray-800">Discussion: {discussionTitle}</h1>
+            )}
 
             {/* Participant identity + live presence */}
             <div className="mb-8 text-center text-sm text-gray-600">
@@ -1584,6 +1648,14 @@ const DiscussionPage = () => {
                 {isAdmin ? (
                     <div className="flex flex-wrap items-center gap-3 bg-indigo-50 border border-indigo-100 rounded-md p-3 text-sm">
                         <span className="font-semibold text-indigo-800">You&apos;re the moderator</span>
+                        <button
+                            onClick={handleStartRename}
+                            disabled={editingTitle}
+                            className="px-3 py-1 rounded bg-white border border-indigo-300 text-indigo-700 hover:bg-indigo-100 disabled:opacity-50"
+                            title="Change the discussion's name"
+                        >
+                            Rename discussion
+                        </button>
                         <button
                             onClick={handleToggleLock}
                             className="px-3 py-1 rounded bg-white border border-indigo-300 text-indigo-700 hover:bg-indigo-100"
