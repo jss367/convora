@@ -1026,10 +1026,15 @@ test('Brainstorm ratings broadcast as aggregates without exposing who voted', as
   const topic = uniqueTopic('brainstorm-rate');
   const mod = await connectSocket();
   const participant = await connectSocket();
+  // A separate browser does the rating: identity is pinned per socket, so the
+  // idea's author socket can't also stand in as the rater (that would be a
+  // self-rating, which is rejected).
+  const rater = await connectSocket();
 
   try {
     mod.emit('joinDiscussion', topic);
     participant.emit('joinDiscussion', topic);
+    rater.emit('joinDiscussion', topic);
 
     const token = await claimModerator(mod, topic);
 
@@ -1060,7 +1065,7 @@ test('Brainstorm ratings broadcast as aggregates without exposing who voted', as
       (questions) => questions[0] && questions[0].votes[0] && questions[0].votes[0].qualityUp === 1,
       'quality rating broadcast'
     );
-    participant.emit('setResponseRating', topic, responseId, 'quality', 1, 'user-rater');
+    rater.emit('setResponseRating', topic, responseId, 'quality', 1, 'user-rater');
     const rated = (await ratingUpdate)[0].votes[0];
 
     assert.equal(rated.qualityUp, 1);
@@ -1072,15 +1077,22 @@ test('Brainstorm ratings broadcast as aggregates without exposing who voted', as
   } finally {
     mod.disconnect();
     participant.disconnect();
+    rater.disconnect();
   }
 });
 
 test('Brainstorm agreement votes accumulate into a distribution', async () => {
   const topic = uniqueTopic('brainstorm-agree');
   const mod = await connectSocket();
+  // Two separate browsers cast the agreement ratings; the author socket can't
+  // double as a rater (per-socket identity, and self-rating is rejected anyway).
+  const raterA = await connectSocket();
+  const raterB = await connectSocket();
 
   try {
     mod.emit('joinDiscussion', topic);
+    raterA.emit('joinDiscussion', topic);
+    raterB.emit('joinDiscussion', topic);
     const token = await claimModerator(mod, topic);
     const question = await addBrainstormQuestion(mod, topic, 'Pick a direction');
 
@@ -1097,14 +1109,16 @@ test('Brainstorm agreement votes accumulate into a distribution', async () => {
       (qs) => qs[0] && qs[0].votes[0] && (qs[0].votes[0].agreementCounts || {})['Strongly Agree'] === 1,
       'agreement counted'
     );
-    mod.emit('setResponseRating', topic, responseId, 'agreement', 'Strongly Agree', 'user-a');
-    mod.emit('setResponseRating', topic, responseId, 'agreement', 'Disagree', 'user-b');
+    raterA.emit('setResponseRating', topic, responseId, 'agreement', 'Strongly Agree', 'user-a');
+    raterB.emit('setResponseRating', topic, responseId, 'agreement', 'Disagree', 'user-b');
     const counts = (await agreeUpdate)[0].votes[0].agreementCounts;
 
     assert.equal(counts['Strongly Agree'], 1);
     assert.equal(counts['Disagree'], 1);
   } finally {
     mod.disconnect();
+    raterA.disconnect();
+    raterB.disconnect();
   }
 });
 
@@ -1154,6 +1168,84 @@ test('Brainstorm comments can be added, listed with pseudonyms, and deleted', as
   } finally {
     mod.disconnect();
     participant.disconnect();
+  }
+});
+
+test('a participant cannot act as another by supplying their userId (issue #38)', async () => {
+  const topic = uniqueTopic('identity-spoof');
+  const mod = await connectSocket();
+  const victim = await connectSocket();
+  const attacker = await connectSocket();
+
+  try {
+    mod.emit('joinDiscussion', topic);
+    victim.emit('joinDiscussion', topic);
+    attacker.emit('joinDiscussion', topic);
+    // Each socket pins to its own identity up front, exactly as a real client
+    // does on connect. From here on the server attributes every action to the
+    // connection's pinned identity, never to a userId named in the message.
+    victim.emit('identify', topic, 'victim-user');
+    attacker.emit('identify', topic, 'attacker-user');
+
+    const token = await claimModerator(mod, topic);
+    const question = await addBrainstormQuestion(mod, topic, 'Ideas?');
+
+    // The victim posts an idea and a comment on it.
+    const victimIdea = waitForQuestions(mod, (qs) => qs[0] && qs[0].votes.length === 1, 'victim idea');
+    victim.emit('vote', topic, question.id, "victim's idea", 'victim-user', 'Victim');
+    const victimResponseId = (await victimIdea)[0].votes[0].id;
+
+    const commentsOn = waitForQuestions(mod, (qs) => qs[0] && qs[0].commentsEnabled === true, 'comments enabled');
+    mod.emit('setDiscussionFlags', topic, { comments_enabled: true }, token);
+    await commentsOn;
+
+    const victimComment = waitForQuestions(
+      mod, (qs) => qs[0] && qs[0].votes[0] && (qs[0].votes[0].comments || []).length === 1, 'victim comment');
+    victim.emit('addResponseComment', topic, victimResponseId, "victim's comment", 'victim-user', 'Victim');
+    const victimCommentId = (await victimComment)[0].votes[0].comments[0].id;
+
+    // The attacker also posts their own idea, so we can show what their socket can
+    // actually delete (its own content) versus what it cannot (the victim's).
+    const attackerIdea = waitForQuestions(mod, (qs) => qs[0] && qs[0].votes.length === 2, 'attacker idea');
+    attacker.emit('vote', topic, question.id, "attacker's idea", 'attacker-user', 'Attacker');
+    const attackerResponseId = (await attackerIdea)[0].votes.find((v) => v.id !== victimResponseId).id;
+
+    // ATTACK 1: delete the victim's idea by naming the victim's userId. The handler
+    // ignores the supplied id and acts as the attacker's pinned identity, so the
+    // delete matches nothing and the victim's idea survives. deleteVote always
+    // re-broadcasts, so the next 'questions' event confirms the query ran.
+    const afterDelete = waitForQuestions(mod, (qs) => qs[0], 'state after spoofed delete');
+    attacker.emit('deleteVote', topic, victimResponseId, 'victim-user');
+    const afterDeleteVotes = (await afterDelete)[0].votes;
+    assert.ok(afterDeleteVotes.find((v) => v.id === victimResponseId), "victim's idea must survive a spoofed delete");
+
+    // ATTACK 2: delete the victim's comment by naming their userId — must survive.
+    const afterCommentDelete = waitForQuestions(
+      mod, (qs) => qs[0] && qs[0].votes.find((v) => v.id === victimResponseId), 'state after spoofed comment delete');
+    attacker.emit('deleteResponseComment', topic, victimCommentId, 'victim-user');
+    const survivingComments = (await afterCommentDelete)[0].votes.find((v) => v.id === victimResponseId).comments || [];
+    assert.ok(survivingComments.find((c) => c.id === victimCommentId), "victim's comment must survive a spoofed delete");
+
+    // ATTACK 3: rename the victim's responses by naming their userId — must not take.
+    const afterRename = waitForQuestions(
+      mod, (qs) => qs[0] && qs[0].votes.find((v) => v.id === victimResponseId), 'state after spoofed rename');
+    attacker.emit('updateDisplayName', topic, 'victim-user', 'PWNED');
+    const victimVoteAfter = (await afterRename)[0].votes.find((v) => v.id === victimResponseId);
+    assert.equal(victimVoteAfter.pseudonym, 'Victim', "victim's display name must be unchanged by a spoofer");
+
+    // The supplied id is IGNORED, not honored: the attacker passing 'victim-user'
+    // to deleteVote deletes the ATTACKER'S OWN idea (their connection's pinned
+    // identity), proving ownership is the socket's, not the message's.
+    const ownDeleted = waitForQuestions(
+      mod, (qs) => qs[0] && !qs[0].votes.find((v) => v.id === attackerResponseId), 'attacker own idea removed');
+    attacker.emit('deleteVote', topic, attackerResponseId, 'victim-user');
+    const remaining = (await ownDeleted)[0].votes;
+    assert.ok(remaining.find((v) => v.id === victimResponseId), "victim's idea is still present");
+    assert.ok(!remaining.find((v) => v.id === attackerResponseId), "the attacker's own idea is what got deleted");
+  } finally {
+    mod.disconnect();
+    victim.disconnect();
+    attacker.disconnect();
   }
 });
 
@@ -1439,10 +1531,15 @@ test('Renaming updates stored comment pseudonyms, and comment tokens are namespa
   const topic = uniqueTopic('brainstorm-rename');
   const mod = await connectSocket();
   const participant = await connectSocket();
+  // The commenter is a different participant from the idea's author, on its own
+  // socket — identity is pinned per connection, so one socket can't post the idea
+  // as 'user-idea' and the comment as 'user-c'.
+  const commenter = await connectSocket();
 
   try {
     mod.emit('joinDiscussion', topic);
     participant.emit('joinDiscussion', topic);
+    commenter.emit('joinDiscussion', topic);
     const token = await claimModerator(mod, topic);
     const question = await addBrainstormQuestion(mod, topic, 'Rename test');
 
@@ -1456,7 +1553,7 @@ test('Renaming updates stored comment pseudonyms, and comment tokens are namespa
 
     const commentUpdate = waitForQuestions(
       mod, (qs) => qs[0] && qs[0].votes[0] && (qs[0].votes[0].comments || []).length === 1, 'comment added');
-    await emitWithAck(participant, 'addResponseComment', topic, responseId, 'My take', 'user-c', 'Critic');
+    await emitWithAck(commenter, 'addResponseComment', topic, responseId, 'My take', 'user-c', 'Critic');
     const comment = (await commentUpdate)[0].votes[0].comments[0];
     assert.equal(comment.pseudonym, 'Critic');
 
@@ -1474,11 +1571,12 @@ test('Renaming updates stored comment pseudonyms, and comment tokens are namespa
         qs[0].votes[0].comments[0].pseudonym === 'Reformed Critic',
       'comment renamed'
     );
-    participant.emit('updateDisplayName', topic, 'user-c', 'Reformed Critic');
+    commenter.emit('updateDisplayName', topic, 'user-c', 'Reformed Critic');
     await renamed;
   } finally {
     mod.disconnect();
     participant.disconnect();
+    commenter.disconnect();
   }
 });
 
@@ -1514,9 +1612,13 @@ test('Brainstorm authors cannot rate or react to their own idea', async () => {
 test('Brainstorm reactions can be narrowed to a creator-chosen set', async () => {
   const topic = uniqueTopic('brainstorm-reactset');
   const mod = await connectSocket();
+  // A separate browser reacts; the author socket can't also be the reactor
+  // (per-socket identity, and reacting to your own idea is rejected).
+  const reactor = await connectSocket();
 
   try {
     mod.emit('joinDiscussion', topic);
+    reactor.emit('joinDiscussion', topic);
     // A fresh discussion broadcasts the full default reaction catalog.
     const initial = await waitForEvent(mod, 'discussionState', (s) => Array.isArray(s.reactionKeys));
     assert.deepEqual(initial.reactionKeys, ['changed-mind', 'crux', 'follows', 'citation-needed', 'key-insight']);
@@ -1542,13 +1644,14 @@ test('Brainstorm reactions can be narrowed to a creator-chosen set', async () =>
     // A reaction outside the active set is rejected; one inside is accepted.
     const reactUpdate = waitForQuestions(
       mod, (qs) => qs[0] && qs[0].votes[0] && (qs[0].votes[0].reactionCounts || {}).crux === 1, 'crux counted');
-    mod.emit('toggleResponseReaction', topic, responseId, 'key-insight', 'user-react');
-    mod.emit('toggleResponseReaction', topic, responseId, 'crux', 'user-react');
+    reactor.emit('toggleResponseReaction', topic, responseId, 'key-insight', 'user-react');
+    reactor.emit('toggleResponseReaction', topic, responseId, 'crux', 'user-react');
     const counts = (await reactUpdate)[0].votes[0].reactionCounts;
     assert.equal(counts.crux, 1);
     assert.equal(counts['key-insight'], undefined, 'reaction outside the active set must be rejected');
   } finally {
     mod.disconnect();
+    reactor.disconnect();
   }
 });
 
