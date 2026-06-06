@@ -420,6 +420,19 @@ const DiscussionPage = () => {
         return () => { cancelled = true; socket.off('connect', verify); };
     }, [discussionSlug, adminToken]);
 
+    // Reset the creator flag whenever the discussion changes. This component is
+    // reused (not remounted) when navigating between /discussion/:topic routes —
+    // React Router keeps the same instance and only the topic param changes — so
+    // canDemote would otherwise carry over from a previous discussion. The verify
+    // effect above only updates canDemote when adminToken is set, so navigating to
+    // a discussion with no/invalid token would leave a stale canDemote=true; that
+    // would make handleModeratorGranted drop a legitimate one-time grant if this
+    // user is promoted in the new discussion. Clearing here lets verify() (or a
+    // participant-list response) re-establish the correct value for the new topic.
+    useEffect(() => {
+        setCanDemote(false);
+    }, [discussionSlug]);
+
     useEffect(() => {
         const key = 'convora_show_clusters';
         try {
