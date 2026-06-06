@@ -880,6 +880,20 @@ io.on('connection', (socket) => {
         socket.emit('error', { message: 'Invalid vote.' });
         return;
       }
+      // Numerical votes must be a finite number within the question's configured
+      // range. Without this, a crafted socket message could store out-of-range
+      // (or non-numeric) values that silently skew the average / std-dev / spread
+      // shown in the summary — the range is otherwise only enforced at
+      // create/edit time, never when a vote is cast. getQuestionRange supplies
+      // the 0..100 default for legacy questions with null bounds.
+      if (target.type === 'Numerical') {
+        const num = Number(vote);
+        const { minValue, maxValue } = getQuestionRange({ min_value: target.minValue, max_value: target.maxValue });
+        if (!Number.isFinite(num) || num < minValue || num > maxValue) {
+          socket.emit('error', { message: 'Invalid vote.' });
+          return;
+        }
+      }
       // Persist the reserved handle in pseudonym mode rather than the client's
       // (possibly pre-reservation, colliding) local pick — see canonicalPseudonym.
       const handle = await canonicalPseudonym(discussionSlug, target.discussionId, userId, mode, pseudonym);
@@ -2577,7 +2591,7 @@ async function isModeratorOnlyQuestions(topic) {
 async function getQuestionForTopic(topic, questionId) {
   const slug = slugifyTopic(topic);
   const result = await pool.query(
-    `SELECT q.id, q.type, q.discussion_id, d.locked
+    `SELECT q.id, q.type, q.discussion_id, q.min_value, q.max_value, d.locked
      FROM questions q
      JOIN discussions d ON q.discussion_id = d.id
      WHERE d.slug = $1 AND q.id = $2`,
@@ -2588,6 +2602,8 @@ async function getQuestionForTopic(topic, questionId) {
     id: result.rows[0].id,
     type: result.rows[0].type,
     discussionId: result.rows[0].discussion_id,
+    minValue: result.rows[0].min_value,
+    maxValue: result.rows[0].max_value,
     locked: result.rows[0].locked === true,
   };
 }
@@ -2951,15 +2967,29 @@ async function toggleResponseVote(topic, responseId, userId) {
     console.log('Ignoring self-upvote on response', responseId);
     return;
   }
-  const deleteResult = await pool.query(
-    'DELETE FROM response_votes WHERE response_id = $1 AND user_id = $2',
-    [responseId, userId]
-  );
-  if (deleteResult.rowCount === 0) {
-    await pool.query(
-      'INSERT INTO response_votes (response_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+  // Run the delete-or-insert as one transaction on a single connection so two
+  // concurrent toggles from the same user (double-click, two tabs) can't
+  // interleave their DELETE/INSERT across separate pooled connections and land
+  // in the wrong on/off state.
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const deleteResult = await client.query(
+      'DELETE FROM response_votes WHERE response_id = $1 AND user_id = $2',
       [responseId, userId]
     );
+    if (deleteResult.rowCount === 0) {
+      await client.query(
+        'INSERT INTO response_votes (response_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+        [responseId, userId]
+      );
+    }
+    await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    client.release();
   }
 }
 
@@ -3014,15 +3044,27 @@ async function setResponseRating(responseId, userId, axis, value) {
 // Toggle a single epistemic reaction for a user on a response: remove it if
 // present, add it otherwise.
 async function toggleResponseReaction(responseId, userId, reaction) {
-  const deleteResult = await pool.query(
-    'DELETE FROM response_reactions WHERE response_id = $1 AND user_id = $2 AND reaction = $3',
-    [responseId, userId, reaction]
-  );
-  if (deleteResult.rowCount === 0) {
-    await pool.query(
-      'INSERT INTO response_reactions (response_id, user_id, reaction) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING',
+  // Atomic delete-or-insert (see toggleResponseVote) so concurrent toggles of
+  // the same reaction can't interleave into the wrong on/off state.
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const deleteResult = await client.query(
+      'DELETE FROM response_reactions WHERE response_id = $1 AND user_id = $2 AND reaction = $3',
       [responseId, userId, reaction]
     );
+    if (deleteResult.rowCount === 0) {
+      await client.query(
+        'INSERT INTO response_reactions (response_id, user_id, reaction) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING',
+        [responseId, userId, reaction]
+      );
+    }
+    await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    client.release();
   }
 }
 

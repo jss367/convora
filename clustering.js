@@ -212,7 +212,15 @@ function silhouette(matrix, assignments, k) {
       }
     }
     if (b !== Infinity) {
-      total += (b - a) / Math.max(a, b);
+      // When a point is identical to every member of both its own cluster and
+      // the nearest one, a and b are both 0; the silhouette term is defined as 0
+      // there. Guarding the division keeps a single 0/0 from turning the whole
+      // score into NaN, which would make `score > best.score` always false and
+      // silently drop that k from selection.
+      const denom = Math.max(a, b);
+      if (denom > 0) {
+        total += (b - a) / denom;
+      }
     }
   }
   return total / n;
