@@ -1293,11 +1293,11 @@ const DiscussionPage = () => {
                                 readOnly
                                 value={shareUrl}
                                 onFocus={(e) => e.target.select()}
-                                className="flex-1 p-2 border rounded text-sm bg-gray-50"
+                                className="flex-1 min-w-0 p-2 border rounded text-sm bg-gray-50"
                             />
                             <button
                                 onClick={handleCopyLink}
-                                className="px-4 py-2 bg-primary text-white rounded hover:bg-opacity-90 whitespace-nowrap"
+                                className="shrink-0 px-4 py-2 bg-primary text-white rounded hover:bg-opacity-90 whitespace-nowrap"
                             >
                                 {copied ? 'Copied!' : 'Copy'}
                             </button>
@@ -2225,12 +2225,12 @@ const BrainstormIdea = ({
                                         onChange={(e) => setComment(e.target.value)}
                                         onKeyDown={(e) => { if (e.key === 'Enter') submitComment(); }}
                                         placeholder="Add a comment"
-                                        className="flex-1 p-1.5 border rounded text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                                        className="flex-1 min-w-0 p-1.5 border rounded text-sm focus:outline-none focus:ring-2 focus:ring-primary"
                                     />
                                     <button
                                         onClick={submitComment}
                                         disabled={comment.trim() === ''}
-                                        className="px-3 py-1 text-sm bg-primary text-white rounded hover:bg-opacity-90 disabled:opacity-50"
+                                        className="shrink-0 px-3 py-1 text-sm bg-primary text-white rounded hover:bg-opacity-90 disabled:opacity-50"
                                     >
                                         Post
                                     </button>
