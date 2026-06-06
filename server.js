@@ -839,7 +839,7 @@ io.on('connection', (socket) => {
       }
       // Persist the reserved handle in pseudonym mode rather than the client's
       // (possibly pre-reservation, colliding) local pick — see canonicalPseudonym.
-      const handle = await canonicalPseudonym(target.discussionId, userId, mode, pseudonym);
+      const handle = await canonicalPseudonym(discussionSlug, target.discussionId, userId, mode, pseudonym);
       await addVote(questionId, vote, userId, handle);
       const questions = await getQuestions(discussionSlug);
       io.to(discussionSlug).emit('questions', questions);
@@ -1226,7 +1226,7 @@ io.on('connection', (socket) => {
       // (possibly pre-reservation, colliding) local pick — see canonicalPseudonym.
       // Custom/Anonymous stay as sent. canonicalPseudonym also sanitizes (trim +
       // length cap) so a crafted oversized/whitespace name can't break the UI.
-      const handle = await canonicalPseudonym(ctx.discussionId, userId, mode, pseudonym);
+      const handle = await canonicalPseudonym(discussionSlug, ctx.discussionId, userId, mode, pseudonym);
       await pool.query(
         'INSERT INTO response_comments (response_id, user_id, pseudonym, body) VALUES ($1, $2, $3, $4)',
         [responseId, userId, handle, text.slice(0, 2000)]
@@ -2573,22 +2573,32 @@ const NAME_MODE_PSEUDONYM = 'pseudonym';
 // client sent, closing the submit-before-reservation race (#57): on joining an
 // existing discussion there's a brief window where the client falls back to its
 // unreserved local pick, and if that pick collides with a handle already taken in
-// the discussion the row would otherwise persist a visible duplicate. Looking up
-// the reservation at write time fixes that deterministically whenever a
-// reservation exists — and by the time the colliding reconciliation could run, one
-// always does. Custom names and "Anonymous" are stored as-is (only sanitized).
-// `mode` is undefined for pre-#57 clients; those keep the old store-as-sent
-// behavior. We also fall back to the client's value when no reservation exists
-// yet (e.g. the discussion row hasn't been created) — that's what the client is
-// already showing locally, and the existing updateDisplayName path reconciles it.
-async function canonicalPseudonym(discussionId, userId, mode, clientPseudonym) {
+// the discussion the row would otherwise persist a visible duplicate.
+//
+// The common case is a cheap lookup: the join-time reservation already exists, so
+// we store it. The hard case is the actual race — the vote/comment beat the
+// requestPseudonym round-trip, so no row exists yet. We must NOT fall back to the
+// client value here: that value may be the colliding pick, and the client's later
+// updateDisplayName reconciliation can interleave BEFORE this insert lands (socket
+// handlers aren't awaited in order), leaving exactly the duplicate this is meant to
+// prevent. Instead we create-and-await the reservation now via assignPseudonym,
+// which serializes with the in-flight requestPseudonym through the
+// discussion_pseudonyms unique constraint — whichever path inserts first wins and
+// the other returns the same row — so a unique handle is stored deterministically.
+//
+// Custom names and "Anonymous" are stored as-is (only sanitized). `mode` is
+// undefined for pre-#57 clients; those keep the old store-as-sent behavior.
+async function canonicalPseudonym(slug, discussionId, userId, mode, clientPseudonym) {
   const sanitized = sanitizePseudonym(clientPseudonym);
   if (mode !== NAME_MODE_PSEUDONYM || !discussionId || !userId) return sanitized;
-  const result = await pool.query(
+  const existing = await pool.query(
     'SELECT pseudonym FROM discussion_pseudonyms WHERE discussion_id = $1 AND user_id = $2',
     [discussionId, userId]
   );
-  return result.rows[0] ? result.rows[0].pseudonym : sanitized;
+  if (existing.rows[0]) return existing.rows[0].pseudonym;
+  // No reservation yet — create one now rather than trusting the client's pick.
+  const { pseudonym } = await assignPseudonym(slug, userId, clientPseudonym);
+  return pseudonym || sanitized;
 }
 
 // Pool of friendly handles. MUST stay in sync with the ADJECTIVES/ANIMALS lists
