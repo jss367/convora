@@ -1906,6 +1906,50 @@ test('Issue #57: a pseudonym-mode vote sent under a stale colliding name persist
   }
 });
 
+test('Issue #57: a pseudonym-mode vote with no prior reservation reserves a deconflicted handle (submission wins the race)', async () => {
+  const topic = uniqueTopic('canonicalize-race');
+  const author = await connectSocket();
+  let question;
+  try {
+    author.emit('joinDiscussion', topic);
+    question = await addBrainstormQuestion(author, topic, 'Ideas?');
+  } finally {
+    author.disconnect();
+  }
+
+  const a = await connectSocket();
+  const b = await connectSocket();
+  try {
+    a.emit('joinDiscussion', topic);
+    // user-b holds "Brave Fox". user-a has NOT reserved anything yet — modeling
+    // the submission arriving before its own requestPseudonym insert lands.
+    const rb = await emitWithAck(b, 'requestPseudonym', topic, 'user-b', 'Brave Fox');
+    assert.equal(rb.pseudonym, 'Brave Fox');
+
+    // user-a votes in pseudonym mode under the colliding local pick. With no
+    // reservation to look up, the write path must still reserve a unique handle
+    // rather than persisting "Brave Fox".
+    const voteUpdate = waitForQuestions(
+      a,
+      (qs) => qs[0] && qs[0].votes.some((v) => v.value === 'racy idea'),
+      'race-path vote'
+    );
+    a.emit('vote', topic, question.id, 'racy idea', 'user-a', 'Brave Fox', 'pseudonym');
+    const vote = (await voteUpdate)[0].votes.find((v) => v.value === 'racy idea');
+    assert.ok(vote.pseudonym, 'a handle must be stored');
+    assert.notEqual(vote.pseudonym, 'Brave Fox', 'must not reuse the colliding handle');
+
+    // A reservation was created for user-a, matching what the vote stored.
+    const reservation = await pool.query(
+      'SELECT pseudonym FROM discussion_pseudonyms WHERE user_id = $1', ['user-a']);
+    assert.equal(reservation.rows.length, 1);
+    assert.equal(reservation.rows[0].pseudonym, vote.pseudonym);
+  } finally {
+    a.disconnect();
+    b.disconnect();
+  }
+});
+
 test('Issue #57: a pseudonym-mode comment sent under a stale colliding name persists under the reserved handle', async () => {
   const topic = uniqueTopic('canonicalize-comment');
   const mod = await connectSocket();

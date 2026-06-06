@@ -2736,8 +2736,16 @@ const NAME_MODE_PSEUDONYM = 'pseudonym';
 // (issue #57) between the client falling back to its unreserved local pseudonym
 // and the `requestPseudonym` round-trip completing; a submission in that window
 // could otherwise persist under a colliding, unreserved handle (a visible
-// duplicate label). Canonicalizing here closes that window deterministically: if
-// a reservation exists, it wins, regardless of submission/reservation ordering.
+// duplicate label).
+//
+// We close that window deterministically by routing through assignPseudonym,
+// which returns the existing reservation when there is one and otherwise CREATES
+// one now (deconflicting against handles already taken in the discussion). This
+// matters because the submission can win the race against the in-flight
+// `requestPseudonym` insert — socket handlers interleave at their awaits — so a
+// lookup-only check would still fall back to the stale name when the write
+// arrives first. Reserving here guarantees a unique handle regardless of
+// ordering; the client's later reconciliation converges any difference.
 //
 // Custom and anonymous names are deliberately left untouched — they aren't drawn
 // from the deconflicted handle pool, so there's nothing to canonicalize against.
@@ -2745,14 +2753,11 @@ const NAME_MODE_PSEUDONYM = 'pseudonym';
 // through to the client-sent name, preserving prior behavior.
 async function canonicalDisplayName(discussionSlug, userId, mode, pseudonym) {
   if (mode !== NAME_MODE_PSEUDONYM || !userId) return pseudonym;
-  const result = await pool.query(
-    `SELECT dp.pseudonym
-       FROM discussion_pseudonyms dp
-       JOIN discussions d ON dp.discussion_id = d.id
-      WHERE d.slug = $1 AND dp.user_id = $2`,
-    [slugifyTopic(discussionSlug), userId]
-  );
-  return result.rows[0] ? result.rows[0].pseudonym : pseudonym;
+  // `reserved` is false only when the discussion row doesn't exist yet; a
+  // vote/comment can't reach a nonexistent discussion, but guard anyway and fall
+  // back to the client-sent name rather than persisting an unreserved preview.
+  const assigned = await assignPseudonym(discussionSlug, userId, pseudonym);
+  return assigned.reserved ? assigned.pseudonym : pseudonym;
 }
 
 async function addVote(questionId, vote, userId, pseudonym) {
