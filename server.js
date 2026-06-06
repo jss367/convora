@@ -846,7 +846,7 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('vote', async (topic, questionId, vote, claimedUserId, pseudonym) => {
+  socket.on('vote', async (topic, questionId, vote, claimedUserId, pseudonym, mode) => {
     const discussionSlug = slugifyTopic(topic);
     // Attribute the vote to the socket's pinned identity, not to whatever id the
     // message carries, so a client can't cast votes as another participant.
@@ -880,7 +880,10 @@ io.on('connection', (socket) => {
         socket.emit('error', { message: 'Invalid vote.' });
         return;
       }
-      await addVote(questionId, vote, userId, pseudonym);
+      // Persist the reserved handle in pseudonym mode rather than the client's
+      // (possibly pre-reservation, colliding) local pick — see canonicalPseudonym.
+      const handle = await canonicalPseudonym(discussionSlug, target.discussionId, userId, mode, pseudonym);
+      await addVote(questionId, vote, userId, handle);
       const questions = await getQuestions(discussionSlug);
       io.to(discussionSlug).emit('questions', questions);
     } catch (error) {
@@ -1246,7 +1249,14 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('addResponseComment', async (topic, responseId, body, claimedUserId, pseudonym, ack) => {
+  socket.on('addResponseComment', async (topic, responseId, body, claimedUserId, pseudonym, mode, ack) => {
+    // Back-compat: pre-#57 clients used (topic, responseId, body, userId,
+    // pseudonym, ack) with no mode, so their ack arrives bound to `mode`. Detect
+    // that and shift it back, leaving mode undefined (store-as-sent behavior).
+    if (typeof mode === 'function' && ack === undefined) {
+      ack = mode;
+      mode = undefined;
+    }
     const discussionSlug = slugifyTopic(topic);
     const reply = (result) => { if (typeof ack === 'function') ack(result); };
     const userId = bindSocketUser(socket, claimedUserId);
@@ -1266,11 +1276,14 @@ io.on('connection', (socket) => {
         reply({ added: false });
         return;
       }
-      // Sanitize the display name the same way votes do (trim + length cap), so
-      // a crafted oversized/whitespace pseudonym can't bloat or break the UI.
+      // Persist the reserved handle in pseudonym mode rather than the client's
+      // (possibly pre-reservation, colliding) local pick — see canonicalPseudonym.
+      // Custom/Anonymous stay as sent. canonicalPseudonym also sanitizes (trim +
+      // length cap) so a crafted oversized/whitespace name can't break the UI.
+      const handle = await canonicalPseudonym(discussionSlug, ctx.discussionId, userId, mode, pseudonym);
       await pool.query(
         'INSERT INTO response_comments (response_id, user_id, pseudonym, body) VALUES ($1, $2, $3, $4)',
-        [responseId, userId, sanitizePseudonym(pseudonym), text.slice(0, 2000)]
+        [responseId, userId, handle, text.slice(0, 2000)]
       );
       io.to(discussionSlug).emit('questions', await getQuestions(discussionSlug));
       reply({ added: true });
@@ -2564,14 +2577,19 @@ async function isModeratorOnlyQuestions(topic) {
 async function getQuestionForTopic(topic, questionId) {
   const slug = slugifyTopic(topic);
   const result = await pool.query(
-    `SELECT q.id, q.type, d.locked
+    `SELECT q.id, q.type, q.discussion_id, d.locked
      FROM questions q
      JOIN discussions d ON q.discussion_id = d.id
      WHERE d.slug = $1 AND q.id = $2`,
     [slug, questionId]
   );
   if (result.rows.length === 0) return null;
-  return { id: result.rows[0].id, type: result.rows[0].type, locked: result.rows[0].locked === true };
+  return {
+    id: result.rows[0].id,
+    type: result.rows[0].type,
+    discussionId: result.rows[0].discussion_id,
+    locked: result.rows[0].locked === true,
+  };
 }
 
 // Return the text of the most similar existing statement in the discussion if
@@ -2606,6 +2624,44 @@ function sanitizePseudonym(pseudonym) {
   if (typeof pseudonym !== 'string') return null;
   const trimmed = pseudonym.trim().slice(0, MAX_PSEUDONYM_LENGTH);
   return trimmed || null;
+}
+
+// The one name mode the server arbitrates. MUST match NameModes.PSEUDONYM in
+// client/src/identity.js. The other modes ('custom', 'anonymous') are deliberate
+// user choices the server stores verbatim, so only this one needs a constant.
+const NAME_MODE_PSEUDONYM = 'pseudonym';
+
+// Resolve the display name to actually persist on a vote/comment. For pseudonym
+// mode we trust the RESERVED handle in discussion_pseudonyms over the name the
+// client sent, closing the submit-before-reservation race (#57): on joining an
+// existing discussion there's a brief window where the client falls back to its
+// unreserved local pick, and if that pick collides with a handle already taken in
+// the discussion the row would otherwise persist a visible duplicate.
+//
+// The common case is a cheap lookup: the join-time reservation already exists, so
+// we store it. The hard case is the actual race — the vote/comment beat the
+// requestPseudonym round-trip, so no row exists yet. We must NOT fall back to the
+// client value here: that value may be the colliding pick, and the client's later
+// updateDisplayName reconciliation can interleave BEFORE this insert lands (socket
+// handlers aren't awaited in order), leaving exactly the duplicate this is meant to
+// prevent. Instead we create-and-await the reservation now via assignPseudonym,
+// which serializes with the in-flight requestPseudonym through the
+// discussion_pseudonyms unique constraint — whichever path inserts first wins and
+// the other returns the same row — so a unique handle is stored deterministically.
+//
+// Custom names and "Anonymous" are stored as-is (only sanitized). `mode` is
+// undefined for pre-#57 clients; those keep the old store-as-sent behavior.
+async function canonicalPseudonym(slug, discussionId, userId, mode, clientPseudonym) {
+  const sanitized = sanitizePseudonym(clientPseudonym);
+  if (mode !== NAME_MODE_PSEUDONYM || !discussionId || !userId) return sanitized;
+  const existing = await pool.query(
+    'SELECT pseudonym FROM discussion_pseudonyms WHERE discussion_id = $1 AND user_id = $2',
+    [discussionId, userId]
+  );
+  if (existing.rows[0]) return existing.rows[0].pseudonym;
+  // No reservation yet — create one now rather than trusting the client's pick.
+  const { pseudonym } = await assignPseudonym(slug, userId, clientPseudonym);
+  return pseudonym || sanitized;
 }
 
 // Pool of friendly handles. MUST stay in sync with the ADJECTIVES/ANIMALS lists
@@ -2648,23 +2704,51 @@ function* allPseudonyms() {
   }
 }
 
-// Claim `name` for (discussionId, userId): inserts a reservation, or updates this
-// user's existing reservation to the new name (the regenerate path). Returns the
-// reserved name on success, or null when `name` is already held by a DIFFERENT
-// user in this discussion (UNIQUE(discussion_id, pseudonym) violation), so the
-// caller can try the next candidate. This is what makes concurrent joins safe:
-// the database, not a read-then-write in JS, is the arbiter of uniqueness.
-async function reservePseudonym(discussionId, userId, name) {
+// Claim `name` for (discussionId, userId). Returns the reserved name on success,
+// or null when `name` is already held by a DIFFERENT user in this discussion
+// (UNIQUE(discussion_id, pseudonym) violation), so the caller can try the next
+// candidate. The database, not a read-then-write in JS, is the arbiter of
+// uniqueness — that's what makes concurrent joins safe.
+//
+// Two conflict semantics on the (discussion_id, user_id) key:
+//   - overwrite:false (default, initial allocation) — FIRST-WINS. If this user
+//     already has a reservation (e.g. a racing vote and its own requestPseudonym
+//     both allocated), we keep the existing one and return it rather than
+//     replacing it. Replacing would let the loser clobber a handle the winner
+//     already acked to the client (and that the client may have used to rename
+//     its prior responses), splitting the user's name across responses (#58).
+//   - overwrite:true (the regenerate/shuffle button) — the user deliberately
+//     wants a NEW handle, so we update their existing row.
+async function reservePseudonym(discussionId, userId, name, { overwrite = false } = {}) {
   try {
+    if (overwrite) {
+      const result = await pool.query(
+        `INSERT INTO discussion_pseudonyms (discussion_id, user_id, pseudonym)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (discussion_id, user_id)
+         DO UPDATE SET pseudonym = EXCLUDED.pseudonym
+         RETURNING pseudonym`,
+        [discussionId, userId, name]
+      );
+      return result.rows[0] ? result.rows[0].pseudonym : null;
+    }
     const result = await pool.query(
       `INSERT INTO discussion_pseudonyms (discussion_id, user_id, pseudonym)
        VALUES ($1, $2, $3)
-       ON CONFLICT (discussion_id, user_id)
-       DO UPDATE SET pseudonym = EXCLUDED.pseudonym
+       ON CONFLICT (discussion_id, user_id) DO NOTHING
        RETURNING pseudonym`,
       [discussionId, userId, name]
     );
-    return result.rows[0] ? result.rows[0].pseudonym : null;
+    if (result.rows[0]) return result.rows[0].pseudonym; // we inserted — we won
+    // No row returned ⇒ this user already had a reservation (the other racer won).
+    // A name-already-taken-by-someone-else conflict is on the (discussion_id,
+    // pseudonym) constraint instead, which DO NOTHING doesn't catch — it raises
+    // 23505 and is handled below. So re-read and return the winning handle.
+    const existing = await pool.query(
+      'SELECT pseudonym FROM discussion_pseudonyms WHERE discussion_id = $1 AND user_id = $2',
+      [discussionId, userId]
+    );
+    return existing.rows[0] ? existing.rows[0].pseudonym : null;
   } catch (e) {
     if (e.code === '23505') return null; // name taken by someone else; try the next
     throw e;
@@ -2746,7 +2830,7 @@ async function assignPseudonym(slug, userId, preferred, { regenerate = false } =
   }
 
   for (const name of candidates) {
-    const reserved = await reservePseudonym(discussionId, userId, name);
+    const reserved = await reservePseudonym(discussionId, userId, name, { overwrite: regenerate });
     if (reserved) return { pseudonym: reserved, reserved: true };
   }
 
@@ -2761,7 +2845,7 @@ async function assignPseudonym(slug, userId, preferred, { regenerate = false } =
     // the same taken string every iteration and looping forever without acking.
     const suffix = ` ${n}`;
     const name = `${base.slice(0, MAX_PSEUDONYM_LENGTH - suffix.length)}${suffix}`;
-    const reserved = await reservePseudonym(discussionId, userId, name);
+    const reserved = await reservePseudonym(discussionId, userId, name, { overwrite: regenerate });
     if (reserved) return { pseudonym: reserved, reserved: true };
   }
 }
@@ -2885,7 +2969,7 @@ async function toggleResponseVote(topic, responseId, userId) {
 async function getResponseContext(topic, responseId) {
   const slug = slugifyTopic(topic);
   const result = await pool.query(
-    `SELECT v.user_id, q.type, d.reactions_enabled, d.reactions_visible, d.comments_enabled, d.locked, d.reaction_keys
+    `SELECT v.user_id, q.discussion_id, q.type, d.reactions_enabled, d.reactions_visible, d.comments_enabled, d.locked, d.reaction_keys
      FROM votes v
      JOIN questions q ON v.question_id = q.id
      JOIN discussions d ON q.discussion_id = d.id
@@ -2896,6 +2980,7 @@ async function getResponseContext(topic, responseId) {
   const row = result.rows[0];
   return {
     ownerId: row.user_id,
+    discussionId: row.discussion_id,
     type: row.type,
     reactionsEnabled: row.reactions_enabled === true,
     reactionsVisible: row.reactions_visible === true,

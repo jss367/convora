@@ -88,6 +88,22 @@ export function getDisplayName(identity, pseudonymOverride) {
     return pseudonym;
 }
 
+// The mode to report to the server on a vote/comment so it can decide whether to
+// canonicalize the handle to the discussion-unique reservation. This is the
+// EFFECTIVE mode, which can differ from identity.mode: a Custom participant who
+// left the name blank is actually shown their pseudonym (getDisplayName falls back
+// to it) and is renamed by the reservation flow like any pseudonym user — so on
+// the wire that's pseudonym mode, not custom. Reporting it as such lets the server
+// store the reserved handle instead of trusting a pre-reservation colliding pick,
+// closing the same submit-before-reservation race for blank-custom users too.
+export function getEffectiveNameMode(identity) {
+    if (!identity) return NameModes.PSEUDONYM;
+    if (identity.mode === NameModes.CUSTOM && !sanitizeCustomName(identity.customName)) {
+        return NameModes.PSEUDONYM;
+    }
+    return identity.mode;
+}
+
 // Fills in defaults for fields older stored identities may not have, so callers
 // can always rely on mode/customName being present.
 function withDefaults(identity) {
