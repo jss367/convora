@@ -1880,6 +1880,41 @@ test('a moderator can edit a question before anyone responds', async () => {
   }
 });
 
+test('a moderator can edit a question to and from the Yes/No type', async () => {
+  const topic = uniqueTopic('edit-yesno');
+  const mod = await connectSocket();
+
+  try {
+    mod.emit('joinDiscussion', topic);
+    const token = await claimModerator(mod, topic);
+
+    const added = waitForQuestions(mod, (qs) => qs.some((q) => q.text === 'Agree?'), 'question added');
+    mod.emit('addQuestion', topic, { text: 'Agree?', type: 'Agreement', minValue: null, maxValue: null, options: [] });
+    const question = (await added).find((q) => q.text === 'Agree?');
+
+    // Switching an unanswered question to Yes/No must be accepted (Yes/No is a
+    // valid type, so the server-side edit validation has to allow it).
+    const toYesNo = waitForQuestions(mod, (qs) => qs[0] && qs[0].type === 'Yes/No', 'edit to Yes/No');
+    const ack = await emitWithAck(mod, 'editQuestion', topic, question.id,
+      { text: 'Yes or no?', type: 'Yes/No' }, token);
+    assert.equal(ack.updated, true);
+
+    const edited = (await toYesNo)[0];
+    assert.equal(edited.text, 'Yes or no?');
+    assert.equal(edited.type, 'Yes/No');
+
+    // Editing an existing Yes/No question (its form always re-submits type:
+    // 'Yes/No') must likewise succeed rather than be rejected as invalid.
+    const reword = waitForQuestions(mod, (qs) => qs[0] && qs[0].text === 'Yes or no, really?', 'reword broadcast');
+    const ack2 = await emitWithAck(mod, 'editQuestion', topic, question.id,
+      { text: 'Yes or no, really?', type: 'Yes/No' }, token);
+    assert.equal(ack2.updated, true);
+    assert.equal((await reword)[0].type, 'Yes/No');
+  } finally {
+    mod.disconnect();
+  }
+});
+
 test('editing a question is refused once it has responses', async () => {
   const topic = uniqueTopic('edit-locked');
   const mod = await connectSocket();

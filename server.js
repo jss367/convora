@@ -1688,7 +1688,7 @@ function resolveReactionKeys(raw) {
 
 // The question types a discussion supports. Mirrors QuestionTypes in
 // client/src/DiscussionPage.jsx — used to validate edits server-side.
-const VALID_QUESTION_TYPES = new Set(['Agreement', 'Numerical', 'Open Ended', 'Brainstorm']);
+const VALID_QUESTION_TYPES = new Set(['Agreement', 'Yes/No', 'Numerical', 'Open Ended', 'Brainstorm']);
 
 // Enrich Brainstorm responses in place with aggregated interaction data:
 // quality up/down tallies, the agreement distribution, reaction counts, and
