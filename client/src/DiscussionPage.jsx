@@ -185,6 +185,9 @@ const DiscussionPage = () => {
     const [showActionsMenu, setShowActionsMenu] = useState(false);
     const [presence, setPresence] = useState(0);
     const [copied, setCopied] = useState(false);
+    const [shortShareUrl, setShortShareUrl] = useState('');
+    const [shortLinkLoading, setShortLinkLoading] = useState(false);
+    const [shortLinkCopied, setShortLinkCopied] = useState(false);
     const [adminToken, setAdminToken] = useState(null);
     // Mirror of adminToken readable inside async callbacks, so an in-flight
     // checkModerator ack can tell whether the token it verified is still current.
@@ -237,6 +240,15 @@ const DiscussionPage = () => {
     const adminUrl = typeof window !== 'undefined' && adminToken
         ? `${window.location.origin}/discussion/${discussionSlug}?admin=${adminToken}`
         : '';
+
+    useEffect(() => {
+        setShortShareUrl(
+            typeof window !== 'undefined' && discussion?.short_code
+                ? `${window.location.origin}/s/${discussion.short_code}`
+                : ''
+        );
+        setShortLinkCopied(false);
+    }, [discussionSlug, discussion?.short_code]);
 
     const handleCopyLink = async () => {
         try {
@@ -712,6 +724,49 @@ const DiscussionPage = () => {
         } catch (err) {
             console.error('Failed to copy admin link:', err);
             setError('Could not copy the moderator link.');
+        }
+    };
+
+    const handleGenerateShortLink = async () => {
+        if (!adminToken || shortLinkLoading) return;
+        setShortLinkLoading(true);
+        try {
+            const response = await fetch(`/api/discussions/${encodeURIComponent(discussionSlug)}/short-link`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ adminToken }),
+            });
+            if (!response.ok) {
+                throw new Error('Failed to generate short link');
+            }
+            const data = await response.json();
+            const nextShortUrl = `${window.location.origin}${data.shortPath}`;
+            setShortShareUrl(nextShortUrl);
+            try {
+                await navigator.clipboard.writeText(nextShortUrl);
+                setShortLinkCopied(true);
+                setTimeout(() => setShortLinkCopied(false), 2000);
+            } catch (copyErr) {
+                console.error('Failed to copy generated short link:', copyErr);
+                setError('Short link generated, but could not copy it automatically.');
+            }
+        } catch (err) {
+            console.error('Failed to generate short link:', err);
+            setError('Could not generate the short link.');
+        } finally {
+            setShortLinkLoading(false);
+        }
+    };
+
+    const handleCopyShortLink = async () => {
+        if (!shortShareUrl) return;
+        try {
+            await navigator.clipboard.writeText(shortShareUrl);
+            setShortLinkCopied(true);
+            setTimeout(() => setShortLinkCopied(false), 2000);
+        } catch (err) {
+            console.error('Failed to copy short link:', err);
+            setError('Could not copy the short link. You can select and copy it manually.');
         }
     };
 
@@ -1649,6 +1704,43 @@ const DiscussionPage = () => {
                                 {copied ? 'Copied!' : 'Copy'}
                             </button>
                         </div>
+                        {isAdmin && (
+                            <div className="mb-4 max-w-2xl mx-auto rounded-md border border-indigo-100 bg-indigo-50 p-3 text-left">
+                                <div className="mb-2 flex items-center justify-between gap-3">
+                                    <p className="text-sm font-semibold text-indigo-800">Short link</p>
+                                    {!shortShareUrl && (
+                                        <button
+                                            type="button"
+                                            onClick={handleGenerateShortLink}
+                                            disabled={shortLinkLoading}
+                                            className="shrink-0 px-3 py-1.5 rounded bg-indigo-600 text-white text-sm hover:bg-indigo-700 disabled:opacity-60"
+                                        >
+                                            {shortLinkLoading ? 'Generating…' : 'Generate'}
+                                        </button>
+                                    )}
+                                </div>
+                                {shortShareUrl ? (
+                                    <div className="flex items-center gap-2">
+                                        <input
+                                            type="text"
+                                            readOnly
+                                            value={shortShareUrl}
+                                            onFocus={(e) => e.target.select()}
+                                            className="flex-1 min-w-0 p-2 border rounded text-sm bg-white"
+                                        />
+                                        <button
+                                            type="button"
+                                            onClick={handleCopyShortLink}
+                                            className="shrink-0 px-3 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700 whitespace-nowrap text-sm"
+                                        >
+                                            {shortLinkCopied ? 'Copied!' : 'Copy'}
+                                        </button>
+                                    </div>
+                                ) : (
+                                    <p className="text-sm text-indigo-700">Create a shorter join URL for messages, slides, and room displays.</p>
+                                )}
+                            </div>
+                        )}
                         <button
                             onClick={() => setShowShareModal(false)}
                             className="px-4 py-2 bg-gray-300 rounded hover:bg-gray-400"

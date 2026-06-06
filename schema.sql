@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS discussions (
   id         SERIAL PRIMARY KEY,
   topic      TEXT NOT NULL,
   slug       TEXT,
+  short_code TEXT,
   created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
 );
 

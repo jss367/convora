@@ -120,6 +120,18 @@ function suffixSlug(baseSlug, suffix) {
   return `${baseSlug.slice(0, 80 - suffixText.length)}${suffixText}`;
 }
 
+const SHORT_CODE_ALPHABET = '23456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+const SHORT_CODE_LENGTH = 6;
+
+function generateShortCode() {
+  let code = '';
+  const bytes = crypto.randomBytes(SHORT_CODE_LENGTH);
+  for (const byte of bytes) {
+    code += SHORT_CODE_ALPHABET[byte % SHORT_CODE_ALPHABET.length];
+  }
+  return code;
+}
+
 function escapeCsv(value) {
   if (value === null || value === undefined) {
     return '';
@@ -628,7 +640,7 @@ function renderReportHtml(summary) {
 async function getDiscussionBySlug(slug) {
   const canonicalSlug = slugifyTopic(slug);
   const result = await pool.query(
-    'SELECT id, topic, slug, created_at FROM discussions WHERE slug = $1 ORDER BY id DESC LIMIT 1',
+    'SELECT id, topic, slug, short_code, created_at FROM discussions WHERE slug = $1 ORDER BY id DESC LIMIT 1',
     [canonicalSlug]
   );
   return result.rows[0] || null;
@@ -1674,6 +1686,28 @@ app.get('/api/discussions/resolve/:topic', async (req, res) => {
   }
 });
 
+app.post('/api/discussions/:topic/short-link', async (req, res) => {
+  try {
+    const result = await generateDiscussionShortCode(req.params.topic, req.body?.adminToken);
+    if (!result.success) {
+      if (result.error === 'not_authorized') {
+        return res.status(403).json({ error: 'Not authorized' });
+      }
+      return res.status(404).json({ error: 'Discussion not found' });
+    }
+
+    res.json({
+      success: true,
+      slug: result.slug,
+      shortCode: result.shortCode,
+      shortPath: `/s/${result.shortCode}`,
+    });
+  } catch (err) {
+    console.error('Error generating short link:', err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 app.get('/api/discussions/:id', async (req, res) => {
   const { id } = req.params;
   try {
@@ -1681,7 +1715,7 @@ app.get('/api/discussions/:id', async (req, res) => {
     // the discussion id is discoverable via GET /api/discussions, so returning
     // the moderator secret here would let anyone claim moderator controls.
     const result = await pool.query(
-      'SELECT id, topic, slug, created_at, locked FROM discussions WHERE id = $1',
+      'SELECT id, topic, slug, short_code, created_at, locked FROM discussions WHERE id = $1',
       [id]
     );
     if (result.rows.length > 0) {
@@ -2183,6 +2217,12 @@ async function migrateDiscussionSlugs() {
   }
 }
 
+async function migrateDiscussionShortCodes() {
+  await pool.query('ALTER TABLE discussions ADD COLUMN IF NOT EXISTS short_code TEXT');
+  await pool.query('CREATE UNIQUE INDEX IF NOT EXISTS discussions_short_code_unique_idx ON discussions(short_code) WHERE short_code IS NOT NULL');
+  console.log('Discussion short-code migration completed');
+}
+
 function isSlugShapedLegacyTitle(topic) {
   const title = formatTopicTitle(topic);
   return title === slugifyTopic(title);
@@ -2506,6 +2546,58 @@ async function createDiscussion(topic) {
   } finally {
     client.release();
   }
+}
+
+async function generateDiscussionShortCode(topic, token) {
+  const discussionId = await verifyAdmin(topic, token);
+  if (!discussionId) {
+    return { success: false, error: 'not_authorized' };
+  }
+
+  const client = await pool.connect();
+  try {
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      await client.query('BEGIN');
+      try {
+        const existing = await client.query(
+          'SELECT slug, short_code FROM discussions WHERE id = $1 FOR UPDATE',
+          [discussionId]
+        );
+
+        if (existing.rows.length === 0) {
+          await client.query('ROLLBACK');
+          return { success: false, error: 'not_found' };
+        }
+
+        const row = existing.rows[0];
+        if (row.short_code) {
+          await client.query('COMMIT');
+          return { success: true, slug: row.slug, shortCode: row.short_code };
+        }
+
+        const shortCode = generateShortCode();
+        const updated = await client.query(
+          `UPDATE discussions
+              SET short_code = $1
+            WHERE id = $2
+            RETURNING slug, short_code`,
+          [shortCode, discussionId]
+        );
+        await client.query('COMMIT');
+        return { success: true, slug: updated.rows[0].slug, shortCode: updated.rows[0].short_code };
+      } catch (e) {
+        await client.query('ROLLBACK');
+        if (e.code === '23505') {
+          continue;
+        }
+        throw e;
+      }
+    }
+  } finally {
+    client.release();
+  }
+
+  throw new Error(`Could not generate a unique short code for discussion ${discussionId}`);
 }
 
 // First-come moderator claim: assigns a fresh admin token only if the
@@ -3510,6 +3602,24 @@ app.post('/api/duplicate-discussion', async (req, res) => {
   }
 });
 
+app.get('/s/:shortCode', async (req, res) => {
+  try {
+    const result = await pool.query(
+      'SELECT slug FROM discussions WHERE short_code = $1 LIMIT 1',
+      [req.params.shortCode]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).send('Short link not found');
+    }
+
+    res.redirect(302, `/discussion/${result.rows[0].slug}`);
+  } catch (err) {
+    console.error('Error resolving short link:', err);
+    res.status(500).send('Server error');
+  }
+});
+
 // Catch-all route
 app.get(/.*/, (req, res) => {
   res.sendFile(path.join(__dirname, 'dist', 'index.html'));
@@ -3536,6 +3646,7 @@ initSchema()
   .then(() => migrateModerationAndDedup())
   .then(() => migrateUniqueDiscussionTopics())
   .then(() => migrateDiscussionSlugs())
+  .then(() => migrateDiscussionShortCodes())
   .then(() => Promise.all([migrateAddPseudonymColumn(), migrateResponseVotesTable(), migrateModeratorsTable()]))
   .then(() => migrateDiscussionPseudonymsTable())
   .then(() => migrateBrainstormInteractions())
