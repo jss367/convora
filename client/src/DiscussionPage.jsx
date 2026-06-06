@@ -984,12 +984,18 @@ const DiscussionPage = () => {
     // Restore this user's own brainstorm ratings/reactions on join/reload. The
     // server only ever returns the requesting user's own selections.
     useEffect(() => {
-        if (!userId) return;
+        if (!userId) return undefined;
+        // Guard the async ack: this component is reused across discussions, so a
+        // late reply for the previous topic must not overwrite the new topic's
+        // brainstorm state.
+        let cancelled = false;
         socket.emit('getBrainstormState', topic, userId, (state) => {
+            if (cancelled) return;
             if (state) {
                 setMyBrainstorm({ ratings: state.ratings || {}, reactions: state.reactions || {} });
             }
         });
+        return () => { cancelled = true; };
     }, [topic, userId]);
 
     const handleAddQuestion = () => {

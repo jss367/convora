@@ -880,6 +880,26 @@ io.on('connection', (socket) => {
         socket.emit('error', { message: 'Invalid vote.' });
         return;
       }
+      // Numerical votes must be a finite number within the question's configured
+      // range. Without this, a crafted socket message could store out-of-range
+      // (or non-numeric) values that silently skew the average / std-dev / spread
+      // shown in the summary — the range is otherwise only enforced at
+      // create/edit time, never when a vote is cast. getQuestionRange supplies
+      // the 0..100 default for legacy questions with null bounds.
+      if (target.type === 'Numerical') {
+        // Require a real scalar numeric value before range-checking. Number('')
+        // / Number([]) / Number(null) all coerce to 0, which would otherwise
+        // slip past the range check for any range that includes 0 and let
+        // addVote persist the original non-numeric payload.
+        const isNumber = typeof vote === 'number';
+        const isNumericString = typeof vote === 'string' && vote.trim() !== '';
+        const num = isNumber ? vote : isNumericString ? Number(vote) : NaN;
+        const { minValue, maxValue } = getQuestionRange({ min_value: target.minValue, max_value: target.maxValue });
+        if (!Number.isFinite(num) || num < minValue || num > maxValue) {
+          socket.emit('error', { message: 'Invalid vote.' });
+          return;
+        }
+      }
       // Persist the reserved handle in pseudonym mode rather than the client's
       // (possibly pre-reservation, colliding) local pick — see canonicalPseudonym.
       const handle = await canonicalPseudonym(discussionSlug, target.discussionId, userId, mode, pseudonym);
@@ -2577,7 +2597,7 @@ async function isModeratorOnlyQuestions(topic) {
 async function getQuestionForTopic(topic, questionId) {
   const slug = slugifyTopic(topic);
   const result = await pool.query(
-    `SELECT q.id, q.type, q.discussion_id, d.locked
+    `SELECT q.id, q.type, q.discussion_id, q.min_value, q.max_value, d.locked
      FROM questions q
      JOIN discussions d ON q.discussion_id = d.id
      WHERE d.slug = $1 AND q.id = $2`,
@@ -2588,6 +2608,8 @@ async function getQuestionForTopic(topic, questionId) {
     id: result.rows[0].id,
     type: result.rows[0].type,
     discussionId: result.rows[0].discussion_id,
+    minValue: result.rows[0].min_value,
+    maxValue: result.rows[0].max_value,
     locked: result.rows[0].locked === true,
   };
 }
@@ -2951,15 +2973,33 @@ async function toggleResponseVote(topic, responseId, userId) {
     console.log('Ignoring self-upvote on response', responseId);
     return;
   }
-  const deleteResult = await pool.query(
-    'DELETE FROM response_votes WHERE response_id = $1 AND user_id = $2',
-    [responseId, userId]
-  );
-  if (deleteResult.rowCount === 0) {
-    await pool.query(
-      'INSERT INTO response_votes (response_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+  // Serialize concurrent toggles from the same user (double-click, two tabs) on
+  // this response. A plain transaction is not enough under Read Committed: when
+  // no row exists yet, both toggles' DELETEs see 0 rows, both INSERT, and
+  // ON CONFLICT silently drops one — leaving the vote ON after two toggles that
+  // should cancel out. A transaction-scoped advisory lock keyed on
+  // (response, user) forces the second toggle to wait for the first to commit,
+  // then re-read the now-current state and flip it correctly.
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`response_vote:${responseId}:${userId}`]);
+    const deleteResult = await client.query(
+      'DELETE FROM response_votes WHERE response_id = $1 AND user_id = $2',
       [responseId, userId]
     );
+    if (deleteResult.rowCount === 0) {
+      await client.query(
+        'INSERT INTO response_votes (response_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+        [responseId, userId]
+      );
+    }
+    await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    client.release();
   }
 }
 
@@ -3014,15 +3054,29 @@ async function setResponseRating(responseId, userId, axis, value) {
 // Toggle a single epistemic reaction for a user on a response: remove it if
 // present, add it otherwise.
 async function toggleResponseReaction(responseId, userId, reaction) {
-  const deleteResult = await pool.query(
-    'DELETE FROM response_reactions WHERE response_id = $1 AND user_id = $2 AND reaction = $3',
-    [responseId, userId, reaction]
-  );
-  if (deleteResult.rowCount === 0) {
-    await pool.query(
-      'INSERT INTO response_reactions (response_id, user_id, reaction) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING',
+  // Serialize concurrent toggles of the same reaction (see toggleResponseVote);
+  // the advisory lock is keyed on (response, user, reaction) so it also closes
+  // the absent-row race a bare transaction leaves open.
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`response_reaction:${responseId}:${userId}:${reaction}`]);
+    const deleteResult = await client.query(
+      'DELETE FROM response_reactions WHERE response_id = $1 AND user_id = $2 AND reaction = $3',
       [responseId, userId, reaction]
     );
+    if (deleteResult.rowCount === 0) {
+      await client.query(
+        'INSERT INTO response_reactions (response_id, user_id, reaction) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING',
+        [responseId, userId, reaction]
+      );
+    }
+    await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    client.release();
   }
 }
 

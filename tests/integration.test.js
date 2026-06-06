@@ -321,6 +321,59 @@ test('a crafted Agreement/Yes-No vote with an unknown value is rejected, not sto
   }
 });
 
+test('a Numerical vote outside the question range (or non-numeric) is rejected, not stored', async () => {
+  const topic = uniqueTopic('numerical-validation');
+  const author = await connectSocket();
+  const voter = await connectSocket();
+
+  try {
+    author.emit('joinDiscussion', topic);
+    voter.emit('joinDiscussion', topic);
+
+    const added = waitForQuestions(author, (qs) => qs.some((q) => q.text === 'Budget?'), 'numerical added');
+    author.emit('addQuestion', topic, { text: 'Budget?', type: 'Numerical', minValue: 0, maxValue: 10, options: [] });
+    const question = (await added).find((q) => q.text === 'Budget?');
+
+    // An out-of-range value is rejected server-side: the range is otherwise only
+    // enforced at create/edit time, so an unchecked vote would silently skew the
+    // average / std-dev / spread shown in the summary.
+    const tooHigh = waitForEvent(voter, 'error', (e) => /invalid vote/i.test(e.message));
+    voter.emit('vote', topic, question.id, '999', 'attacker', 'Mallory');
+    await tooHigh;
+
+    // A non-numeric value is rejected too.
+    const notNumeric = waitForEvent(voter, 'error', (e) => /invalid vote/i.test(e.message));
+    voter.emit('vote', topic, question.id, 'lots', 'attacker', 'Mallory');
+    await notNumeric;
+
+    // Payloads that Number() silently coerces to 0 ('' and []) must NOT slip
+    // through just because this question's range includes 0.
+    const blank = waitForEvent(voter, 'error', (e) => /invalid vote/i.test(e.message));
+    voter.emit('vote', topic, question.id, '', 'attacker', 'Mallory');
+    await blank;
+
+    const nonScalar = waitForEvent(voter, 'error', (e) => /invalid vote/i.test(e.message));
+    voter.emit('vote', topic, question.id, [], 'attacker', 'Mallory');
+    await nonScalar;
+
+    // None of the crafted values were written.
+    const rejected = await pool.query('SELECT COUNT(*)::int AS n FROM votes');
+    assert.equal(rejected.rows[0].n, 0);
+
+    // An in-range value is accepted and stored normally.
+    const accepted = waitForQuestions(
+      voter,
+      (qs) => qs[0] && qs[0].votes.length === 1,
+      'in-range vote broadcast'
+    );
+    voter.emit('vote', topic, question.id, '5', 'good-user', 'Honest Heron');
+    assert.equal((await accepted)[0].votes[0].value, '5');
+  } finally {
+    author.disconnect();
+    voter.disconnect();
+  }
+});
+
 test('Socket.IO sanitizes display names: anonymous stores null, long names are clamped', async () => {
   const topic = uniqueTopic('names');
   const author = await connectSocket();
