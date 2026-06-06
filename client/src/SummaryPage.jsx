@@ -242,8 +242,6 @@ const SummaryPage = () => {
                 />
             </section>
 
-            <SynthesisPanel synthesis={summary.synthesis} />
-
             <section className="mt-8">
                 <h2 className="text-2xl font-bold mb-4 text-gray-800">Question Counts</h2>
                 <div className="space-y-4">
@@ -580,100 +578,6 @@ const YesNoBar = ({ optionCounts, total }) => {
 YesNoBar.propTypes = {
     optionCounts: PropTypes.objectOf(PropTypes.number).isRequired,
     total: PropTypes.number.isRequired,
-};
-
-const SynthesisPanel = ({ synthesis }) => (
-    <section className="bg-white shadow rounded-lg p-6">
-        <div className="flex items-center justify-between gap-4 mb-4">
-            <h2 className="text-2xl font-bold text-gray-800">Written Response Synthesis</h2>
-            {synthesis?.mode && (
-                <span className="px-2 py-1 text-xs font-semibold rounded-full bg-gray-100 text-gray-700">
-                    {synthesis.mode === 'llm' ? 'LLM' : 'Auto'}
-                </span>
-            )}
-        </div>
-
-        {!synthesis ? (
-            <p className="text-sm text-gray-500">No open-ended responses yet.</p>
-        ) : synthesis.mode === 'llm' ? (
-            <div className="space-y-4">
-                {synthesis.synthesis && <p className="text-gray-800">{synthesis.synthesis}</p>}
-                <SynthesisList title="Common Themes" items={synthesis.commonThemes} />
-                <SynthesisList title="Unresolved Questions" items={synthesis.unresolvedQuestions} />
-                <SynthesisList title="Notable Divergences" items={synthesis.notableDivergences} />
-            </div>
-        ) : (
-            <div className="space-y-4">
-                <p className="text-gray-800">{synthesis.text}</p>
-                {synthesis.llmError && <p className="text-sm text-amber-700">{synthesis.llmError}</p>}
-                {synthesis.highlights?.length > 0 && (
-                    <div>
-                        <h3 className="font-semibold mb-2 text-gray-800">Prompts</h3>
-                        <ul className="list-disc pl-5 text-gray-700 space-y-1">
-                            {synthesis.highlights.map(item => (
-                                <li key={item.question}>{item.question}: {item.responseCount}</li>
-                            ))}
-                        </ul>
-                    </div>
-                )}
-                {synthesis.excerpts?.length > 0 && (
-                    <div>
-                        <h3 className="font-semibold mb-2 text-gray-800">Representative Excerpts</h3>
-                        <ul className="space-y-2">
-                            {synthesis.excerpts.map((item, index) => (
-                                <li key={`${item.question}-${index}`} className="bg-gray-50 rounded-md p-3">
-                                    <div className="text-xs font-semibold text-gray-500 mb-1">{item.question}</div>
-                                    <div className="text-gray-800">{item.excerpt}</div>
-                                </li>
-                            ))}
-                        </ul>
-                    </div>
-                )}
-            </div>
-        )}
-    </section>
-);
-
-SynthesisPanel.propTypes = {
-    synthesis: PropTypes.shape({
-        mode: PropTypes.string,
-        text: PropTypes.string,
-        llmError: PropTypes.string,
-        synthesis: PropTypes.string,
-        commonThemes: PropTypes.array,
-        unresolvedQuestions: PropTypes.array,
-        notableDivergences: PropTypes.array,
-        highlights: PropTypes.arrayOf(PropTypes.shape({
-            question: PropTypes.string.isRequired,
-            responseCount: PropTypes.number.isRequired,
-        })),
-        excerpts: PropTypes.arrayOf(PropTypes.shape({
-            question: PropTypes.string.isRequired,
-            excerpt: PropTypes.string.isRequired,
-        })),
-    }),
-};
-
-const SynthesisList = ({ title, items }) => {
-    if (!Array.isArray(items) || items.length === 0) {
-        return null;
-    }
-
-    return (
-        <div>
-            <h3 className="font-semibold mb-2 text-gray-800">{title}</h3>
-            <ul className="list-disc pl-5 text-gray-700 space-y-1">
-                {items.map((item, index) => (
-                    <li key={`${title}-${index}`}>{typeof item === 'string' ? item : JSON.stringify(item)}</li>
-                ))}
-            </ul>
-        </div>
-    );
-};
-
-SynthesisList.propTypes = {
-    title: PropTypes.string.isRequired,
-    items: PropTypes.array,
 };
 
 const QuestionSummary = ({ question }) => (
