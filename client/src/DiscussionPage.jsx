@@ -135,6 +135,10 @@ const DiscussionPage = () => {
     const [sortOption, setSortOption] = useState(SortOptions.MOST_RECENT);
     const [showUnansweredOnly, setShowUnansweredOnly] = useState(false);
     const [identity, setIdentity] = useState(null);
+    // Always-current identity, so an async ack fired under one name mode can tell
+    // the user has since switched modes/name and avoid clobbering that newer choice.
+    const identityRef = useRef(identity);
+    identityRef.current = identity;
     // The handle the server reserved for THIS discussion (unique within it). Null
     // until the server responds, before which we show the local pseudonym as a
     // preview. May differ from identity.pseudonym when the local pick collided.
@@ -513,6 +517,7 @@ const DiscussionPage = () => {
     const handleRegeneratePseudonym = () => {
         if (!userId || !pseudonymReserved || shufflePendingRef.current) return;
         const slugAtRequest = discussionSlug;
+        const prevAssigned = assignedPseudonym;
         shufflePendingRef.current = true;
         setShufflePending(true);
         socket.emit('regeneratePseudonym', discussionSlug, userId, (resp) => {
@@ -525,13 +530,16 @@ const DiscussionPage = () => {
             // The discussion exists (we were already reserved), so a real
             // reservation is expected; ignore anything else defensively.
             if (!resp?.pseudonym || !resp.reserved) return;
-            // Rename existing responses only if the shuffle changes the name we
-            // actually show — i.e. pseudonym mode or custom mode with a blank
-            // name (both display the pseudonym), but not a real custom name or
-            // anonymous.
-            const before = getDisplayName(identity, assignedPseudonym);
-            const after = getDisplayName(identity, resp.pseudonym);
             setAssignedPseudonym(resp.pseudonym);
+            // Rename existing responses only if the shuffle changes the name we
+            // actually show. Compare under the CURRENT identity, not the one
+            // captured at click: if the user switched to anonymous/custom while the
+            // shuffle was in flight, that newer choice (already pushed via
+            // updateDisplayName) must win — so a no-op comparison suppresses this
+            // late rename instead of dragging responses back to the pseudonym.
+            const liveIdentity = identityRef.current;
+            const before = getDisplayName(liveIdentity, prevAssigned);
+            const after = getDisplayName(liveIdentity, resp.pseudonym);
             if (after !== before) {
                 socket.emit('updateDisplayName', discussionSlug, userId, after);
             }
