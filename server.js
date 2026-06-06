@@ -822,7 +822,7 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('vote', async (topic, questionId, vote, userId, pseudonym) => {
+  socket.on('vote', async (topic, questionId, vote, userId, pseudonym, mode) => {
     const discussionSlug = slugifyTopic(topic);
     try {
       // Verify the question actually belongs to this topic AND that the topic is
@@ -849,7 +849,8 @@ io.on('connection', (socket) => {
         socket.emit('error', { message: 'Invalid vote.' });
         return;
       }
-      await addVote(questionId, vote, userId, pseudonym);
+      const name = await canonicalDisplayName(discussionSlug, userId, mode, pseudonym);
+      await addVote(questionId, vote, userId, name);
       const questions = await getQuestions(discussionSlug);
       io.to(discussionSlug).emit('questions', questions);
     } catch (error) {
@@ -1209,8 +1210,12 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('addResponseComment', async (topic, responseId, body, userId, pseudonym, ack) => {
+  socket.on('addResponseComment', async (topic, responseId, body, userId, pseudonym, mode, ack) => {
     const discussionSlug = slugifyTopic(topic);
+    // socket.io always delivers the ack callback as the final argument. A client
+    // that doesn't send a name `mode` (e.g. an older build) lands its ack in the
+    // `mode` slot, so normalize: if `mode` is the callback, there was no mode.
+    if (typeof mode === 'function') { ack = mode; mode = undefined; }
     const reply = (result) => { if (typeof ack === 'function') ack(result); };
     try {
       const ctx = await getResponseContext(topic, responseId);
@@ -1224,11 +1229,13 @@ io.on('connection', (socket) => {
         reply({ added: false });
         return;
       }
-      // Sanitize the display name the same way votes do (trim + length cap), so
-      // a crafted oversized/whitespace pseudonym can't bloat or break the UI.
+      // Canonicalize a pseudonym-mode handle to the reserved one (issue #57),
+      // then sanitize the same way votes do (trim + length cap) so a crafted
+      // oversized/whitespace pseudonym can't bloat or break the UI.
+      const name = await canonicalDisplayName(discussionSlug, userId, mode, pseudonym);
       await pool.query(
         'INSERT INTO response_comments (response_id, user_id, pseudonym, body) VALUES ($1, $2, $3, $4)',
-        [responseId, userId, sanitizePseudonym(pseudonym), text.slice(0, 2000)]
+        [responseId, userId, sanitizePseudonym(name), text.slice(0, 2000)]
       );
       io.to(discussionSlug).emit('questions', await getQuestions(discussionSlug));
       reply({ added: true });
@@ -2714,6 +2721,38 @@ async function assignPseudonym(slug, userId, preferred, { regenerate = false } =
     const reserved = await reservePseudonym(discussionId, userId, name);
     if (reserved) return { pseudonym: reserved, reserved: true };
   }
+}
+
+// The name mode a client sends alongside a vote/comment. Only 'pseudonym' is
+// canonicalized server-side; 'custom' and 'anonymous' names are stored as-is.
+// MUST match NameModes.PSEUDONYM in client/src/identity.js.
+const NAME_MODE_PSEUDONYM = 'pseudonym';
+
+// Decide which display name to actually persist for a vote/comment.
+//
+// When a participant is in pseudonym mode, the handle they SHOULD appear under
+// is the one reserved for them in this discussion — not whatever name the client
+// happened to send. On joining an existing discussion there's a brief window
+// (issue #57) between the client falling back to its unreserved local pseudonym
+// and the `requestPseudonym` round-trip completing; a submission in that window
+// could otherwise persist under a colliding, unreserved handle (a visible
+// duplicate label). Canonicalizing here closes that window deterministically: if
+// a reservation exists, it wins, regardless of submission/reservation ordering.
+//
+// Custom and anonymous names are deliberately left untouched — they aren't drawn
+// from the deconflicted handle pool, so there's nothing to canonicalize against.
+// A missing/unknown mode (e.g. an older client that doesn't send one) also falls
+// through to the client-sent name, preserving prior behavior.
+async function canonicalDisplayName(discussionSlug, userId, mode, pseudonym) {
+  if (mode !== NAME_MODE_PSEUDONYM || !userId) return pseudonym;
+  const result = await pool.query(
+    `SELECT dp.pseudonym
+       FROM discussion_pseudonyms dp
+       JOIN discussions d ON dp.discussion_id = d.id
+      WHERE d.slug = $1 AND dp.user_id = $2`,
+    [slugifyTopic(discussionSlug), userId]
+  );
+  return result.rows[0] ? result.rows[0].pseudonym : pseudonym;
 }
 
 async function addVote(questionId, vote, userId, pseudonym) {

@@ -1852,6 +1852,103 @@ test('A newcomer avoids a handle already shown on a pre-existing response', asyn
   }
 });
 
+test('Issue #57: a pseudonym-mode vote sent under a stale colliding name persists under the reserved handle', async () => {
+  const topic = uniqueTopic('canonicalize-vote');
+  const author = await connectSocket();
+  let question;
+  try {
+    author.emit('joinDiscussion', topic);
+    question = await addBrainstormQuestion(author, topic, 'Ideas?');
+  } finally {
+    author.disconnect();
+  }
+
+  const a = await connectSocket();
+  const b = await connectSocket();
+  try {
+    a.emit('joinDiscussion', topic);
+    // user-b holds "Brave Fox"; user-a holds "Tidy Newt".
+    const rb = await emitWithAck(b, 'requestPseudonym', topic, 'user-b', 'Brave Fox');
+    assert.equal(rb.pseudonym, 'Brave Fox');
+    const ra = await emitWithAck(a, 'requestPseudonym', topic, 'user-a', 'Tidy Newt');
+    assert.equal(ra.pseudonym, 'Tidy Newt');
+
+    // Simulate the submit-before-reservation race: user-a submits while still
+    // showing its unreserved local pick — which happens to COLLIDE with user-b's
+    // reserved "Brave Fox". Mode is pseudonym and user-a has a reservation, so the
+    // server must persist the reserved "Tidy Newt", not the colliding name.
+    const voteUpdate = waitForQuestions(
+      a,
+      (qs) => qs[0] && qs[0].votes.some((v) => v.value === 'racy idea'),
+      'pseudonym-canonicalized vote'
+    );
+    a.emit('vote', topic, question.id, 'racy idea', 'user-a', 'Brave Fox', 'pseudonym');
+    const vote = (await voteUpdate)[0].votes.find((v) => v.value === 'racy idea');
+    assert.equal(vote.pseudonym, 'Tidy Newt');
+
+    // No duplicate "Brave Fox" handle was written despite the colliding submission.
+    const dup = await pool.query("SELECT COUNT(*)::int AS n FROM votes WHERE pseudonym = 'Brave Fox'");
+    assert.equal(dup.rows[0].n, 0);
+
+    // A custom name is NOT canonicalized: it's stored exactly as sent, even though
+    // user-a holds a reservation.
+    const customUpdate = waitForQuestions(
+      a,
+      (qs) => qs[0] && qs[0].votes.some((v) => v.value === 'custom idea'),
+      'custom-name vote'
+    );
+    a.emit('vote', topic, question.id, 'custom idea', 'user-a', 'Dr. Real Name', 'custom');
+    const customVote = (await customUpdate)[0].votes.find((v) => v.value === 'custom idea');
+    assert.equal(customVote.pseudonym, 'Dr. Real Name');
+  } finally {
+    a.disconnect();
+    b.disconnect();
+  }
+});
+
+test('Issue #57: a pseudonym-mode comment sent under a stale colliding name persists under the reserved handle', async () => {
+  const topic = uniqueTopic('canonicalize-comment');
+  const mod = await connectSocket();
+  const a = await connectSocket();
+  const b = await connectSocket();
+  try {
+    mod.emit('joinDiscussion', topic);
+    a.emit('joinDiscussion', topic);
+    const token = await claimModerator(mod, topic);
+    const question = await addBrainstormQuestion(mod, topic, 'What should we try?');
+
+    const ideaUpdate = waitForQuestions(mod, (qs) => qs[0] && qs[0].votes.length === 1, 'idea added');
+    mod.emit('vote', topic, question.id, 'An idea', 'user-idea', 'Planner');
+    const responseId = (await ideaUpdate)[0].votes[0].id;
+
+    const enabledUpdate = waitForQuestions(mod, (qs) => qs[0] && qs[0].commentsEnabled === true, 'comments enabled');
+    mod.emit('setDiscussionFlags', topic, { comments_enabled: true }, token);
+    await enabledUpdate;
+
+    // user-b holds "Brave Fox"; user-a holds "Tidy Newt".
+    await emitWithAck(b, 'requestPseudonym', topic, 'user-b', 'Brave Fox');
+    const ra = await emitWithAck(a, 'requestPseudonym', topic, 'user-a', 'Tidy Newt');
+    assert.equal(ra.pseudonym, 'Tidy Newt');
+
+    // user-a comments in pseudonym mode under the stale, colliding "Brave Fox";
+    // the reserved "Tidy Newt" must be persisted instead.
+    const commentUpdate = waitForQuestions(
+      mod,
+      (qs) => qs[0] && qs[0].votes[0] && (qs[0].votes[0].comments || []).some((c) => c.body === 'racy comment'),
+      'pseudonym-canonicalized comment'
+    );
+    const ack = await emitWithAck(
+      a, 'addResponseComment', topic, responseId, 'racy comment', 'user-a', 'Brave Fox', 'pseudonym');
+    assert.equal(ack.added, true);
+    const comment = (await commentUpdate)[0].votes[0].comments.find((c) => c.body === 'racy comment');
+    assert.equal(comment.pseudonym, 'Tidy Newt');
+  } finally {
+    mod.disconnect();
+    a.disconnect();
+    b.disconnect();
+  }
+});
+
 test('a moderator can edit a question before anyone responds', async () => {
   const topic = uniqueTopic('edit-question');
   const mod = await connectSocket();

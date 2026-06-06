@@ -1057,7 +1057,11 @@ const DiscussionPage = () => {
 
     const handleVote = (questionId, value) => {
         console.log('Voting:', questionId, value);
-        socket.emit('vote', discussionSlug, questionId, value, userId, displayName);
+        // Send the name mode so the server can canonicalize a pseudonym-mode
+        // handle to the one reserved for this discussion — closing the window
+        // where a vote submitted before the reservation ack would otherwise
+        // persist under our unreserved local pseudonym (issue #57).
+        socket.emit('vote', discussionSlug, questionId, value, userId, displayName, identity?.mode);
         setSliderValues(prev => ({ ...prev, [questionId]: undefined }));
     };
 
@@ -1105,7 +1109,9 @@ const DiscussionPage = () => {
     };
 
     const handleAddComment = (responseId, body) => {
-        socket.emit('addResponseComment', topic, responseId, body, userId, displayName);
+        // Pass the name mode so a pseudonym-mode comment is stored under the
+        // reserved handle rather than an unreserved local one (issue #57).
+        socket.emit('addResponseComment', topic, responseId, body, userId, displayName, identity?.mode);
     };
 
     const handleDeleteComment = (commentId) => {
