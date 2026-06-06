@@ -5,7 +5,6 @@ import io from 'socket.io-client';
 import { QRCodeSVG } from 'qrcode.react';
 import {
     getIdentity,
-    regeneratePseudonym,
     setNameMode,
     setCustomName,
     getDisplayName,
@@ -136,6 +135,11 @@ const DiscussionPage = () => {
     const { topic } = useParams();
     const navigate = useNavigate();
     const discussionSlug = slugifyTopic(topic);
+    // Always-current slug, so async socket acks fired in one discussion can tell
+    // they've come back after the user navigated to a different one and bail out
+    // instead of writing the old room's handle into the new room's state.
+    const discussionSlugRef = useRef(discussionSlug);
+    discussionSlugRef.current = discussionSlug;
     const [discussion, setDiscussion] = useState(null);
     const [questions, setQuestions] = useState([]);
     const [newQuestion, setNewQuestion] = useState('');
@@ -146,6 +150,28 @@ const DiscussionPage = () => {
     const [sortOption, setSortOption] = useState(SortOptions.MOST_RECENT);
     const [showUnansweredOnly, setShowUnansweredOnly] = useState(false);
     const [identity, setIdentity] = useState(null);
+    // Always-current identity, so an async ack fired under one name mode can tell
+    // the user has since switched modes/name and avoid clobbering that newer choice.
+    const identityRef = useRef(identity);
+    identityRef.current = identity;
+    // The handle the server reserved for THIS discussion (unique within it). Null
+    // until the server responds, before which we show the local pseudonym as a
+    // preview. May differ from identity.pseudonym when the local pick collided.
+    const [assignedPseudonym, setAssignedPseudonym] = useState(null);
+    // Whether assignedPseudonym is an actual server-side reservation (vs. a
+    // preview handed back before the discussion row existed). We only stop asking
+    // once it's truly reserved — otherwise a shuffle before the first question
+    // could leave this user's handle un-inserted and free to collide later.
+    const [pseudonymReserved, setPseudonymReserved] = useState(false);
+    // A shuffle is in flight. We never allow more than one reservation-mutating
+    // request outstanding: the async server handlers can finish out of order, so
+    // overlapping shuffles (or a shuffle racing the initial reservation) could
+    // leave the client showing a handle the DB never reserved. The ref guards
+    // re-entry synchronously (defeats same-render double-clicks); the state just
+    // disables the button. Shuffle is only offered once the handle is reserved,
+    // so it can never overlap the idempotent initial request.
+    const shufflePendingRef = useRef(false);
+    const [shufflePending, setShufflePending] = useState(false);
     const [editingIdentity, setEditingIdentity] = useState(false);
     const [error, setError] = useState(null);
     const [newTopicName, setNewTopicName] = useState('');
@@ -259,7 +285,10 @@ const DiscussionPage = () => {
     // The stable id used for vote ownership, and the name shown to everyone else
     // (derived from the chosen mode: pseudonym, anonymous, or a typed-in name).
     const userId = identity?.userId || null;
-    const displayName = identity ? getDisplayName(identity) : '';
+    // The pseudonym actually shown/sent in this discussion: the server-reserved
+    // one once we have it, otherwise the local pick as a preview.
+    const effectivePseudonym = assignedPseudonym || identity?.pseudonym || '';
+    const displayName = identity ? getDisplayName(identity, assignedPseudonym) : '';
 
     // Compute our own participant handle so the moderator panel can hide the
     // promote/remove controls on our own row.
@@ -571,12 +600,46 @@ const DiscussionPage = () => {
     const applyIdentity = (updatedIdentity) => {
         setIdentity(updatedIdentity);
         if (updatedIdentity?.userId) {
-            socket.emit('updateDisplayName', discussionSlug, updatedIdentity.userId, getDisplayName(updatedIdentity));
+            socket.emit('updateDisplayName', discussionSlug, updatedIdentity.userId, getDisplayName(updatedIdentity, assignedPseudonym));
         }
     };
 
+    // Shuffle goes through the server so the new handle is still unique within
+    // this discussion. The server reserves it; we adopt it and rename this
+    // browser's existing responses (only meaningful in pseudonym mode). Gated on
+    // an existing reservation and a not-already-pending shuffle so there is only
+    // ever one reservation-mutating request in flight — otherwise out-of-order
+    // acks could mark an unreserved handle as reserved.
     const handleRegeneratePseudonym = () => {
-        applyIdentity(regeneratePseudonym());
+        if (!userId || !pseudonymReserved || shufflePendingRef.current) return;
+        const slugAtRequest = discussionSlug;
+        const prevAssigned = assignedPseudonym;
+        shufflePendingRef.current = true;
+        setShufflePending(true);
+        socket.emit('regeneratePseudonym', discussionSlug, userId, (resp) => {
+            // Bail if we've navigated to another discussion since asking, so a
+            // late ack can't overwrite the new room's handle with this one's. The
+            // slug-change reset already cleared shufflePendingRef, so just return.
+            if (discussionSlugRef.current !== slugAtRequest) return;
+            shufflePendingRef.current = false;
+            setShufflePending(false);
+            // The discussion exists (we were already reserved), so a real
+            // reservation is expected; ignore anything else defensively.
+            if (!resp?.pseudonym || !resp.reserved) return;
+            setAssignedPseudonym(resp.pseudonym);
+            // Rename existing responses only if the shuffle changes the name we
+            // actually show. Compare under the CURRENT identity, not the one
+            // captured at click: if the user switched to anonymous/custom while the
+            // shuffle was in flight, that newer choice (already pushed via
+            // updateDisplayName) must win — so a no-op comparison suppresses this
+            // late rename instead of dragging responses back to the pseudonym.
+            const liveIdentity = identityRef.current;
+            const before = getDisplayName(liveIdentity, prevAssigned);
+            const after = getDisplayName(liveIdentity, resp.pseudonym);
+            if (after !== before) {
+                socket.emit('updateDisplayName', discussionSlug, userId, after);
+            }
+        });
     };
 
     const handleSelectNameMode = (mode) => {
@@ -815,6 +878,19 @@ const DiscussionPage = () => {
         setShowParticipants(false);
     }, [discussionSlug, canDemote]);
 
+    // Another tab of ours shuffled, freeing our old handle; adopt the new one so
+    // this tab stops submitting under a handle someone else can now claim. The
+    // shuffling tab already renamed our existing responses, so we just update the
+    // live handle (the server only sends this to our own sockets).
+    const handlePseudonymSync = useCallback((payload) => {
+        if (!payload?.pseudonym) return;
+        // Ignore a sync for a discussion we've since navigated away from — its
+        // handle is reserved only in that room and must not be adopted here.
+        if (payload.slug && payload.slug !== discussionSlugRef.current) return;
+        setAssignedPseudonym(payload.pseudonym);
+        setPseudonymReserved(true);
+    }, []);
+
     useEffect(() => {
         if (topic !== discussionSlug) return undefined;
         console.log('Current topic:', discussionSlug);
@@ -825,6 +901,7 @@ const DiscussionPage = () => {
         socket.on('discussionState', setDiscussionState);
         socket.on('similarQuestion', setSimilarPrompt);
         socket.on('moderatorGranted', handleModeratorGranted);
+        socket.on('pseudonymSync', handlePseudonymSync);
         socket.on('moderatorRevoked', handleModeratorRevoked);
         return () => {
             // Leave the room so the server stops counting this client toward the
@@ -836,9 +913,10 @@ const DiscussionPage = () => {
             socket.off('discussionState', setDiscussionState);
             socket.off('similarQuestion', setSimilarPrompt);
             socket.off('moderatorGranted', handleModeratorGranted);
+            socket.off('pseudonymSync', handlePseudonymSync);
             socket.off('moderatorRevoked', handleModeratorRevoked);
         };
-    }, [topic, discussionSlug, handleQuestionsUpdate, handleModeratorGranted, handleModeratorRevoked]);
+    }, [topic, discussionSlug, handleQuestionsUpdate, handleModeratorGranted, handlePseudonymSync, handleModeratorRevoked]);
 
     // Mirror the discussion's chosen theme onto <html data-theme="..."> so the
     // CSS-variable palette (index.css) recolors every primary/secondary class,
@@ -861,6 +939,46 @@ const DiscussionPage = () => {
         socket.on('connect', identify);
         return () => socket.off('connect', identify);
     }, [topic, discussionSlug, userId]);
+
+    // A reserved handle belongs to one discussion, so drop it when navigating to
+    // another one (the route param changes without remounting) — the effect
+    // below then re-reserves a name in the new discussion.
+    useEffect(() => {
+        setAssignedPseudonym(null);
+        setPseudonymReserved(false);
+        shufflePendingRef.current = false;
+        setShufflePending(false);
+    }, [discussionSlug]);
+
+    // Ask the server for a handle that's unique within this discussion. We wait
+    // until the discussion exists (so there's a row to reserve against) and our
+    // identity has loaded (so we can propose our local pick). Keep asking until
+    // the server confirms a real reservation (not just a preview), and if it
+    // hands back a different handle because ours was taken, push it to any
+    // responses we've already submitted so they stop showing the colliding name.
+    useEffect(() => {
+        if (!identity || !userId || topic !== discussionSlug || !discussion?.id) return undefined;
+        if (pseudonymReserved) return undefined; // already reserved for this discussion
+        let cancelled = false;
+        const preferred = assignedPseudonym || identity.pseudonym || '';
+        socket.emit('requestPseudonym', discussionSlug, userId, preferred, (resp) => {
+            if (cancelled || !resp?.pseudonym) return;
+            setAssignedPseudonym(resp.pseudonym);
+            if (!resp.reserved) return; // only a preview; the effect will retry
+            setPseudonymReserved(true);
+            // If the reserved handle changes the name we'd actually show, rename
+            // any responses already submitted under the old one. Comparing the
+            // derived display name (not just the mode) also covers custom mode
+            // with a blank name — which falls back to the pseudonym — while
+            // correctly leaving a real custom name or anonymous untouched.
+            const before = getDisplayName(identity, preferred);
+            const after = getDisplayName(identity, resp.pseudonym);
+            if (after !== before) {
+                socket.emit('updateDisplayName', discussionSlug, userId, after);
+            }
+        });
+        return () => { cancelled = true; };
+    }, [identity, userId, topic, discussionSlug, discussion?.id, pseudonymReserved, assignedPseudonym]);
 
     // Restore this user's own brainstorm ratings/reactions on join/reload. The
     // server only ever returns the requesting user's own selections.
@@ -1239,12 +1357,13 @@ const DiscussionPage = () => {
                             />
                             <span>
                                 Pseudonym:{' '}
-                                <span className="font-semibold text-gray-800">{identity.pseudonym}</span>
+                                <span className="font-semibold text-gray-800">{effectivePseudonym}</span>
                             </span>
                             <button
                                 type="button"
                                 onClick={handleRegeneratePseudonym}
-                                className="text-primary hover:underline"
+                                disabled={!pseudonymReserved || shufflePending}
+                                className="text-primary hover:underline disabled:opacity-50 disabled:no-underline disabled:cursor-default"
                                 title="Get a new pseudonym"
                             >
                                 (shuffle)

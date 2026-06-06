@@ -74,14 +74,18 @@ export function sanitizeCustomName(name) {
 
 // The name everyone else should see for this participant, derived from the mode.
 // Custom mode falls back to the pseudonym when the typed name is blank so we
-// never broadcast an empty label.
-export function getDisplayName(identity) {
+// never broadcast an empty label. `pseudonymOverride`, when given, is the handle
+// the server reserved for this discussion (unique within it); it takes the place
+// of the browser's locally-generated identity.pseudonym, since the same browser
+// may be assigned a different handle in different discussions.
+export function getDisplayName(identity, pseudonymOverride) {
     if (!identity) return '';
+    const pseudonym = pseudonymOverride || identity.pseudonym;
     if (identity.mode === NameModes.ANONYMOUS) return ANONYMOUS_LABEL;
     if (identity.mode === NameModes.CUSTOM) {
-        return sanitizeCustomName(identity.customName) || identity.pseudonym;
+        return sanitizeCustomName(identity.customName) || pseudonym;
     }
-    return identity.pseudonym;
+    return pseudonym;
 }
 
 // Fills in defaults for fields older stored identities may not have, so callers
@@ -146,13 +150,6 @@ export function getIdentity() {
     };
     writeStored(identity);
     return identity;
-}
-
-// Keeps the same userId (so votes stay attributed) but assigns a new pseudonym.
-export function regeneratePseudonym() {
-    const updated = { ...getIdentity(), pseudonym: generatePseudonym() };
-    writeStored(updated);
-    return updated;
 }
 
 // Per-response, non-reversible ownership token. The server broadcasts these

@@ -1628,6 +1628,194 @@ test('Duplicating a discussion preserves brainstorm interaction flags', async ()
   }
 });
 
+// Create a discussion row (assignPseudonym only reserves once one exists) by
+// seeding it with a question, the way the first contributor would.
+async function seedDiscussion(topic) {
+  const seed = await connectSocket();
+  try {
+    seed.emit('joinDiscussion', topic);
+    await addBrainstormQuestion(seed, topic, 'Seed');
+  } finally {
+    seed.disconnect();
+  }
+}
+
+test('Two participants proposing the same handle get distinct ones — no numbered duplicate', async () => {
+  const topic = uniqueTopic('pseudonym-unique');
+  await seedDiscussion(topic);
+
+  const a = await connectSocket();
+  const b = await connectSocket();
+  try {
+    const ra = await emitWithAck(a, 'requestPseudonym', topic, 'user-a', 'Tidy Newt');
+    const rb = await emitWithAck(b, 'requestPseudonym', topic, 'user-b', 'Tidy Newt');
+
+    // First claimant keeps the proposed name; the second is handed a different
+    // adjective-animal combination, never "Tidy Newt 2".
+    assert.equal(ra.pseudonym, 'Tidy Newt');
+    assert.ok(rb.pseudonym, 'second participant should receive a handle');
+    assert.notEqual(rb.pseudonym, 'Tidy Newt');
+    assert.ok(!/\d/.test(rb.pseudonym), `deconflicted handle should have no number suffix: ${rb.pseudonym}`);
+  } finally {
+    a.disconnect();
+    b.disconnect();
+  }
+});
+
+test('A handle is stable for a returning user and reusable across discussions', async () => {
+  const topicA = uniqueTopic('pseudonym-stable-a');
+  const topicB = uniqueTopic('pseudonym-stable-b');
+  await seedDiscussion(topicA);
+  await seedDiscussion(topicB);
+
+  const socket = await connectSocket();
+  try {
+    const first = await emitWithAck(socket, 'requestPseudonym', topicA, 'user-x', 'Tidy Newt');
+    assert.equal(first.pseudonym, 'Tidy Newt');
+
+    // Re-requesting (e.g. after a reload) returns the same reservation, even if a
+    // different name is proposed.
+    const again = await emitWithAck(socket, 'requestPseudonym', topicA, 'user-x', 'Brave Fox');
+    assert.equal(again.pseudonym, 'Tidy Newt');
+
+    // The same handle is free in a separate discussion, so the user can hold it
+    // there too — uniqueness is only enforced within a discussion.
+    const other = await emitWithAck(socket, 'requestPseudonym', topicB, 'user-x', 'Tidy Newt');
+    assert.equal(other.pseudonym, 'Tidy Newt');
+  } finally {
+    socket.disconnect();
+  }
+});
+
+test('Regenerating yields a different handle that stays unique', async () => {
+  const topic = uniqueTopic('pseudonym-regen');
+  await seedDiscussion(topic);
+
+  const a = await connectSocket();
+  const b = await connectSocket();
+  try {
+    const original = await emitWithAck(a, 'requestPseudonym', topic, 'user-a', 'Tidy Newt');
+    assert.equal(original.pseudonym, 'Tidy Newt');
+    // Someone else holds "Brave Fox" so a shuffle can't land on it.
+    await emitWithAck(b, 'requestPseudonym', topic, 'user-b', 'Brave Fox');
+
+    const shuffled = await emitWithAck(a, 'regeneratePseudonym', topic, 'user-a');
+    assert.ok(shuffled.pseudonym, 'shuffle should return a handle');
+    assert.notEqual(shuffled.pseudonym, 'Tidy Newt'); // must change
+    assert.notEqual(shuffled.pseudonym, 'Brave Fox');  // must stay unique
+
+    // The new handle is now the stable one for this user.
+    const after = await emitWithAck(a, 'requestPseudonym', topic, 'user-a', 'Tidy Newt');
+    assert.equal(after.pseudonym, shuffled.pseudonym);
+  } finally {
+    a.disconnect();
+    b.disconnect();
+  }
+});
+
+test('Before the discussion exists, handles are previews (unreserved) and reserve once it does', async () => {
+  const topic = uniqueTopic('pseudonym-preview');
+  const socket = await connectSocket();
+  try {
+    // No question has been added yet, so there is no discussion row to reserve
+    // against. The server must flag these as unreserved so the client keeps
+    // asking — otherwise the handle would never be inserted and could collide.
+    const preview = await emitWithAck(socket, 'requestPseudonym', topic, 'user-a', 'Tidy Newt');
+    assert.equal(preview.pseudonym, 'Tidy Newt');
+    assert.equal(preview.reserved, false);
+
+    const shufflePreview = await emitWithAck(socket, 'regeneratePseudonym', topic, 'user-a');
+    assert.ok(shufflePreview.pseudonym);
+    assert.equal(shufflePreview.reserved, false);
+
+    // Nothing was persisted while the discussion didn't exist.
+    const beforeRows = await pool.query('SELECT COUNT(*)::int AS n FROM discussion_pseudonyms');
+    assert.equal(beforeRows.rows[0].n, 0);
+
+    // Once the discussion exists, the same request reserves for real.
+    await seedDiscussion(topic);
+    const reserved = await emitWithAck(socket, 'requestPseudonym', topic, 'user-a', 'Tidy Newt');
+    assert.equal(reserved.pseudonym, 'Tidy Newt');
+    assert.equal(reserved.reserved, true);
+
+    const afterRows = await pool.query(
+      'SELECT pseudonym FROM discussion_pseudonyms WHERE user_id = $1', ['user-a']);
+    assert.equal(afterRows.rows.length, 1);
+    assert.equal(afterRows.rows[0].pseudonym, 'Tidy Newt');
+  } finally {
+    socket.disconnect();
+  }
+});
+
+test('Shuffling in one tab syncs the new handle to the same user\'s other tabs', async () => {
+  const topic = uniqueTopic('pseudonym-sync');
+  await seedDiscussion(topic);
+  const tabA = await connectSocket();
+  const tabB = await connectSocket();
+  try {
+    // Two tabs of the same browser share a userId. Each must join the room and
+    // identify so the server can route a shuffle's sync to the other tab.
+    tabA.emit('joinDiscussion', topic);
+    tabB.emit('joinDiscussion', topic);
+    tabA.emit('identify', topic, 'user-tabs');
+    tabB.emit('identify', topic, 'user-tabs');
+    const first = await emitWithAck(tabA, 'requestPseudonym', topic, 'user-tabs', 'Tidy Newt');
+    assert.equal(first.pseudonym, 'Tidy Newt');
+    // The second tab shares the reservation (same userId).
+    const shared = await emitWithAck(tabB, 'requestPseudonym', topic, 'user-tabs', 'Tidy Newt');
+    assert.equal(shared.pseudonym, 'Tidy Newt');
+
+    // Tab A shuffles; Tab B should be told the new handle so it stops using the
+    // now-freed "Tidy Newt".
+    const synced = waitForEvent(tabB, 'pseudonymSync');
+    const shuffled = await emitWithAck(tabA, 'regeneratePseudonym', topic, 'user-tabs');
+    const payload = await synced;
+    assert.equal(payload.pseudonym, shuffled.pseudonym);
+    assert.notEqual(payload.pseudonym, 'Tidy Newt');
+  } finally {
+    tabA.disconnect();
+    tabB.disconnect();
+  }
+});
+
+test('A newcomer avoids a handle already shown on a pre-existing response', async () => {
+  const topic = uniqueTopic('pseudonym-backfill');
+  const seeder = await connectSocket();
+  try {
+    seeder.emit('joinDiscussion', topic);
+    const question = await addBrainstormQuestion(seeder, topic, 'Ideas?');
+    // Simulate a participant who responded BEFORE this feature shipped: a vote
+    // carrying a handle, with no row in discussion_pseudonyms.
+    const idea = waitForQuestions(seeder, (qs) => qs[0] && qs[0].votes.length === 1, 'idea added');
+    seeder.emit('vote', topic, question.id, 'My idea', 'old-user', 'Tidy Newt');
+    await idea;
+  } finally {
+    seeder.disconnect();
+  }
+
+  // No reservation row exists yet, but "Tidy Newt" is already displayed.
+  const reservations = await pool.query('SELECT COUNT(*)::int AS n FROM discussion_pseudonyms');
+  assert.equal(reservations.rows[0].n, 0);
+
+  const newcomer = await connectSocket();
+  const returning = await connectSocket();
+  try {
+    // A new participant proposing the same handle must be deconflicted away from
+    // the one an existing response already shows.
+    const fresh = await emitWithAck(newcomer, 'requestPseudonym', topic, 'user-new', 'Tidy Newt');
+    assert.equal(fresh.reserved, true);
+    assert.notEqual(fresh.pseudonym, 'Tidy Newt');
+
+    // The original responder (same userId) can still reclaim the handle their
+    // existing response already shows.
+    const reclaimed = await emitWithAck(returning, 'requestPseudonym', topic, 'old-user', 'Tidy Newt');
+    assert.equal(reclaimed.pseudonym, 'Tidy Newt');
+  } finally {
+    newcomer.disconnect();
+    returning.disconnect();
+  }
+});
+
 test('a moderator can edit a question before anyone responds', async () => {
   const topic = uniqueTopic('edit-question');
   const mod = await connectSocket();

@@ -638,6 +638,25 @@ function emitPresence(topic) {
   io.to(topic).emit('presence', count);
 }
 
+// Push a freshly reserved handle to a user's OTHER sockets in a discussion (all
+// but the originating socket, which receives it via its ack). Used after a
+// shuffle so a second tab open on the same discussion stops submitting under the
+// old handle, which is now free for another participant to claim. Sockets are
+// tagged with their userId via the 'identify' event.
+function emitPseudonymSync(slug, userId, pseudonym, exceptSocketId) {
+  const room = io.sockets.adapter.rooms.get(slug);
+  if (!room) return;
+  for (const socketId of room) {
+    if (socketId === exceptSocketId) continue;
+    const member = io.sockets.sockets.get(socketId);
+    if (member && member.data.userId === userId) {
+      // Include the slug so a tab that has since navigated to another discussion
+      // can recognize and ignore a sync meant for the room it just left.
+      member.emit('pseudonymSync', { slug, pseudonym });
+    }
+  }
+}
+
 // Color themes a moderator may apply to a discussion. Must stay in sync with
 // the [data-theme] palettes in client/src/index.css and THEME_KEYS in
 // client/src/DiscussionPage.jsx. 'indigo' is the default/original look.
@@ -1387,6 +1406,52 @@ io.on('connection', (socket) => {
   // this, switching to "Completely anonymous" would still show the old name on
   // prior responses, breaking the privacy promise. Allowed even when the
   // discussion is locked: this is a display-name edit, not a new vote.
+  // Hand the client a display handle that's guaranteed unique within this
+  // discussion. The client proposes its locally-generated name; the server keeps
+  // it if free and substitutes a different one if it's already taken, so two
+  // people never end up as the same "Tidy Newt". Stable across reloads (a user
+  // who already has a reservation gets it back).
+  socket.on('requestPseudonym', async (topic, userId, preferred, cb) => {
+    if (typeof cb !== 'function') return;
+    try {
+      if (!topic || !userId) {
+        cb({ pseudonym: sanitizePseudonym(preferred), reserved: false });
+        return;
+      }
+      cb(await assignPseudonym(slugifyTopic(topic), userId, preferred));
+    } catch (error) {
+      console.error('Error assigning pseudonym:', error);
+      // Fall back to the proposed name so the client still has something to show,
+      // flagged unreserved so the client keeps trying to reserve it.
+      cb({ pseudonym: sanitizePseudonym(preferred) || null, reserved: false });
+    }
+  });
+
+  // Shuffle: give this user a brand-new handle, still unique within the
+  // discussion and different from their current one.
+  socket.on('regeneratePseudonym', async (topic, userId, cb) => {
+    if (typeof cb !== 'function') return;
+    try {
+      if (!topic || !userId) {
+        cb({ pseudonym: null, reserved: false });
+        return;
+      }
+      const discussionSlug = slugifyTopic(topic);
+      const result = await assignPseudonym(discussionSlug, userId, null, { regenerate: true });
+      cb(result);
+      // The shuffle freed the old handle for anyone else to claim, so this user's
+      // OTHER tabs on this discussion must stop using it. Push the new handle to
+      // them (their already-submitted responses were renamed via updateDisplayName
+      // by the shuffling tab); the originating socket already has it via the ack.
+      if (result.reserved) {
+        emitPseudonymSync(discussionSlug, userId, result.pseudonym, socket.id);
+      }
+    } catch (error) {
+      console.error('Error regenerating pseudonym:', error);
+      cb({ pseudonym: null, reserved: false });
+    }
+  });
+
   socket.on('updateDisplayName', async (topic, userId, displayName) => {
     const discussionSlug = slugifyTopic(topic);
     try {
@@ -2111,6 +2176,26 @@ async function migrateModeratorsTable() {
   console.log('discussion_moderators table migration completed');
 }
 
+// Per-discussion display-name reservations. One row per (discussion, user); the
+// UNIQUE (discussion_id, pseudonym) constraint is what guarantees no two people
+// in the same discussion are ever handed the same auto-generated handle, so we
+// hand out a different adjective-animal combination on collision rather than a
+// "Tidy Newt 2" suffix. Names are only unique WITHIN a discussion — the same
+// browser can be a different handle in another discussion. Idempotent.
+async function migrateDiscussionPseudonymsTable() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS discussion_pseudonyms (
+      discussion_id INTEGER NOT NULL REFERENCES discussions(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL,
+      pseudonym TEXT NOT NULL,
+      created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (discussion_id, user_id),
+      UNIQUE (discussion_id, pseudonym)
+    )
+  `);
+  console.log('discussion_pseudonyms table migration completed');
+}
+
 // Verify that the supplied token grants moderation of this discussion. A token
 // is valid if it's the discussion's creator admin_token OR a per-user token
 // granted to a promoted moderator (discussion_moderators). Returns the
@@ -2459,6 +2544,164 @@ function sanitizePseudonym(pseudonym) {
   if (typeof pseudonym !== 'string') return null;
   const trimmed = pseudonym.trim().slice(0, MAX_PSEUDONYM_LENGTH);
   return trimmed || null;
+}
+
+// Pool of friendly handles. MUST stay in sync with the ADJECTIVES/ANIMALS lists
+// in client/src/identity.js — the client generates a candidate from these and
+// the server hands out alternates from the same pool on collision, so a name a
+// participant sees locally is one the server also knows how to deconflict.
+// (Duplicated rather than shared because the server is CommonJS and the client
+// is an ESM/Vite bundle, same as the ownerToken() duplication above.)
+const PSEUDONYM_ADJECTIVES = [
+  'Happy', 'Brave', 'Clever', 'Gentle', 'Swift', 'Mighty', 'Curious', 'Calm',
+  'Bold', 'Bright', 'Cheerful', 'Daring', 'Eager', 'Fierce', 'Friendly', 'Jolly',
+  'Kind', 'Lively', 'Loyal', 'Lucky', 'Merry', 'Nimble', 'Noble', 'Plucky',
+  'Proud', 'Quick', 'Quiet', 'Sleepy', 'Sly', 'Snappy', 'Sunny', 'Witty',
+  'Zesty', 'Breezy', 'Cozy', 'Dapper', 'Fuzzy', 'Glad', 'Hardy', 'Humble',
+  'Jazzy', 'Keen', 'Mellow', 'Peppy', 'Rosy', 'Spry', 'Tidy', 'Wise',
+];
+const PSEUDONYM_ANIMALS = [
+  'Badger', 'Otter', 'Fox', 'Falcon', 'Panda', 'Heron', 'Lynx', 'Moose',
+  'Beaver', 'Bison', 'Cobra', 'Crane', 'Dingo', 'Eagle', 'Ferret', 'Gecko',
+  'Hawk', 'Ibis', 'Jaguar', 'Koala', 'Lemur', 'Marmot', 'Newt', 'Ocelot',
+  'Puffin', 'Quokka', 'Raccoon', 'Salmon', 'Tapir', 'Urchin', 'Viper', 'Walrus',
+  'Yak', 'Zebra', 'Wombat', 'Stoat', 'Robin', 'Possum', 'Mink', 'Lark',
+  'Kestrel', 'Hare', 'Gull', 'Finch', 'Egret', 'Civet', 'Bat', 'Antelope',
+];
+
+function randomPseudonym() {
+  const adjective = PSEUDONYM_ADJECTIVES[Math.floor(Math.random() * PSEUDONYM_ADJECTIVES.length)];
+  const animal = PSEUDONYM_ANIMALS[Math.floor(Math.random() * PSEUDONYM_ANIMALS.length)];
+  return `${adjective} ${animal}`;
+}
+
+// Every adjective-animal combination, in order — used as a guaranteed-coverage
+// fallback when random probing keeps hitting names already taken in a crowded
+// discussion, so we always find a free one if any remain.
+function* allPseudonyms() {
+  for (const adjective of PSEUDONYM_ADJECTIVES) {
+    for (const animal of PSEUDONYM_ANIMALS) {
+      yield `${adjective} ${animal}`;
+    }
+  }
+}
+
+// Claim `name` for (discussionId, userId): inserts a reservation, or updates this
+// user's existing reservation to the new name (the regenerate path). Returns the
+// reserved name on success, or null when `name` is already held by a DIFFERENT
+// user in this discussion (UNIQUE(discussion_id, pseudonym) violation), so the
+// caller can try the next candidate. This is what makes concurrent joins safe:
+// the database, not a read-then-write in JS, is the arbiter of uniqueness.
+async function reservePseudonym(discussionId, userId, name) {
+  try {
+    const result = await pool.query(
+      `INSERT INTO discussion_pseudonyms (discussion_id, user_id, pseudonym)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (discussion_id, user_id)
+       DO UPDATE SET pseudonym = EXCLUDED.pseudonym
+       RETURNING pseudonym`,
+      [discussionId, userId, name]
+    );
+    return result.rows[0] ? result.rows[0].pseudonym : null;
+  } catch (e) {
+    if (e.code === '23505') return null; // name taken by someone else; try the next
+    throw e;
+  }
+}
+
+// Reserve a per-discussion-unique display handle for this user, or return the one
+// they already have. `preferred` is the client's locally-generated candidate; we
+// keep it when it's free so most people get the name they already see locally.
+// On collision we hand out a different combination — never a numbered suffix —
+// so a discussion never shows the same handle twice. `regenerate: true` forces a
+// brand-new handle distinct from the user's current one (the shuffle button).
+//
+// Returns { pseudonym, reserved }. `reserved` is false ONLY when the discussion
+// doesn't exist yet and we could merely hand back a preview — the client must
+// keep asking in that case rather than treating the preview as final, otherwise
+// the user's handle would never get inserted and could later collide.
+async function assignPseudonym(slug, userId, preferred, { regenerate = false } = {}) {
+  const canonicalSlug = slugifyTopic(slug);
+  const discussionResult = await pool.query(
+    'SELECT id FROM discussions WHERE slug = $1',
+    [canonicalSlug]
+  );
+  if (discussionResult.rows.length === 0) {
+    // The discussion doesn't exist yet (nobody has added a question, so there's
+    // no row to reserve against). Hand back a preview name, flagged unreserved so
+    // the client re-asks once the discussion exists and the name gets reserved.
+    return { pseudonym: sanitizePseudonym(preferred) || randomPseudonym(), reserved: false };
+  }
+  const discussionId = discussionResult.rows[0].id;
+
+  const existingResult = await pool.query(
+    'SELECT pseudonym FROM discussion_pseudonyms WHERE discussion_id = $1 AND user_id = $2',
+    [discussionId, userId]
+  );
+  const current = existingResult.rows[0] ? existingResult.rows[0].pseudonym : null;
+  if (current && !regenerate) return { pseudonym: current, reserved: true };
+
+  // Names already in use in this discussion, so we can skip them up front (the
+  // DB still has the final say via reservePseudonym's unique constraint). We
+  // union two sources: the reservation table, AND handles already shown on
+  // existing votes/comments by OTHER users. The latter matters for discussions
+  // that predate this migration (whose reservation table starts empty while old
+  // responses already display handles) — without it a newcomer could be handed a
+  // name already visible on someone else's old response. We exclude the
+  // requesting user's own responses so a returning participant can reclaim the
+  // handle their existing responses already show.
+  const takenResult = await pool.query(
+    `SELECT pseudonym FROM discussion_pseudonyms WHERE discussion_id = $1
+     UNION
+     SELECT v.pseudonym
+       FROM votes v
+       JOIN questions q ON v.question_id = q.id
+      WHERE q.discussion_id = $1 AND v.user_id <> $2 AND v.pseudonym IS NOT NULL
+     UNION
+     SELECT c.pseudonym
+       FROM response_comments c
+       JOIN votes v ON c.response_id = v.id
+       JOIN questions q ON v.question_id = q.id
+      WHERE q.discussion_id = $1 AND c.user_id <> $2 AND c.pseudonym IS NOT NULL`,
+    [discussionId, userId]
+  );
+  const taken = new Set(takenResult.rows.map((row) => row.pseudonym));
+
+  // Candidates to try, in priority order: the user's preferred name (unless
+  // regenerating), then a few cheap random probes, then every remaining free
+  // combination so we never give up while a name is still available.
+  const candidates = [];
+  const sanitizedPreferred = sanitizePseudonym(preferred);
+  if (!regenerate && sanitizedPreferred && !taken.has(sanitizedPreferred)) {
+    candidates.push(sanitizedPreferred);
+  }
+  for (let i = 0; i < 16; i++) {
+    const probe = randomPseudonym();
+    if (probe !== current && !taken.has(probe)) candidates.push(probe);
+  }
+  for (const name of allPseudonyms()) {
+    if (name !== current && !taken.has(name)) candidates.push(name);
+  }
+
+  for (const name of candidates) {
+    const reserved = await reservePseudonym(discussionId, userId, name);
+    if (reserved) return { pseudonym: reserved, reserved: true };
+  }
+
+  // Every one of the ~2300 combinations is taken (>2300 participants in a single
+  // discussion). Only here do we resort to a numbered handle so the user still
+  // gets a name; log it because it means the pool should grow.
+  console.warn(`Pseudonym pool exhausted for discussion ${discussionId}; falling back to a numbered handle`);
+  const base = sanitizedPreferred || randomPseudonym();
+  for (let n = 2; ; n++) {
+    // Trim the base so the suffix survives the length cap — otherwise a base
+    // already at MAX_PSEUDONYM_LENGTH would slice the " <n>" back off, producing
+    // the same taken string every iteration and looping forever without acking.
+    const suffix = ` ${n}`;
+    const name = `${base.slice(0, MAX_PSEUDONYM_LENGTH - suffix.length)}${suffix}`;
+    const reserved = await reservePseudonym(discussionId, userId, name);
+    if (reserved) return { pseudonym: reserved, reserved: true };
+  }
 }
 
 async function addVote(questionId, vote, userId, pseudonym) {
@@ -2990,6 +3233,7 @@ initSchema()
   .then(() => migrateUniqueDiscussionTopics())
   .then(() => migrateDiscussionSlugs())
   .then(() => Promise.all([migrateAddPseudonymColumn(), migrateResponseVotesTable(), migrateModeratorsTable()]))
+  .then(() => migrateDiscussionPseudonymsTable())
   .then(() => migrateBrainstormInteractions())
   .then(() => {
     server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
