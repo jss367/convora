@@ -933,7 +933,15 @@ const DiscussionPage = () => {
     useEffect(() => {
         if (topic !== discussionSlug) return undefined;
         console.log('Current topic:', discussionSlug);
-        socket.emit('joinDiscussion', discussionSlug);
+        // Re-join on every (re)connect, not just on mount. When a socket drops
+        // and Socket.IO reconnects (routine on mobile / sleeping tabs), the
+        // server sees a brand-new socket that belongs to no room — so without
+        // this the client silently stops counting toward presence and stops
+        // receiving room updates. Mirrors the identify effect below, which
+        // already re-fires on 'connect' for the same reason.
+        const joinRoom = () => socket.emit('joinDiscussion', discussionSlug);
+        joinRoom();
+        socket.on('connect', joinRoom);
         socket.on('discussion', setDiscussion);
         socket.on('questions', handleQuestionsUpdate);
         socket.on('presence', setPresence);
@@ -946,6 +954,7 @@ const DiscussionPage = () => {
             // Leave the room so the server stops counting this client toward the
             // discussion's presence once the page unmounts (e.g. navigating home).
             socket.emit('leaveDiscussion', discussionSlug);
+            socket.off('connect', joinRoom);
             socket.off('discussion', setDiscussion);
             socket.off('questions', handleQuestionsUpdate);
             socket.off('presence', setPresence);
