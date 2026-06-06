@@ -1816,6 +1816,116 @@ test('A newcomer avoids a handle already shown on a pre-existing response', asyn
   }
 });
 
+test('A pseudonym-mode vote sent before the reservation ack persists under the reserved handle (#57)', async () => {
+  const topic = uniqueTopic('pseudonym-canon-vote');
+  const holder = await connectSocket();
+  const latecomer = await connectSocket();
+  try {
+    holder.emit('joinDiscussion', topic);
+    latecomer.emit('joinDiscussion', topic);
+    // Adding a question creates the discussion row so handles can be reserved.
+    const question = await addBrainstormQuestion(holder, topic, 'Ideas?');
+
+    // "Tidy Newt" is already taken in this discussion.
+    const taken = await emitWithAck(holder, 'requestPseudonym', topic, 'user-holder', 'Tidy Newt');
+    assert.equal(taken.pseudonym, 'Tidy Newt');
+
+    // The latecomer's local pick collides, so the server reserves a DIFFERENT
+    // handle. That reservation exists server-side while the client is still — for
+    // the round-trip window — showing and sending its unreserved local pick.
+    const reserved = await emitWithAck(latecomer, 'requestPseudonym', topic, 'user-late', 'Tidy Newt');
+    assert.notEqual(reserved.pseudonym, 'Tidy Newt');
+
+    // Simulate the race: the latecomer votes in pseudonym mode but still sends the
+    // colliding pre-reservation name. The server must store the reserved handle so
+    // no duplicate "Tidy Newt" ever appears.
+    const ideaUpdate = waitForQuestions(holder, (qs) => {
+      const q = qs.find((x) => x.id === question.id);
+      return q && q.votes.length === 1;
+    }, 'latecomer idea');
+    latecomer.emit('vote', topic, question.id, 'My idea', 'user-late', 'Tidy Newt', 'pseudonym');
+    const stored = (await ideaUpdate).find((x) => x.id === question.id).votes[0];
+
+    assert.equal(stored.pseudonym, reserved.pseudonym, 'vote should persist under the reserved handle');
+    assert.notEqual(stored.pseudonym, 'Tidy Newt', 'no duplicate "Tidy Newt" should be stored');
+  } finally {
+    holder.disconnect();
+    latecomer.disconnect();
+  }
+});
+
+test('A pseudonym-mode comment sent before the reservation ack persists under the reserved handle (#57)', async () => {
+  const topic = uniqueTopic('pseudonym-canon-comment');
+  const mod = await connectSocket();
+  const latecomer = await connectSocket();
+  try {
+    mod.emit('joinDiscussion', topic);
+    latecomer.emit('joinDiscussion', topic);
+    const token = await claimModerator(mod, topic);
+    const question = await addBrainstormQuestion(mod, topic, 'What should we try?');
+
+    // An idea for the latecomer to comment on.
+    const ideaUpdate = waitForQuestions(mod, (qs) => qs[0] && qs[0].votes.length === 1, 'idea added');
+    mod.emit('vote', topic, question.id, 'Run a pilot', 'user-mod', 'Planner', 'pseudonym');
+    const responseId = (await ideaUpdate)[0].votes[0].id;
+
+    const enabled = waitForQuestions(mod, (qs) => qs[0] && qs[0].commentsEnabled === true, 'comments enabled');
+    mod.emit('setDiscussionFlags', topic, { comments_enabled: true }, token);
+    await enabled;
+
+    // "Tidy Newt" is taken, so the latecomer is reserved a different handle.
+    await emitWithAck(mod, 'requestPseudonym', topic, 'user-mod', 'Tidy Newt');
+    const reserved = await emitWithAck(latecomer, 'requestPseudonym', topic, 'user-late', 'Tidy Newt');
+    assert.notEqual(reserved.pseudonym, 'Tidy Newt');
+
+    // Race: comment in pseudonym mode but still sending the colliding local pick.
+    const commentUpdate = waitForQuestions(
+      mod,
+      (qs) => qs[0] && qs[0].votes[0] && (qs[0].votes[0].comments || []).length === 1,
+      'comment added'
+    );
+    const ack = await emitWithAck(
+      latecomer, 'addResponseComment', topic, responseId, 'A point', 'user-late', 'Tidy Newt', 'pseudonym');
+    assert.equal(ack.added, true);
+    const comment = (await commentUpdate)[0].votes[0].comments[0];
+
+    assert.equal(comment.pseudonym, reserved.pseudonym, 'comment should persist under the reserved handle');
+    assert.notEqual(comment.pseudonym, 'Tidy Newt', 'no duplicate "Tidy Newt" should be stored');
+  } finally {
+    mod.disconnect();
+    latecomer.disconnect();
+  }
+});
+
+test('Custom names are stored verbatim, never replaced by the reserved handle (#57)', async () => {
+  const topic = uniqueTopic('pseudonym-canon-custom');
+  const mod = await connectSocket();
+  const user = await connectSocket();
+  try {
+    mod.emit('joinDiscussion', topic);
+    user.emit('joinDiscussion', topic);
+    const question = await addBrainstormQuestion(mod, topic, 'Ideas?');
+
+    // The user holds a reserved pseudonym in this discussion...
+    const reserved = await emitWithAck(user, 'requestPseudonym', topic, 'user-1', 'Tidy Newt');
+    assert.equal(reserved.pseudonym, 'Tidy Newt');
+
+    // ...but submits in CUSTOM mode: their typed name must be stored as-is, never
+    // canonicalized to the reserved handle (custom is a deliberate user choice).
+    const customUpdate = waitForQuestions(mod, (qs) => {
+      const q = qs.find((x) => x.id === question.id);
+      return q && q.votes.length === 1;
+    }, 'custom-mode idea');
+    user.emit('vote', topic, question.id, 'My idea', 'user-1', 'Dr. Real Name', 'custom');
+    const stored = (await customUpdate).find((x) => x.id === question.id).votes[0];
+
+    assert.equal(stored.pseudonym, 'Dr. Real Name');
+  } finally {
+    mod.disconnect();
+    user.disconnect();
+  }
+});
+
 test('a moderator can edit a question before anyone responds', async () => {
   const topic = uniqueTopic('edit-question');
   const mod = await connectSocket();
