@@ -8,6 +8,7 @@ import {
     setNameMode,
     setCustomName,
     getDisplayName,
+    getEffectiveNameMode,
     ownerToken,
     participantHandle,
     NameModes,
@@ -1059,8 +1060,9 @@ const DiscussionPage = () => {
         console.log('Voting:', questionId, value);
         // Send the name mode too: in pseudonym mode the server persists our
         // reserved handle instead of this possibly-pre-reservation displayName,
-        // closing the submit-before-reservation collision window (#57).
-        socket.emit('vote', discussionSlug, questionId, value, userId, displayName, identity?.mode);
+        // closing the submit-before-reservation collision window (#57). We send the
+        // EFFECTIVE mode so a blank-custom name (shown as the pseudonym) canonicalizes.
+        socket.emit('vote', discussionSlug, questionId, value, userId, displayName, getEffectiveNameMode(identity));
         setSliderValues(prev => ({ ...prev, [questionId]: undefined }));
     };
 
@@ -1110,7 +1112,7 @@ const DiscussionPage = () => {
     const handleAddComment = (responseId, body) => {
         // Pass the name mode so pseudonym-mode comments persist under our reserved
         // handle rather than a pre-reservation local pick (#57); see handleVote.
-        socket.emit('addResponseComment', topic, responseId, body, userId, displayName, identity?.mode);
+        socket.emit('addResponseComment', topic, responseId, body, userId, displayName, getEffectiveNameMode(identity));
     };
 
     const handleDeleteComment = (commentId) => {
