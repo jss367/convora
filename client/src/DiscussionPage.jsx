@@ -17,6 +17,20 @@ import { slugifyTopic } from './slugs';
 const VERSION = '0.1.8';
 console.log('Convora version:', VERSION);
 
+// Color themes a moderator can apply to a discussion. Keys and the palettes
+// they map to are defined in client/src/index.css ([data-theme] blocks) and
+// validated server-side (ALLOWED_THEMES in server.js); `swatch` is only the
+// picker dot color and mirrors each theme's primary. Keep all three in sync.
+const THEMES = [
+    { key: 'indigo', label: 'Indigo', swatch: '#4F46E5' },
+    { key: 'orange', label: 'Orange', swatch: '#FF3C00' },
+    { key: 'emerald', label: 'Emerald', swatch: '#059669' },
+    { key: 'rose', label: 'Rose', swatch: '#E11D48' },
+    { key: 'slate', label: 'Slate', swatch: '#475569' },
+];
+const THEME_KEYS = THEMES.map((t) => t.key);
+const DEFAULT_THEME = 'indigo';
+
 // The floating "Scan to join" QR the moderator can pop up. It starts large so
 // it's readable across a room and can be drag-resized by the moderator to fit
 // whatever screen they're presenting on.
@@ -167,7 +181,7 @@ const DiscussionPage = () => {
     const [copied, setCopied] = useState(false);
     const [adminToken, setAdminToken] = useState(null);
     const [discussionState, setDiscussionState] = useState({
-        locked: false, hasModerator: false,
+        locked: false, moderatorOnly: false, hasModerator: false, theme: DEFAULT_THEME,
         reactionsEnabled: false, reactionsVisible: true, commentsEnabled: false,
         reactionKeys: ALL_REACTION_KEYS,
     });
@@ -193,7 +207,8 @@ const DiscussionPage = () => {
     const [myBrainstorm, setMyBrainstorm] = useState({ ratings: {}, reactions: {} });
 
     const isAdmin = !!adminToken;
-    const { locked } = discussionState;
+    const { locked, moderatorOnly } = discussionState;
+    const theme = THEME_KEYS.includes(discussionState.theme) ? discussionState.theme : DEFAULT_THEME;
     // Which epistemic reactions are active for this session (creator-configurable,
     // a subset of the catalog). Falls back to the full catalog until the server's
     // discussionState arrives.
@@ -577,6 +592,14 @@ const DiscussionPage = () => {
         socket.emit('setLocked', discussionSlug, !locked, adminToken);
     };
 
+    const handleToggleModeratorOnly = () => {
+        socket.emit('setModeratorOnly', discussionSlug, !moderatorOnly, adminToken);
+    };
+
+    const handleSetTheme = (themeKey) => {
+        socket.emit('setTheme', discussionSlug, themeKey, adminToken);
+    };
+
     const handleDeleteQuestion = (questionId) => {
         socket.emit('deleteQuestion', discussionSlug, questionId, adminToken);
     };
@@ -766,6 +789,17 @@ const DiscussionPage = () => {
         };
     }, [topic, discussionSlug, handleQuestionsUpdate, handleModeratorGranted, handlePseudonymSync]);
 
+    // Mirror the discussion's chosen theme onto <html data-theme="..."> so the
+    // CSS-variable palette (index.css) recolors every primary/secondary class,
+    // including the app-wide header that lives outside this page. Cleared on
+    // unmount so navigating away (e.g. back to the home page) returns to the
+    // default look rather than leaving another discussion's colors stuck on.
+    useEffect(() => {
+        const root = document.documentElement;
+        root.setAttribute('data-theme', theme);
+        return () => root.removeAttribute('data-theme');
+    }, [theme]);
+
     // Tell the server which persistent user this socket is, so it can route
     // moderator grants to us. Re-sent after any reconnect so a promoted user
     // doesn't silently lose their controls on a network blip.
@@ -869,12 +903,14 @@ const DiscussionPage = () => {
     const submitQuestion = (question, force) => {
         try {
             setError(null);
-            socket.emit('addQuestion', discussionSlug, question, force, (resp) => {
+            socket.emit('addQuestion', discussionSlug, question, force, adminToken, (resp) => {
                 if (resp && resp.added) {
                     setNewQuestion('');
                     setQuestionType(QuestionTypes.AGREEMENT);
                     setMinValue(0);
                     setMaxValue(100);
+                } else if (resp && resp.reason === 'moderator_only') {
+                    setError('Only the moderator can add questions right now.');
                 }
             });
         } catch (error) {
@@ -1382,11 +1418,11 @@ const DiscussionPage = () => {
                                 readOnly
                                 value={shareUrl}
                                 onFocus={(e) => e.target.select()}
-                                className="flex-1 p-2 border rounded text-sm bg-gray-50"
+                                className="flex-1 min-w-0 p-2 border rounded text-sm bg-gray-50"
                             />
                             <button
                                 onClick={handleCopyLink}
-                                className="px-4 py-2 bg-primary text-white rounded hover:bg-opacity-90 whitespace-nowrap"
+                                className="shrink-0 px-4 py-2 bg-primary text-white rounded hover:bg-opacity-90 whitespace-nowrap"
                             >
                                 {copied ? 'Copied!' : 'Copy'}
                             </button>
@@ -1413,6 +1449,15 @@ const DiscussionPage = () => {
                             {locked ? 'Unlock discussion' : 'Lock discussion'}
                         </button>
                         <button
+                            onClick={handleToggleModeratorOnly}
+                            className="px-3 py-1 rounded bg-white border border-indigo-300 text-indigo-700 hover:bg-indigo-100"
+                            title={moderatorOnly
+                                ? 'Anyone can add questions'
+                                : 'Only you can add questions; everyone can still vote'}
+                        >
+                            {moderatorOnly ? 'Open questions to everyone' : 'Only I can add questions'}
+                        </button>
+                        <button
                             onClick={handleCopyAdminLink}
                             className="px-3 py-1 rounded bg-white border border-indigo-300 text-indigo-700 hover:bg-indigo-100"
                             title="Anyone with this link becomes a moderator"
@@ -1431,6 +1476,27 @@ const DiscussionPage = () => {
                         >
                             {showJoinQr ? 'Hide join QR' : 'Show join QR'}
                         </button>
+                        {/* Color theme picker: clicking a swatch recolors the
+                            discussion for everyone in the room. */}
+                        <div className="flex items-center gap-1.5 pl-1" role="group" aria-label="Color theme">
+                            <span className="font-medium text-indigo-800">Theme</span>
+                            {THEMES.map((t) => (
+                                <button
+                                    key={t.key}
+                                    type="button"
+                                    onClick={() => handleSetTheme(t.key)}
+                                    title={t.label}
+                                    aria-label={`${t.label} theme`}
+                                    aria-pressed={theme === t.key}
+                                    className={`h-6 w-6 rounded-full border border-white shadow-sm transition ${
+                                        theme === t.key
+                                            ? 'ring-2 ring-offset-1 ring-gray-700'
+                                            : 'hover:scale-110'
+                                    }`}
+                                    style={{ backgroundColor: t.swatch }}
+                                />
+                            ))}
+                        </div>
                         {/* Discussion-wide brainstorm phasing: these apply to
                             every brainstorm prompt at once (read silently, then
                             open reactions, then open comments). */}
@@ -1618,7 +1684,16 @@ const DiscussionPage = () => {
                 </div>
             )}
 
-            {!locked && (
+            {/* When the moderator has restricted question-asking, let participants
+                know why they can't add one (voting stays open). Hidden from the
+                moderator, who keeps the form and the toggle. */}
+            {!locked && moderatorOnly && !isAdmin && (
+                <div className="mb-8 bg-indigo-50 border border-indigo-200 text-indigo-800 rounded-md p-3 text-center">
+                    Only the moderator can add questions right now. You can still vote on the ones below.
+                </div>
+            )}
+
+            {!locked && (!moderatorOnly || isAdmin) && (
             <div className="bg-white shadow-lg rounded-lg p-6 mb-8">
                 <input
                     type="text"
@@ -2293,12 +2368,12 @@ const BrainstormIdea = ({
                                         onChange={(e) => setComment(e.target.value)}
                                         onKeyDown={(e) => { if (e.key === 'Enter') submitComment(); }}
                                         placeholder="Add a comment"
-                                        className="flex-1 p-1.5 border rounded text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                                        className="flex-1 min-w-0 p-1.5 border rounded text-sm focus:outline-none focus:ring-2 focus:ring-primary"
                                     />
                                     <button
                                         onClick={submitComment}
                                         disabled={comment.trim() === ''}
-                                        className="px-3 py-1 text-sm bg-primary text-white rounded hover:bg-opacity-90 disabled:opacity-50"
+                                        className="shrink-0 px-3 py-1 text-sm bg-primary text-white rounded hover:bg-opacity-90 disabled:opacity-50"
                                     >
                                         Post
                                     </button>
@@ -2457,20 +2532,51 @@ const NumericalResults = ({ question, minValue, maxValue }) => {
     });
     const tallestBin = Math.max(...bins);
 
+    // Up to three integer y-axis ticks (top, middle, baseline) positioned
+    // proportionally so they line up with the bar heights.
+    const yTicks = tallestBin <= 1
+        ? [1, 0]
+        : [...new Set([tallestBin, Math.round(tallestBin / 2), 0])].sort((a, b) => b - a);
+
     return (
         <div className="mb-2">
             <div className="text-sm text-gray-600 mb-2">
                 {total} {total === 1 ? 'response' : 'responses'} · average <span className="font-semibold">{average.toFixed(1)}</span>
             </div>
-            <div className="flex items-end gap-1 h-16">
-                {bins.map((count, i) => (
-                    <div
-                        key={i}
-                        className="flex-1 bg-primary rounded-t"
-                        style={{ height: tallestBin > 0 ? `${(count / tallestBin) * 100}%` : '0%' }}
-                        title={`${count} ${count === 1 ? 'response' : 'responses'}`}
-                    />
-                ))}
+            <div className="flex gap-1">
+                {/* Y-axis count labels. Each is anchored by its bottom edge at the
+                    tick's proportional height, then nudged vertically so it stays
+                    inside the box: the top tick hangs down from the top line, the
+                    baseline tick sits on the bottom, and middle ticks are centered. */}
+                <div className="relative w-6 h-16 text-[10px] leading-none text-gray-400">
+                    {yTicks.map((t, idx) => {
+                        const nudge = idx === 0 ? 'translate-y-full' : t === 0 ? '' : 'translate-y-1/2';
+                        return (
+                            <span
+                                key={t}
+                                className={`absolute right-0 ${nudge}`}
+                                style={{ bottom: `${(t / tallestBin) * 100}%` }}
+                            >
+                                {t}
+                            </span>
+                        );
+                    })}
+                </div>
+                <div className="flex items-end gap-1 h-16 flex-1">
+                    {bins.map((count, i) => (
+                        <div
+                            key={i}
+                            className="flex-1 bg-primary rounded-t"
+                            style={{ height: tallestBin > 0 ? `${(count / tallestBin) * 100}%` : '0%' }}
+                            title={`${count} ${count === 1 ? 'response' : 'responses'}`}
+                        />
+                    ))}
+                </div>
+            </div>
+            {/* X-axis min/max labels, offset to align with the bars */}
+            <div className="ml-7 flex justify-between text-[10px] text-gray-400 mt-1">
+                <span>{minValue}</span>
+                <span>{maxValue}</span>
             </div>
         </div>
     );

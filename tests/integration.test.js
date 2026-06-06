@@ -645,6 +645,70 @@ test('a moderator can promote a participant, granting them working controls', as
   }
 });
 
+test('a moderator sets the discussion color theme and it broadcasts to everyone', async () => {
+  const topic = uniqueTopic('theme');
+  const mod = await connectSocket();
+  const guest = await connectSocket();
+
+  try {
+    mod.emit('joinDiscussion', topic);
+    guest.emit('joinDiscussion', topic);
+    const token = await claimModerator(mod, topic);
+
+    // A fresh discussion defaults to the original 'indigo' look.
+    const claimed = await waitForEvent(guest, 'discussionState', (s) => s.hasModerator === true);
+    assert.equal(claimed.theme, 'indigo');
+
+    // The moderator switches theme; every participant receives the new value.
+    const themed = waitForEvent(guest, 'discussionState', (s) => s.theme === 'orange');
+    mod.emit('setTheme', topic, 'orange', token);
+    assert.equal((await themed).theme, 'orange');
+
+    // An unknown theme is rejected (error to the sender) and never broadcast.
+    const rejected = waitForEvent(mod, 'error', (e) => /theme/i.test(e.message));
+    mod.emit('setTheme', topic, 'chartreuse', token);
+    await rejected;
+
+    // The stored theme is unchanged: a fresh join still reports 'orange'.
+    const rejoin = await connectSocket();
+    try {
+      rejoin.emit('joinDiscussion', topic);
+      const state = await waitForEvent(rejoin, 'discussionState');
+      assert.equal(state.theme, 'orange');
+    } finally {
+      rejoin.disconnect();
+    }
+  } finally {
+    mod.disconnect();
+    guest.disconnect();
+  }
+});
+
+test('a non-moderator cannot set the discussion theme', async () => {
+  const topic = uniqueTopic('theme-deny');
+  await jsonRequest('POST', '/api/discussions', { topic });
+
+  const stranger = await connectSocket();
+  try {
+    stranger.emit('joinDiscussion', topic);
+    const rejected = waitForEvent(stranger, 'error', (e) => /authoriz/i.test(e.message));
+    stranger.emit('setTheme', topic, 'orange', 'bogus-token');
+    await rejected;
+
+    // The theme stays at the default for everyone who joins afterward.
+    const observer = await connectSocket();
+    try {
+      observer.emit('joinDiscussion', topic);
+      const state = await waitForEvent(observer, 'discussionState');
+      assert.equal(state.theme, 'indigo');
+    } finally {
+      observer.disconnect();
+    }
+  } finally {
+    stranger.disconnect();
+  }
+});
+
 test('a non-moderator cannot list or promote participants', async () => {
   const topic = uniqueTopic('promote-deny');
   await jsonRequest('POST', '/api/discussions', { topic });
@@ -1028,6 +1092,101 @@ test('Brainstorm ratings, reactions, and comments are rejected once the discussi
   }
 });
 
+test('moderator-only mode lets only moderators add questions while voting stays open', async () => {
+  const topic = uniqueTopic('mod-only-questions');
+  const mod = await connectSocket();
+  const participant = await connectSocket();
+
+  try {
+    mod.emit('joinDiscussion', topic);
+    participant.emit('joinDiscussion', topic);
+    const token = await claimModerator(mod, topic);
+
+    // Turn on moderator-only questions and wait for the state to broadcast.
+    const restricted = waitForEvent(participant, 'discussionState', (s) => s.moderatorOnly === true);
+    mod.emit('setModeratorOnly', topic, true, token);
+    await restricted;
+
+    // A participant with no moderator token is bounced...
+    const rejected = await emitWithAck(
+      participant,
+      'addQuestion',
+      topic,
+      { text: 'Can I ask this?', type: 'Agreement', minValue: null, maxValue: null, options: [] },
+      false,
+      null
+    );
+    assert.equal(rejected.added, false, 'participant submission must be rejected');
+    assert.equal(rejected.reason, 'moderator_only');
+
+    // ...but the moderator can add a question with their token. Register the
+    // listener before emitting: the server broadcasts 'questions' before it acks.
+    const questionAdded = waitForQuestions(mod, (qs) => qs.length === 1, 'moderator question added');
+    const modAdded = await emitWithAck(
+      mod,
+      'addQuestion',
+      topic,
+      { text: 'Moderator agenda item', type: 'Agreement', minValue: null, maxValue: null, options: [] },
+      false,
+      token
+    );
+    assert.equal(modAdded.added, true, 'moderator submission must be accepted');
+
+    const questions = await questionAdded;
+    const questionId = questions[0].id;
+    assert.equal(questions[0].text, 'Moderator agenda item');
+
+    // Voting stays open for everyone even while questions are restricted.
+    const voted = waitForQuestions(mod, (qs) => qs[0] && qs[0].votes.length === 1, 'participant vote recorded');
+    participant.emit('vote', topic, questionId, 'Agree', 'user-voter', 'Voter');
+    await voted;
+
+    // Reopening lets participants add questions again.
+    const opened = waitForEvent(participant, 'discussionState', (s) => s.moderatorOnly === false);
+    mod.emit('setModeratorOnly', topic, false, token);
+    await opened;
+
+    const accepted = await emitWithAck(
+      participant,
+      'addQuestion',
+      topic,
+      { text: 'Now I can ask', type: 'Agreement', minValue: null, maxValue: null, options: [] },
+      false,
+      null
+    );
+    assert.equal(accepted.added, true, 'participant submission must be accepted once reopened');
+  } finally {
+    mod.disconnect();
+    participant.disconnect();
+  }
+});
+
+test('setModeratorOnly rejects callers without a valid moderator token', async () => {
+  const topic = uniqueTopic('mod-only-auth');
+  const mod = await connectSocket();
+  const intruder = await connectSocket();
+
+  try {
+    mod.emit('joinDiscussion', topic);
+    intruder.emit('joinDiscussion', topic);
+    await claimModerator(mod, topic);
+
+    // An attempt with a bogus token must not change the discussion's state.
+    const errored = waitForEvent(intruder, 'error');
+    intruder.emit('setModeratorOnly', topic, true, 'not-a-real-token');
+    await errored;
+
+    // beforeEach truncates, and only the moderator's claim created a discussion,
+    // so the single row reflects whether the bogus token managed to flip the flag.
+    const state = await pool.query('SELECT moderator_only_questions FROM discussions');
+    assert.equal(state.rows.length, 1);
+    assert.equal(state.rows[0].moderator_only_questions, false);
+  } finally {
+    mod.disconnect();
+    intruder.disconnect();
+  }
+});
+
 test('Renaming updates stored comment pseudonyms, and comment tokens are namespaced', async () => {
   const topic = uniqueTopic('brainstorm-rename');
   const mod = await connectSocket();
@@ -1226,11 +1385,16 @@ test('Duplicating a discussion preserves brainstorm interaction flags', async ()
     mod.emit('setReactionKeys', topic, ['crux', 'follows'], token);
     await narrowed;
 
+    // And pick a non-default color theme; the duplicate should keep it too.
+    const themed = waitForEvent(mod, 'discussionState', (s) => s.theme === 'orange');
+    mod.emit('setTheme', topic, 'orange', token);
+    await themed;
+
     const newTopic = uniqueTopic('brainstorm-dup-copy');
     const dup = await jsonRequest('POST', '/api/duplicate-discussion', { originalTopic: topic, newTopic });
     assert.equal(dup.status, 200);
 
-    // The duplicate must keep the same flags and reaction set, not reset to defaults.
+    // The duplicate must keep the same flags, reaction set, and theme, not reset to defaults.
     const copy = await connectSocket();
     try {
       const copyQuestions = waitForQuestions(
@@ -1241,7 +1405,9 @@ test('Duplicating a discussion preserves brainstorm interaction flags', async ()
       assert.equal(q.reactionsEnabled, true);
       assert.equal(q.reactionsVisible, false);
       assert.equal(q.commentsEnabled, true);
-      assert.deepEqual((await copyState).reactionKeys, ['crux', 'follows']);
+      const state = await copyState;
+      assert.deepEqual(state.reactionKeys, ['crux', 'follows']);
+      assert.equal(state.theme, 'orange');
     } finally {
       copy.disconnect();
     }

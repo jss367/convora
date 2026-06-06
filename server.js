@@ -143,54 +143,6 @@ function getQuestionRange(question) {
   };
 }
 
-function extractResponseText(data) {
-  if (typeof data.output_text === 'string') {
-    return data.output_text;
-  }
-
-  const contentItems = (data.output || [])
-    .flatMap(item => Array.isArray(item.content) ? item.content : []);
-  const text = contentItems
-    .map(item => typeof item.text === 'string' ? item.text : '')
-    .filter(Boolean)
-    .join('\n')
-    .trim();
-
-  return text || null;
-}
-
-function buildDeterministicSynthesis(writtenResponses) {
-  if (writtenResponses.length === 0) {
-    return null;
-  }
-
-  const byQuestion = writtenResponses.reduce((acc, response) => {
-    if (!acc.has(response.questionText)) {
-      acc.set(response.questionText, []);
-    }
-    acc.get(response.questionText).push(response.value);
-    return acc;
-  }, new Map());
-
-  const longestResponses = [...writtenResponses]
-    .sort((a, b) => b.value.length - a.value.length)
-    .slice(0, 3)
-    .map(response => ({
-      question: response.questionText,
-      excerpt: response.value.length > 180 ? `${response.value.slice(0, 177)}...` : response.value,
-    }));
-
-  return {
-    mode: 'deterministic',
-    text: `${writtenResponses.length} written ${writtenResponses.length === 1 ? 'response' : 'responses'} across ${byQuestion.size} ${byQuestion.size === 1 ? 'prompt' : 'prompts'}.`,
-    highlights: [...byQuestion.entries()].map(([question, responses]) => ({
-      question,
-      responseCount: responses.length,
-    })),
-    excerpts: longestResponses,
-  };
-}
-
 function roundMetric(value, digits = 2) {
   if (!Number.isFinite(value)) {
     return 0;
@@ -375,7 +327,7 @@ function buildFacilitatorDashboard(questionSummaries, participantStats) {
     recommendedNextActions.push('Balance the room by inviting quieter visible participants to respond before closing.');
   }
   if (recommendedNextActions.length === 0) {
-    recommendedNextActions.push('Review the consensus and written synthesis, then close with owners and next steps.');
+    recommendedNextActions.push('Review the consensus, then close with owners and next steps.');
   }
 
   return {
@@ -389,64 +341,7 @@ function buildFacilitatorDashboard(questionSummaries, participantStats) {
   };
 }
 
-async function buildLlmSynthesis(writtenResponses) {
-  if (
-    writtenResponses.length === 0 ||
-    process.env.ENABLE_LLM_SYNTHESIS !== 'true' ||
-    !process.env.OPENAI_API_KEY
-  ) {
-    return null;
-  }
-
-  const payload = writtenResponses.slice(0, 80).map(response => ({
-    question: response.questionText,
-    response: response.value,
-  }));
-
-  const response = await fetch('https://api.openai.com/v1/responses', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-    },
-    body: JSON.stringify({
-      model: process.env.OPENAI_MODEL || 'gpt-4.1-mini',
-      input: [
-        {
-          role: 'system',
-          content: 'Summarize open-ended discussion responses for a read-only post-discussion report. Be concise, neutral, and preserve unresolved tensions.',
-        },
-        {
-          role: 'user',
-          content: `Return JSON with keys synthesis, commonThemes, unresolvedQuestions, and notableDivergences. Responses: ${JSON.stringify(payload)}`,
-        },
-      ],
-      text: {
-        format: {
-          type: 'json_object',
-        },
-      },
-    }),
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`LLM synthesis failed: ${response.status} ${errorText}`);
-  }
-
-  const data = await response.json();
-  const outputText = extractResponseText(data);
-  if (!outputText) {
-    return null;
-  }
-
-  return {
-    mode: 'llm',
-    ...JSON.parse(outputText),
-  };
-}
-
-function buildSummary(discussion, questions, synthesis) {
+function buildSummary(discussion, questions) {
   const participantIds = new Set();
   const participantMap = new Map();
   const typeCounts = {};
@@ -603,17 +498,12 @@ function buildSummary(discussion, questions, synthesis) {
     topConsensus,
     topDivisive,
     facilitatorDashboard,
-    synthesis,
     questions: questionSummaries,
   };
 }
 
 function renderReportHtml(summary) {
   const dashboard = summary.facilitatorDashboard || {};
-  const synthesis = summary.synthesis;
-  const synthesisText = synthesis?.mode === 'llm'
-    ? synthesis.synthesis
-    : synthesis?.text;
   const generatedAt = new Date().toLocaleString();
 
   const renderList = (items, emptyText, renderItem) => {
@@ -718,11 +608,6 @@ function renderReportHtml(summary) {
     </section>
 
     <section>
-      <h2>Written Response Synthesis</h2>
-      <p>${escapeHtml(synthesisText || 'No open-ended responses yet.')}</p>
-    </section>
-
-    <section>
       <h2>Prompt Details</h2>
       <table>
         <thead><tr><th>Prompt</th><th>Type</th><th>Responses</th><th>Signal</th></tr></thead>
@@ -772,22 +657,30 @@ function emitPseudonymSync(slug, userId, pseudonym, exceptSocketId) {
   }
 }
 
-// Read the lock state, whether a moderator has been claimed, and the
-// discussion-wide brainstorm interaction flags. The flags live on the
-// discussion (not individual questions) so a moderator opens reactions/comments
-// for the whole room at once; this channel drives the moderator's toggle
-// buttons and gates the participant-facing reaction/comment UI.
+// Color themes a moderator may apply to a discussion. Must stay in sync with
+// the [data-theme] palettes in client/src/index.css and THEME_KEYS in
+// client/src/DiscussionPage.jsx. 'indigo' is the default/original look.
+const ALLOWED_THEMES = ['indigo', 'orange', 'emerald', 'rose', 'slate'];
+const DEFAULT_THEME = 'indigo';
+
+// Read the lock state, the moderator-only-questions state, the chosen color
+// theme, whether a moderator has been claimed, and the discussion-wide
+// brainstorm interaction flags. The flags live on the discussion (not
+// individual questions) so a moderator opens reactions/comments for the whole
+// room at once; this channel drives the moderator's toggle buttons and gates
+// the participant-facing reaction/comment UI.
 async function getDiscussionState(topic) {
   const slug = slugifyTopic(topic);
   const result = await pool.query(
-    `SELECT locked, reaction_keys, admin_token IS NOT NULL AS has_moderator,
+    `SELECT locked, moderator_only_questions, theme, reaction_keys,
+            admin_token IS NOT NULL AS has_moderator,
             reactions_enabled, reactions_visible, comments_enabled
        FROM discussions WHERE slug = $1`,
     [slug]
   );
   if (result.rows.length === 0) {
     return {
-      locked: false, hasModerator: false,
+      locked: false, moderatorOnly: false, hasModerator: false, theme: DEFAULT_THEME,
       reactionsEnabled: false, reactionsVisible: true, commentsEnabled: false,
       reactionKeys: [...DEFAULT_REACTION_KEYS],
     };
@@ -795,7 +688,9 @@ async function getDiscussionState(topic) {
   const row = result.rows[0];
   return {
     locked: row.locked === true,
+    moderatorOnly: row.moderator_only_questions === true,
     hasModerator: row.has_moderator === true,
+    theme: row.theme || DEFAULT_THEME,
     reactionsEnabled: row.reactions_enabled === true,
     reactionsVisible: row.reactions_visible === true,
     commentsEnabled: row.comments_enabled === true,
@@ -862,7 +757,15 @@ io.on('connection', (socket) => {
     emitPresence(roomToLeave);
   });
 
-  socket.on('addQuestion', async (topic, question, force, ack) => {
+  socket.on('addQuestion', async (topic, question, force, token, ack) => {
+    // Back-compat: pre-deploy clients (and external Socket.IO callers) used the
+    // old (topic, question, force, ack) signature, which binds their ack
+    // callback to `token`. Detect that and move it back to `ack`, clearing
+    // `token` so the submitter is simply treated as a non-moderator.
+    if (typeof token === 'function' && ack === undefined) {
+      ack = token;
+      token = undefined;
+    }
     const discussionSlug = slugifyTopic(topic);
     console.log('Received addQuestion event');
     console.log('topic:', discussionSlug);
@@ -880,6 +783,18 @@ io.on('connection', (socket) => {
         socket.emit('error', { message: 'This discussion is locked.' });
         reply({ added: false, reason: 'locked' });
         return;
+      }
+
+      // When the discussion is moderator-only, reject submissions from anyone who
+      // can't prove they moderate it. Voting stays open — this gates only new
+      // questions, so a moderator can curate the agenda then open it to the floor.
+      if (await isModeratorOnlyQuestions(discussionSlug)) {
+        const discussionId = await verifyAdmin(discussionSlug, token);
+        if (!discussionId) {
+          socket.emit('error', { message: 'Only the moderator can add questions right now.' });
+          reply({ added: false, reason: 'moderator_only' });
+          return;
+        }
       }
 
       // Surface a near-duplicate so the submitter can vote on the existing
@@ -1044,6 +959,44 @@ io.on('connection', (socket) => {
       await emitDiscussionState(discussionSlug);
     } catch (error) {
       console.error('Error setting lock state:', error);
+      socket.emit('error', { message: 'Failed to update discussion' });
+    }
+  });
+
+  socket.on('setModeratorOnly', async (topic, moderatorOnly, token) => {
+    const discussionSlug = slugifyTopic(topic);
+    try {
+      const discussionId = await verifyAdmin(discussionSlug, token);
+      if (!discussionId) {
+        socket.emit('error', { message: 'Not authorized to moderate this discussion.' });
+        return;
+      }
+      await pool.query('UPDATE discussions SET moderator_only_questions = $1 WHERE id = $2', [!!moderatorOnly, discussionId]);
+      await emitDiscussionState(discussionSlug);
+    } catch (error) {
+      console.error('Error setting moderator-only state:', error);
+      socket.emit('error', { message: 'Failed to update discussion' });
+    }
+  });
+
+  // Moderator-only: set the discussion's color theme. The new theme rides the
+  // discussionState broadcast, so every connected participant recolors at once.
+  socket.on('setTheme', async (topic, theme, token) => {
+    const discussionSlug = slugifyTopic(topic);
+    try {
+      const discussionId = await verifyAdmin(discussionSlug, token);
+      if (!discussionId) {
+        socket.emit('error', { message: 'Not authorized to moderate this discussion.' });
+        return;
+      }
+      if (!ALLOWED_THEMES.includes(theme)) {
+        socket.emit('error', { message: 'Unknown theme.' });
+        return;
+      }
+      await pool.query('UPDATE discussions SET theme = $1 WHERE id = $2', [theme, discussionId]);
+      await emitDiscussionState(discussionSlug);
+    } catch (error) {
+      console.error('Error setting theme:', error);
       socket.emit('error', { message: 'Failed to update discussion' });
     }
   });
@@ -2129,12 +2082,18 @@ async function migrateBrainstormInteractions() {
   console.log('Brainstorm interactions migration completed');
 }
 
-// Moderation columns: a per-discussion admin token, a discussion lock, and a
-// per-question pin flag. Plus the pg_trgm extension for near-duplicate
-// statement detection. All idempotent.
+// Moderation columns: a per-discussion admin token, a discussion lock, a
+// moderator-only-questions flag, and a per-question pin flag. Plus the pg_trgm
+// extension for near-duplicate statement detection. All idempotent.
 async function migrateModerationAndDedup() {
   await pool.query('ALTER TABLE discussions ADD COLUMN IF NOT EXISTS admin_token TEXT');
   await pool.query('ALTER TABLE discussions ADD COLUMN IF NOT EXISTS locked BOOLEAN NOT NULL DEFAULT FALSE');
+  // When true, only moderators may add questions; everyone can still vote. Lets a
+  // moderator set the agenda ("here are the questions") and open it to the floor
+  // at will, independent of the all-or-nothing `locked` flag.
+  await pool.query('ALTER TABLE discussions ADD COLUMN IF NOT EXISTS moderator_only_questions BOOLEAN NOT NULL DEFAULT FALSE');
+  // Per-discussion color theme the moderator picks; 'indigo' is the original look.
+  await pool.query("ALTER TABLE discussions ADD COLUMN IF NOT EXISTS theme TEXT NOT NULL DEFAULT 'indigo'");
   await pool.query('ALTER TABLE questions ADD COLUMN IF NOT EXISTS pinned BOOLEAN NOT NULL DEFAULT FALSE');
 
   try {
@@ -2418,6 +2377,13 @@ async function isDiscussionLocked(topic) {
   return result.rows.length > 0 ? result.rows[0].locked === true : false;
 }
 
+// Whether only moderators may currently add questions to a discussion.
+async function isModeratorOnlyQuestions(topic) {
+  const slug = slugifyTopic(topic);
+  const result = await pool.query('SELECT moderator_only_questions FROM discussions WHERE slug = $1', [slug]);
+  return result.rows.length > 0 ? result.rows[0].moderator_only_questions === true : false;
+}
+
 // Confirm a question belongs to the given topic and report whether that
 // discussion is locked. Returns null when the question does not belong to the
 // topic, so callers can reject mismatched/forged questionIds. The join on
@@ -2617,7 +2583,11 @@ async function assignPseudonym(slug, userId, preferred, { regenerate = false } =
   console.warn(`Pseudonym pool exhausted for discussion ${discussionId}; falling back to a numbered handle`);
   const base = sanitizedPreferred || randomPseudonym();
   for (let n = 2; ; n++) {
-    const name = `${base} ${n}`.slice(0, MAX_PSEUDONYM_LENGTH);
+    // Trim the base so the suffix survives the length cap — otherwise a base
+    // already at MAX_PSEUDONYM_LENGTH would slice the " <n>" back off, producing
+    // the same taken string every iteration and looping forever without acking.
+    const suffix = ` ${n}`;
+    const name = `${base.slice(0, MAX_PSEUDONYM_LENGTH - suffix.length)}${suffix}`;
     const reserved = await reservePseudonym(discussionId, userId, name);
     if (reserved) return { pseudonym: reserved, reserved: true };
   }
@@ -2860,7 +2830,7 @@ app.get('/api/discussions', async (req, res) => {
   }
 });
 
-async function getDiscussionSummary(topic, options = {}) {
+async function getDiscussionSummary(topic) {
   const discussion = await getDiscussionBySlug(topic);
   if (!discussion) {
     return null;
@@ -2871,52 +2841,13 @@ async function getDiscussionSummary(topic, options = {}) {
   // collapse). buildFacilitatorDashboard re-keys to participant-N before any
   // of this reaches a client, so the raw ids never leave the server.
   const questions = await getQuestions(topic, { includeUserIds: true });
-  const writtenResponses = questions
-    .filter(question => question.type === 'Open Ended' || question.type === 'Brainstorm')
-    .flatMap(question => (question.votes || [])
-      .map(vote => ({
-        questionId: question.id,
-        questionText: question.text,
-        questionType: question.type,
-        pseudonym: vote.pseudonym || 'Anonymous',
-        value: String(parseStoredVoteValue(vote.value) || '').trim(),
-      }))
-      .filter(response => response.value !== ''));
 
-  let synthesis = buildDeterministicSynthesis(writtenResponses);
-  if (options.llm) {
-    if (
-      writtenResponses.length > 0 &&
-      (process.env.ENABLE_LLM_SYNTHESIS !== 'true' || !process.env.OPENAI_API_KEY)
-    ) {
-      synthesis = {
-        ...synthesis,
-        llmError: 'LLM synthesis is not configured, so the deterministic summary is shown.',
-      };
-    } else {
-      try {
-        const llmSynthesis = await buildLlmSynthesis(writtenResponses);
-        if (llmSynthesis) {
-          synthesis = llmSynthesis;
-        }
-      } catch (error) {
-        console.error('Error generating LLM synthesis:', error);
-        synthesis = {
-          ...synthesis,
-          llmError: 'LLM synthesis was unavailable, so the deterministic summary is shown.',
-        };
-      }
-    }
-  }
-
-  return buildSummary(discussion, questions, synthesis);
+  return buildSummary(discussion, questions);
 }
 
 app.get('/api/discussions/:topic/summary', async (req, res) => {
   try {
-    const summary = await getDiscussionSummary(req.params.topic, {
-      llm: req.query.synthesis === 'llm',
-    });
+    const summary = await getDiscussionSummary(req.params.topic);
 
     if (!summary) {
       return res.status(404).json({ error: 'Discussion not found' });
@@ -3072,7 +3003,7 @@ app.post('/api/duplicate-discussion', async (req, res) => {
     // preserves whether reactions/comments were enabled (and reactions
     // revealed) rather than silently resetting them to the defaults.
     const originalDiscussionResult = await client.query(
-      'SELECT id, reactions_enabled, reactions_visible, comments_enabled FROM discussions WHERE slug = $1',
+      'SELECT id, reactions_enabled, reactions_visible, comments_enabled, theme FROM discussions WHERE slug = $1',
       [slugifyTopic(originalTopic)]
     );
 
@@ -3106,14 +3037,15 @@ app.post('/api/duplicate-discussion', async (req, res) => {
     for (let suffix = 1; suffix <= 1000; suffix += 1) {
       const newSlug = suffixSlug(baseNewSlug, suffix);
       const newDiscussionResult = await client.query(
-        `INSERT INTO discussions (topic, slug, admin_token, reactions_enabled, reactions_visible, comments_enabled)
-         VALUES ($1, $2, $3, $4, $5, $6)
+        `INSERT INTO discussions (topic, slug, admin_token, reactions_enabled, reactions_visible, comments_enabled, theme)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
          ON CONFLICT (slug) DO NOTHING
          RETURNING id, topic, slug`,
         [displayNewTopic, newSlug, newAdminToken,
           originalDiscussion.reactions_enabled,
           originalDiscussion.reactions_visible,
-          originalDiscussion.comments_enabled]
+          originalDiscussion.comments_enabled,
+          originalDiscussion.theme]
       );
 
       if (newDiscussionResult.rows.length > 0) {
