@@ -3424,6 +3424,7 @@ app.get('/api/discussions/:topic/snapshots', async (req, res) => {
 
 app.post('/api/discussions/:topic/snapshots', async (req, res) => {
   let client;
+  let releaseError;
   try {
     const discussionId = await verifyAdmin(req.params.topic, req.body?.adminToken);
     if (!discussionId) return res.status(403).json({ error: 'Only a moderator can save a snapshot.' });
@@ -3467,11 +3468,18 @@ app.post('/api/discussions/:topic/snapshots', async (req, res) => {
     await client.query('COMMIT');
     res.status(201).json(saved.rows[0]);
   } catch (err) {
-    if (client) await client.query('ROLLBACK');
+    if (client) {
+      try {
+        await client.query('ROLLBACK');
+      } catch (rollbackErr) {
+        console.error('Error rolling back opinion snapshot transaction:', rollbackErr);
+        releaseError = rollbackErr;
+      }
+    }
     console.error('Error saving opinion snapshot:', err);
     res.status(500).json({ error: 'Could not save the opinion snapshot. Try again.' });
   } finally {
-    if (client) client.release();
+    if (client) client.release(releaseError);
   }
 });
 
