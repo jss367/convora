@@ -15,6 +15,7 @@ import {
     MAX_CUSTOM_NAME_LENGTH,
 } from './identity';
 import { slugifyTopic } from './slugs';
+import OpinionSnapshots from './OpinionSnapshots';
 
 const VERSION = '0.1.8';
 console.log('Convora version:', VERSION);
@@ -183,6 +184,7 @@ const DiscussionPage = () => {
     const [showDuplicateModal, setShowDuplicateModal] = useState(false);
     const [showShareModal, setShowShareModal] = useState(false);
     const [showActionsMenu, setShowActionsMenu] = useState(false);
+    const [showSnapshots, setShowSnapshots] = useState(false);
     const [presence, setPresence] = useState(0);
     const [copied, setCopied] = useState(false);
     const [shortShareUrl, setShortShareUrl] = useState('');
@@ -1610,6 +1612,15 @@ const DiscussionPage = () => {
                 >
                     View Summary
                 </Link>
+                <button
+                    type="button"
+                    onClick={() => setShowSnapshots(open => !open)}
+                    aria-expanded={showSnapshots}
+                    aria-controls="opinion-snapshots"
+                    className="border border-gray-300 text-gray-700 py-2 px-4 rounded hover:bg-gray-100 transition duration-300"
+                >
+                    Opinion Snapshots
+                </button>
                 {showClusters && (
                     <Link
                         to={`/discussion/${encodeURIComponent(topic)}/clusters`}
@@ -1672,6 +1683,8 @@ const DiscussionPage = () => {
                     )}
                 </div>
             </div>
+
+            {showSnapshots && <OpinionSnapshots key={discussionSlug} discussionSlug={discussionSlug} adminToken={adminToken} />}
 
             {/* Duplicate Modal */}
             {showDuplicateModal && (

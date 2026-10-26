@@ -35,3 +35,16 @@ CREATE TABLE IF NOT EXISTS votes (
   user_id     TEXT,
   created_at  TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Immutable aggregates: snapshots survive later vote updates and question edits
+-- or deletions without retaining participant identities or individual answers.
+CREATE TABLE IF NOT EXISTS opinion_snapshots (
+  id            SERIAL PRIMARY KEY,
+  discussion_id INTEGER NOT NULL REFERENCES discussions(id) ON DELETE CASCADE,
+  name          TEXT NOT NULL,
+  created_at    TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  data          JSONB NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS opinion_snapshots_discussion_idx
+  ON opinion_snapshots (discussion_id, id);
