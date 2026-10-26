@@ -60,6 +60,121 @@ test('server startup creates schema and applies the pseudonym migration', async 
   assert.deepEqual(columns.rows.map((row) => row.column_name), ['short_code', 'pseudonym']);
 });
 
+test('opinion snapshots enforce moderator access and validate names and question types', async () => {
+  const created = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('snapshot-auth') });
+  const other = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('snapshot-other') });
+  const { slug, adminToken } = created.body;
+  const url = `/api/discussions/${slug}/snapshots`;
+  assert.deepEqual((await jsonRequest('GET', url)).body, { snapshots: [] });
+  for (const token of [undefined, 'invalid', other.body.adminToken]) {
+    assert.equal((await jsonRequest('POST', url, { name: 'Before', adminToken: token })).status, 403);
+  }
+  for (const name of ['', '  ', 'x'.repeat(121), 42, {}]) {
+    assert.equal((await jsonRequest('POST', url, { name, adminToken })).status, 400);
+  }
+  assert.equal((await jsonRequest('POST', url, { name: 'Before', adminToken })).status, 400);
+  await pool.query("INSERT INTO questions (discussion_id, text, type) VALUES ($1, 'Ideas', 'Brainstorm')", [created.body.id]);
+  assert.equal((await jsonRequest('POST', url, { name: 'Before', adminToken })).status, 400);
+  assert.equal((await jsonRequest('GET', '/api/discussions/nonexistent-snapshot-discussion/snapshots')).status, 404);
+  assert.deepEqual((await jsonRequest('GET', `/api/discussions/${other.body.slug}/snapshots`)).body, { snapshots: [] });
+});
+
+test('snapshots preserve probabilities and opinion distributions across updates, edits, deletion, and restart', async () => {
+  const created = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('snapshot-lifecycle') });
+  const { id, slug, adminToken } = created.body;
+  const url = `/api/discussions/${slug}/snapshots`;
+  const questions = await pool.query(
+    `INSERT INTO questions (discussion_id, text, type, min_value, max_value) VALUES
+      ($1, 'Probability of success (%)?', 'Numerical', 0, 100),
+      ($1, 'We should proceed', 'Agreement', NULL, NULL),
+      ($1, 'Proceed?', 'Yes/No', NULL, NULL),
+      ($1, 'Why?', 'Open Ended', NULL, NULL)
+     RETURNING id`, [id]
+  );
+  const [numerical, agreement, yesNo, written] = questions.rows.map(q => q.id);
+  await pool.query(
+    `INSERT INTO votes (question_id, value, user_id, pseudonym) VALUES
+      ($1, '30', 'private-snapshot-user-a', 'Private Snapshot Name'),
+      ($1, '50', 'private-snapshot-user-b', NULL),
+      ($2, 'Agree', 'private-snapshot-user-a', NULL),
+      ($2, 'Disagree', 'private-snapshot-user-b', NULL),
+      ($3, 'Yes', 'private-snapshot-user-a', NULL),
+      ($3, 'No', 'private-snapshot-user-b', NULL),
+      ($4, 'private-written-answer', 'private-snapshot-user-a', NULL)`,
+    [numerical, agreement, yesNo, written]
+  );
+  const firstResponse = await jsonRequest('POST', url, { name: ' Before discussion ', adminToken });
+  assert.equal(firstResponse.status, 201);
+  const first = firstResponse.body;
+  assert.equal(first.name, 'Before discussion');
+  assert.ok(Number.isFinite(Date.parse(first.createdAt)));
+  assert.equal(first.data.participantCount, 2);
+  assert.equal(first.data.questions.length, 3);
+  const initialProbability = first.data.questions.find(q => q.id === numerical);
+  assert.equal(initialProbability.average, 40);
+  assert.equal(initialProbability.responseCount, 2);
+  assert.deepEqual(initialProbability.distribution.map(bin => bin.count), [0, 0, 0, 1, 0, 1, 0, 0, 0, 0]);
+  assert.deepEqual(first.data.questions.find(q => q.id === agreement).optionCounts,
+    { 'Strongly Disagree': 0, Disagree: 1, Unsure: 0, Agree: 1, 'Strongly Agree': 0 });
+  assert.deepEqual(first.data.questions.find(q => q.id === yesNo).optionCounts, { No: 1, Yes: 1 });
+  assert.doesNotMatch(JSON.stringify(first), /private-snapshot|Private Snapshot Name|private-written-answer|user_id|userId|ownerToken|adminToken/);
+
+  const voter = await connectSocket();
+  try {
+    const updated = waitForQuestions(voter, qs => qs.some(q => q.id === numerical && q.votes.some(v => v.value === '70')), 'updated probability');
+    voter.emit('joinDiscussion', slug);
+    voter.emit('vote', slug, numerical, 70, 'private-snapshot-user-a', '');
+    await updated;
+  } finally {
+    voter.disconnect();
+  }
+  await pool.query("UPDATE votes SET value = 'Strongly Agree' WHERE question_id = $1 AND value = 'Disagree'", [agreement]);
+  const second = (await jsonRequest('POST', url, { name: 'After discussion', adminToken })).body;
+  assert.equal(second.data.questions.find(q => q.id === numerical).average, 60);
+  assert.equal(second.data.questions.find(q => q.id === agreement).optionCounts['Strongly Agree'], 1);
+  assert.ok(second.id > first.id);
+  assert.deepEqual((await jsonRequest('GET', url)).body.snapshots, [first, second]);
+
+  await pool.query("UPDATE questions SET text = 'Edited question', max_value = 200 WHERE id = $1", [numerical]);
+  await pool.query('DELETE FROM votes WHERE question_id = $1', [yesNo]);
+  await pool.query('DELETE FROM questions WHERE id = $1', [yesNo]);
+  await stopServer();
+  await startServer();
+  assert.deepEqual((await jsonRequest('GET', url)).body.snapshots, [first, second]);
+  assert.deepEqual((await jsonRequest('GET', `/api/discussions/${slug}/summary`)).body.questions.find(q => q.id === numerical).text, 'Edited question');
+});
+
+test('snapshots support empty responses, numerical bounds, locked rooms, and promoted moderators', async () => {
+  const created = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('snapshot-boundaries') });
+  const { id, slug, adminToken } = created.body;
+  const url = `/api/discussions/${slug}/snapshots`;
+  const added = await pool.query(
+    "INSERT INTO questions (discussion_id, text, type, min_value, max_value) VALUES ($1, 'Probability?', 'Numerical', 0, 100) RETURNING id", [id]
+  );
+  const questionId = added.rows[0].id;
+  const empty = (await jsonRequest('POST', url, { name: 'No responses yet', adminToken })).body;
+  assert.equal(empty.data.participantCount, 0);
+  assert.equal(empty.data.questions[0].average, null);
+  assert.equal(empty.data.questions[0].responseCount, 0);
+  assert.equal(empty.data.questions[0].distribution.reduce((sum, bin) => sum + bin.count, 0), 0);
+  await pool.query(
+    "INSERT INTO votes (question_id, value, user_id) VALUES ($1, '0', 'a'), ($1, '100', 'b'), ($1, 'invalid legacy value', 'c')", [questionId]
+  );
+  await pool.query('UPDATE discussions SET locked = TRUE WHERE id = $1', [id]);
+  const token = crypto.randomBytes(16).toString('hex');
+  await pool.query('INSERT INTO discussion_moderators (discussion_id, user_id, token) VALUES ($1, $2, $3)', [id, 'promoted-user', token]);
+  const saved = await jsonRequest('POST', url, { name: 'Final opinions', adminToken: token });
+  assert.equal(saved.status, 201);
+  const probability = saved.body.data.questions[0];
+  assert.equal(probability.average, 50);
+  assert.equal(probability.responseCount, 2);
+  assert.equal(saved.body.data.participantCount, 2);
+  assert.equal(probability.distribution[0].count, 1);
+  assert.equal(probability.distribution[9].count, 1);
+  await pool.query('DELETE FROM discussion_moderators WHERE token = $1', [token]);
+  assert.equal((await jsonRequest('POST', url, { name: 'Revoked moderator', adminToken: token })).status, 403);
+});
+
 test('HTTP API creates and fetches discussions', async () => {
   const topic = uniqueTopic('http');
   const createResponse = await jsonRequest('POST', '/api/discussions', { topic });

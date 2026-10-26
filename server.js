@@ -8,6 +8,7 @@ const path = require('path');
 const crypto = require('crypto');
 const cors = require('cors');
 const { analyzeClusters } = require('./clustering');
+const { buildOpinionSnapshot, OPINION_TYPES } = require('./opinion-snapshots');
 
 const app = express();
 const server = http.createServer(app);
@@ -3404,6 +3405,75 @@ async function getDiscussionSummary(topic) {
 
   return buildSummary(discussion, questions);
 }
+
+app.get('/api/discussions/:topic/snapshots', async (req, res) => {
+  try {
+    const discussion = await getDiscussionBySlug(req.params.topic);
+    if (!discussion) return res.status(404).json({ error: 'Discussion not found' });
+    const result = await pool.query(
+      `SELECT id, name, created_at AS "createdAt", data
+       FROM opinion_snapshots WHERE discussion_id = $1 ORDER BY id`,
+      [discussion.id]
+    );
+    res.json({ snapshots: result.rows });
+  } catch (err) {
+    console.error('Error loading opinion snapshots:', err);
+    res.status(500).json({ error: 'Could not load opinion snapshots.' });
+  }
+});
+
+app.post('/api/discussions/:topic/snapshots', async (req, res) => {
+  let client;
+  try {
+    const discussionId = await verifyAdmin(req.params.topic, req.body?.adminToken);
+    if (!discussionId) return res.status(403).json({ error: 'Only a moderator can save a snapshot.' });
+    const name = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
+    if (!name || name.length > 120) {
+      return res.status(400).json({ error: 'Enter a snapshot name of 1–120 characters.' });
+    }
+
+    client = await pool.connect();
+    // Both reads see one consistent database state, even while participants are
+    // voting. Saving never closes voting or changes anyone's current response.
+    await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ');
+    const questions = await client.query(
+      `SELECT id, text, type, min_value, max_value FROM questions
+       WHERE discussion_id = $1 AND type = ANY($2::text[]) ORDER BY id`,
+      [discussionId, OPINION_TYPES]
+    );
+    if (!questions.rows.length) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Add a numerical, agreement, or yes/no question before saving a snapshot.' });
+    }
+    const votes = await client.query(
+      `SELECT v.id, v.question_id, v.value, v.user_id FROM votes v
+       JOIN questions q ON q.id = v.question_id
+       WHERE q.discussion_id = $1 AND q.type = ANY($2::text[])`,
+      [discussionId, OPINION_TYPES]
+    );
+    const votesByQuestion = new Map();
+    votes.rows.forEach(vote => {
+      if (!votesByQuestion.has(vote.question_id)) votesByQuestion.set(vote.question_id, []);
+      votesByQuestion.get(vote.question_id).push(vote);
+    });
+    const data = buildOpinionSnapshot(questions.rows.map(question => ({
+      ...question, votes: votesByQuestion.get(question.id) || [],
+    })));
+    const saved = await client.query(
+      `INSERT INTO opinion_snapshots (discussion_id, name, data) VALUES ($1, $2, $3)
+       RETURNING id, name, created_at AS "createdAt", data`,
+      [discussionId, name, JSON.stringify(data)]
+    );
+    await client.query('COMMIT');
+    res.status(201).json(saved.rows[0]);
+  } catch (err) {
+    if (client) await client.query('ROLLBACK');
+    console.error('Error saving opinion snapshot:', err);
+    res.status(500).json({ error: 'Could not save the opinion snapshot. Try again.' });
+  } finally {
+    if (client) client.release();
+  }
+});
 
 app.get('/api/discussions/:topic/summary', async (req, res) => {
   try {

@@ -7,6 +7,25 @@ You can create a discussion, which generates its own URL. For example, if the ap
 
 From there, users can submit questions and people can vote on how much they agree with them. For example, someone could say, "The biggest risk of AI is through AI weapons" and each person can vote that they strongly agree, agree, are unsure, disagree, or strongly disagree. The app would show the aggregates. That way you could find which statement most people disagree with.
 
+## Compare opinions before and after discussion
+
+Open **Opinion Snapshots** in a discussion. A moderator can save named snapshots
+such as “Before discussion” and “After discussion.” For probability estimates,
+create a **Numerical** question with a minimum of **0** and maximum of **100**.
+Collect initial answers, save the first snapshot, then invite people to update
+their answers after discussing and save the second snapshot.
+
+Choose an earlier and later snapshot to compare response counts, distributions,
+and numerical averages. Agreement and yes/no questions are included too. Everyone
+can view the saved results; only moderators can save snapshots, including after
+voting closes. Use **Refresh** to load snapshots saved by another moderator.
+
+Snapshots preserve aggregate results even when answers are updated or questions
+are edited or deleted. They do not retain participant identities or individual
+answer histories. Comparisons describe the group at each point in time;
+participants may differ between snapshots. Questions with changed wording,
+types, or scales are flagged and shown separately.
+
 
 ## Tech notes:
 
