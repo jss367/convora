@@ -3,6 +3,10 @@ const crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
 const net = require('node:net');
 const path = require('node:path');
+const { readFile } = require('node:fs/promises');
+const vm = require('node:vm');
+const React = require('react');
+const { renderToStaticMarkup } = require('react-dom/server');
 const { test } = require('node:test');
 const { once } = require('node:events');
 const { Pool } = require('pg');
@@ -142,6 +146,62 @@ test('snapshots preserve probabilities and opinion distributions across updates,
   await startServer();
   assert.deepEqual((await jsonRequest('GET', url)).body.snapshots, [first, second]);
   assert.deepEqual((await jsonRequest('GET', `/api/discussions/${slug}/summary`)).body.questions.find(q => q.id === numerical).text, 'Edited question');
+});
+
+test('persisted categorical snapshots render ordered labels, zero counts, and aligned before/after values', async () => {
+  const { transformWithEsbuild } = await import('vite');
+  const componentPath = path.join(rootDir, 'client/src/OpinionSnapshots.jsx');
+  const source = await readFile(componentPath, 'utf8');
+  const transformed = await transformWithEsbuild(source, componentPath, { loader: 'jsx', format: 'cjs' });
+  const componentModule = { exports: {} };
+  const loadComponent = vm.runInThisContext(`(function(require, module, exports) { ${transformed.code}\n})`, { filename: componentPath });
+  loadComponent(require, componentModule, componentModule.exports);
+  const { QuestionComparison } = componentModule.exports;
+
+  const created = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('snapshot-display') });
+  const { id, slug, adminToken } = created.body;
+  const url = `/api/discussions/${slug}/snapshots`;
+  const cases = [
+    { type: 'Agreement', labels: ['Strongly Disagree', 'Disagree', 'Unsure', 'Agree', 'Strongly Agree'], before: [1, 0, 1, 0, 2], after: [0, 2, 0, 1, 1] },
+    { type: 'Yes/No', labels: ['No', 'Yes'], before: [1, 0], after: [0, 2] },
+  ];
+  for (const item of cases) {
+    const added = await pool.query('INSERT INTO questions (discussion_id, text, type) VALUES ($1, $2, $3) RETURNING id', [id, `Saved ${item.type} opinions`, item.type]);
+    item.id = added.rows[0].id;
+  }
+  const setResponses = async phase => {
+    for (const item of cases) {
+      await pool.query('DELETE FROM votes WHERE question_id = $1', [item.id]);
+      let user = 0;
+      for (let option = 0; option < item.labels.length; option += 1) {
+        for (let count = 0; count < item[phase][option]; count += 1) {
+          await pool.query('INSERT INTO votes (question_id, value, user_id) VALUES ($1, $2, $3)', [item.id, item.labels[option], `display-user-${user++}`]);
+        }
+      }
+    }
+  };
+  await setResponses('before');
+  assert.equal((await jsonRequest('POST', url, { name: 'Before', adminToken })).status, 201);
+  await setResponses('after');
+  assert.equal((await jsonRequest('POST', url, { name: 'After', adminToken })).status, 201);
+  const { snapshots: [before, after] } = (await jsonRequest('GET', url)).body;
+
+  for (const item of cases) {
+    const earlier = before.data.questions.find(q => q.id === item.id);
+    const later = after.data.questions.find(q => q.id === item.id);
+    if (item.type === 'Agreement') assert.notDeepEqual(Object.keys(earlier.optionCounts), item.labels, 'JSONB has reordered the stored keys');
+    const html = renderToStaticMarkup(React.createElement(QuestionComparison, {
+      before: earlier, after: later, comparing: true, beforeName: before.name, afterName: after.name,
+    }));
+    const rows = [...html.matchAll(/<tbody>([\s\S]*?)<\/tbody>/g)]
+      .flatMap(body => [...body[1].matchAll(/<tr>([\s\S]*?)<\/tr>/g)])
+      .map(row => ({
+        label: row[1].match(/<th scope="row"[^>]*>([^<]*)<\/th>/)[1],
+        counts: [...row[1].matchAll(/<td\b[^>]*>([\s\S]*?)<\/td>/g)]
+          .map(cell => Number(cell[1].replace(/<[^>]+>/g, '').match(/^(\d+) /)[1])),
+      }));
+    assert.deepEqual(rows, item.labels.map((label, index) => ({ label, counts: [item.before[index], item.after[index]] })));
+  }
 });
 
 test('snapshots support empty responses, numerical bounds, locked rooms, and promoted moderators', async () => {

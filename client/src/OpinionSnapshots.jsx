@@ -3,11 +3,16 @@ import React, { useEffect, useState } from 'react';
 
 const formatNumber = value => value == null ? '—' : Number(value.toFixed(1)).toLocaleString();
 const formatDate = value => new Date(value).toLocaleString();
+const OPINION_OPTIONS = {
+    Agreement: ['Strongly Disagree', 'Disagree', 'Unsure', 'Agree', 'Strongly Agree'],
+    'Yes/No': ['No', 'Yes'],
+};
 
 function distributionRows(question) {
     if (!question) return [];
     if (question.type !== 'Numerical') {
-        return Object.entries(question.optionCounts).map(([label, count]) => ({ label, count }));
+        // JSONB does not preserve object-key order; use the semantic scale.
+        return OPINION_OPTIONS[question.type].map(label => ({ label, count: question.optionCounts[label] || 0 }));
     }
     return question.distribution.map((bin, index, bins) => ({
         label: `${formatNumber(bin.min)} to ${index < bins.length - 1 ? '<' : ''}${formatNumber(bin.max)}`,
@@ -29,7 +34,7 @@ function DistributionCell({ count, total, color }) {
 }
 DistributionCell.propTypes = { count: PropTypes.number, total: PropTypes.number, color: PropTypes.string.isRequired };
 
-function QuestionComparison({ before, after, comparing, beforeName, afterName }) {
+export function QuestionComparison({ before, after, comparing, beforeName, afterName }) {
     const question = after || before;
     const changed = before && after && (before.text !== after.text || before.type !== after.type
         || before.minValue !== after.minValue || before.maxValue !== after.maxValue);
