@@ -8,9 +8,12 @@ The frontend is React and the backend is Node.js.
 
 `votes.js` owns transactional response writes, including serialization of
 simultaneous poll submissions from the same participant. Brainstorm ideas
-remain separate responses. `client/src/OpenEndedQuestion.jsx` owns the written
-answer editor. `logging.js` keeps raw database errors and their potentially
-sensitive details out of server logs.
+remain separate responses. `question-data.js` owns question validation and stored
+value parsing, and `reports.js` builds discussion summaries and printable reports
+without database or HTTP access. `client/src/questions/` contains the question
+editor, answer components, result charts, and their shared display configuration;
+`DiscussionPage.jsx` coordinates discussion state and socket events. `logging.js`
+keeps raw database errors and their potentially sensitive details out of server logs.
 
 ## Running the Application Locally
 

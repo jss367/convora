@@ -1,7 +1,6 @@
-const OPTIONS = {
-  Agreement: ['Strongly Disagree', 'Disagree', 'Unsure', 'Agree', 'Strongly Agree'],
-  'Yes/No': ['No', 'Yes'],
-};
+const { AGREEMENT_OPTIONS, YES_NO_OPTIONS } = require('./question-data');
+
+const OPTIONS = { Agreement: AGREEMENT_OPTIONS, 'Yes/No': YES_NO_OPTIONS };
 const OPINION_TYPES = ['Numerical', ...Object.keys(OPTIONS)];
 
 // Only aggregates leave this function. Never persist names, user ids, vote ids,
