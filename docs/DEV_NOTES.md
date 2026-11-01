@@ -12,8 +12,15 @@ remain separate responses. `question-data.js` owns question validation and store
 value parsing, and `reports.js` builds discussion summaries and printable reports
 without database or HTTP access. `client/src/questions/` contains the question
 editor, answer components, result charts, and their shared display configuration;
-`DiscussionPage.jsx` coordinates discussion state and socket events. `logging.js`
-keeps raw database errors and their potentially sensitive details out of server logs.
+`DiscussionPage.jsx` coordinates discussion state and user actions. Its connection
+and room subscriptions live in `client/src/hooks/useDiscussionRoom.js`; participant
+identity and ownership live in `useParticipantIdentity.js`, and moderator token
+adoption, verification, and revocation live in `useModeratorAccess.js`.
+`database.js` applies the schema and startup migrations before the server listens,
+preserving their required order and independent parallel group; `discussion-names.js`
+shares canonical slug and display-title rules between migrations and live requests.
+`logging.js` keeps raw database errors and their potentially sensitive details out
+of server logs.
 
 ## Running the Application Locally
 
@@ -128,6 +135,11 @@ between two isolated browser sessions. It uses the same disposable-database
 guard as the integration tests and cleans up the discussion it creates. Run
 the integration and browser suites sequentially when sharing a test database.
 GitHub Actions runs all checks on Node 20.15 and the latest Node 20 release.
+
+Connection tests interrupt a real proxied WebSocket, navigate between duplicated
+discussions and browser history entries, and grant/revoke moderator access live.
+The integration suite also checks legacy interaction-flag upgrades and verifies
+that restarting initialization preserves subsequent moderator settings.
 
 The default test harness uses a separate Docker Compose project and port
 (`convora-test`, `54330`) from the dev database (`54329`). Set `KEEP_TEST_DB=1`
