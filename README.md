@@ -57,11 +57,18 @@ Run static checks and the browser regression test:
 ```bash
 npm run lint
 npx playwright install chromium
-# Use a disposable local database whose name ends in _test.
+# Start and test the disposable database, keeping it for the browser suite.
+KEEP_TEST_DB=1 npm test
 DATABASE_URL=postgresql://convora:convora@127.0.0.1:54330/convora_test npm run test:browser
+# Remove only the test project's containers and volumes when finished.
+COMPOSE_PROJECT_NAME=convora-test POSTGRES_DB=convora_test POSTGRES_PORT=54330 docker compose down -v --remove-orphans
 ```
 
-The browser command builds the client and starts an isolated test server.
+These commands use the test harness defaults: project `convora-test`, database
+`convora_test`, and port `54330`; the development database uses port `54329`.
+`KEEP_TEST_DB=1` retains the test database after successful or failed integration
+runs, so run the cleanup command even if a test fails. The browser command builds
+the client and starts an isolated test server.
 
 GitHub Actions runs lint, the production build, PostgreSQL integration tests,
 and Chromium interaction tests on Node 20.15 and the latest Node 20 release.

@@ -115,7 +115,9 @@ Run lint with `npm run lint`. For browser tests, install Chromium once with
 `npx playwright install chromium`, then run:
 
 ```bash
+KEEP_TEST_DB=1 npm test
 DATABASE_URL=postgresql://convora:convora@127.0.0.1:54330/convora_test npm run test:browser
+COMPOSE_PROJECT_NAME=convora-test POSTGRES_DB=convora_test POSTGRES_PORT=54330 docker compose down -v --remove-orphans
 ```
 
 The browser suite builds the client, starts its own server on port 4173, and exercises live updates
@@ -126,7 +128,10 @@ GitHub Actions runs all checks on Node 20.15 and the latest Node 20 release.
 
 The default test harness uses a separate Docker Compose project and port
 (`convora-test`, `54330`) from the dev database (`54329`). Set `KEEP_TEST_DB=1`
-to leave the test database running after a failed run. Because the tests truncate
+to leave the test database running after a successful or failed run. The browser
+sequence above uses those defaults and explicitly removes only the test project's
+containers and volumes afterward; run that cleanup even if a test fails.
+Because the tests truncate
 tables between cases, they refuse to run unless `DATABASE_URL` points at a
 localhost database whose name ends with `_test`; set `ALLOW_NON_TEST_DATABASE=1`
 only for a disposable nonstandard test database.
