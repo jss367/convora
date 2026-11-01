@@ -15,9 +15,11 @@
         "dev:db:down": "docker compose down",
         "build": "cd client && vite build",
         "test": "npm run test:integration",
-        "test:node": "node --test tests/integration.test.js",
+        "test:node": "node --test tests/*.test.js",
         "test:integration": "scripts/test-integration.sh",
-        "heroku-postbuild": "npm install && cd client && npm install && npx vite build"
+        "heroku-postbuild": "npm install && cd client && npm install && npx vite build",
+        "lint": "eslint . --max-warnings 0",
+        "test:browser": "playwright test"
     },
     "keywords": [
         "discussion",
@@ -47,6 +49,7 @@
     "devDependencies": {
         "@eslint/compat": "^1.1.1",
         "@eslint/js": "^9.6.0",
+        "@playwright/test": "^1.64.1",
         "eslint": "^8.57.0",
         "eslint-plugin-react": "^7.34.3",
         "globals": "^15.8.0",

@@ -5,7 +5,7 @@ import { fixupConfigRules } from "@eslint/compat";
 
 
 export default [
-  { ignores: ["dist/**", "node_modules/**"] },
+  { ignores: ["dist/**", "node_modules/**", ".context/**", "test-results/**", "playwright-report/**"] },
   {files: ["**/*.{js,mjs,cjs,jsx}"]},
   { languageOptions: { parserOptions: { ecmaFeatures: { jsx: true } } } },
   {languageOptions: { globals: {...globals.browser, ...globals.node} }},

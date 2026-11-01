@@ -11,6 +11,8 @@ const { test } = require('node:test');
 const { once } = require('node:events');
 const { Pool } = require('pg');
 const { io } = require('socket.io-client');
+const { createVoteStore } = require('../votes');
+const { assertSafeTestDatabase } = require('../scripts/test-database');
 
 const rootDir = path.resolve(__dirname, '..');
 const databaseUrl = process.env.DATABASE_URL || 'postgresql://convora:convora@127.0.0.1:54330/convora_test';
@@ -249,6 +251,150 @@ test('HTTP API creates and fetches discussions', async () => {
   const fetchResponse = await jsonRequest('GET', `/api/discussions/${createResponse.body.id}`);
   assert.equal(fetchResponse.status, 200);
   assert.equal(fetchResponse.body.topic, topic);
+});
+
+for (const { type, value, expected, equivalentIds } of [
+  { type: 'Numerical', value: '42', expected: 1 },
+  { type: 'Numerical', value: '42', expected: 1, equivalentIds: true },
+  { type: 'Open Ended', value: 'An answer', expected: 1 },
+  { type: 'Agreement', value: 'Agree', expected: 0 },
+  { type: 'Yes/No', value: 'Yes', expected: 0 },
+  { type: 'Brainstorm', value: 'An idea', expected: 10 },
+]) {
+  test(`concurrent ${type} submissions${equivalentIds ? ' with equivalent IDs' : ''} preserve response and toggle semantics`, async () => {
+    const created = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('concurrent-votes') });
+    const question = await pool.query(
+      'INSERT INTO questions (discussion_id, text, type) VALUES ($1, $2, $3) RETURNING id',
+      [created.body.id, 'Concurrent answers', type]
+    );
+    const questionId = question.rows[0].id;
+    const applicationName = uniqueTopic('vote-race');
+    const writers = new Pool({ connectionString: databaseUrl, max: 10, application_name: applicationName });
+    const { addVote } = createVoteStore(writers);
+    const blocker = await pool.connect();
+    let submissions = [];
+    try {
+      // Hold inserts until all ten writers are waiting. Without serialization,
+      // each writer reads an absent vote and then inserts its own duplicate.
+      await blocker.query('BEGIN');
+      await blocker.query('LOCK TABLE votes IN SHARE MODE');
+      const ids = equivalentIds ? [questionId, `00${questionId}`, `+${questionId}`] : [questionId];
+      submissions = Array.from({ length: 10 }, (_, index) => addVote(ids[index % ids.length], value, 'same-user', null));
+      const deadline = Date.now() + 5000;
+      let allWaiting = false;
+      while (Date.now() < deadline) {
+        const waiting = await pool.query(
+          `SELECT count(*)::int AS count FROM pg_stat_activity
+           WHERE application_name = $1 AND wait_event_type = 'Lock'`, [applicationName]
+        );
+        if (waiting.rows[0].count === 10) {
+          allWaiting = true;
+          break;
+        }
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+      assert.ok(allWaiting, 'Concurrent vote writers did not reach the lock');
+      await blocker.query('COMMIT');
+      await Promise.all(submissions);
+      const stored = await pool.query('SELECT value FROM votes WHERE question_id = $1', [questionId]);
+      assert.equal(stored.rows.length, expected);
+      assert.ok(stored.rows.every(row => row.value === value));
+    } finally {
+      await blocker.query('ROLLBACK');
+      blocker.release();
+      await Promise.allSettled(submissions);
+      await writers.end();
+    }
+  });
+}
+
+test('updating a poll repairs legacy duplicates without removing brainstorm ideas', async () => {
+  const created = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('legacy-duplicates') });
+  const questions = await pool.query(
+    `INSERT INTO questions (discussion_id, text, type) VALUES
+     ($1, 'Estimate', 'Numerical'), ($1, 'Ideas', 'Brainstorm') RETURNING id`, [created.body.id]
+  );
+  const [poll, brainstorm] = questions.rows.map(row => row.id);
+  await pool.query(
+    `INSERT INTO votes (question_id, user_id, value) VALUES
+     ($1, 'same-user', '1'), ($1, 'same-user', '2'), ($1, 'other-user', '3'),
+     ($2, 'same-user', 'Idea one'), ($2, 'same-user', 'Idea two')`, [poll, brainstorm]
+  );
+  await createVoteStore(pool).addVote(poll, '4', 'same-user', null);
+  const stored = await pool.query('SELECT value FROM votes WHERE question_id = $1 ORDER BY value', [poll]);
+  assert.deepEqual(stored.rows.map(row => row.value), ['3', '4']);
+  assert.equal((await pool.query('SELECT count(*)::int AS count FROM votes WHERE question_id = $1', [brainstorm])).rows[0].count, 2);
+});
+
+for (const { type, first, second } of [
+  { type: 'Agreement', first: 'Agree', second: 'Disagree' },
+  { type: 'Yes/No', first: 'Yes', second: 'No' },
+]) {
+  test(`undoing the displayed ${type} vote clears divergent legacy duplicates`, async () => {
+    const created = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('legacy-undo') });
+    const questions = await pool.query(
+      `INSERT INTO questions (discussion_id, text, type) VALUES
+       ($1, 'Opinion', $2), ($1, 'Ideas', 'Brainstorm') RETURNING id`, [created.body.id, type]
+    );
+    const [poll, brainstorm] = questions.rows.map(row => row.id);
+    await pool.query(
+      `INSERT INTO votes (question_id, user_id, value) VALUES
+       ($1, 'same-user', $3), ($1, 'same-user', $4), ($1, 'other-user', $3),
+       ($2, 'same-user', 'Idea one'), ($2, 'same-user', 'Idea two')`, [poll, brainstorm, first, second]
+    );
+    const socket = await connectSocket();
+    try {
+      const joined = waitForQuestions(socket, qs => qs.length === 2, 'legacy duplicate votes');
+      socket.emit('joinDiscussion', created.body.slug);
+      const current = (await joined)[0].votes[0];
+      assert.equal(current.value, first, 'The client selects its first owned response as current');
+      const undone = waitForQuestions(socket, qs => qs[0]?.votes.length === 1, 'legacy vote undone');
+      socket.emit('vote', created.body.slug, poll, current.value, 'same-user', '');
+      await undone;
+      const remaining = await pool.query('SELECT user_id, value FROM votes WHERE question_id = $1', [poll]);
+      assert.deepEqual(remaining.rows, [{ user_id: 'other-user', value: first }]);
+      assert.equal((await pool.query('SELECT count(*)::int AS count FROM votes WHERE question_id = $1', [brainstorm])).rows[0].count, 2);
+    } finally {
+      socket.disconnect();
+    }
+  });
+}
+
+test('request and vote logs omit credentials, identities, and answer contents', async () => {
+  const created = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('private-logs') });
+  const { slug, adminToken } = created.body;
+  const socket = await connectSocket();
+  const privateId = crypto.randomBytes(16).toString('hex');
+  const privateName = 'Private Log Name';
+  const privateAnswer = 'private-answer-' + crypto.randomBytes(8).toString('hex');
+  try {
+    socket.emit('joinDiscussion', slug);
+    const added = waitForQuestions(socket, qs => qs.length === 1, 'private question');
+    socket.emit('addQuestion', slug, { text: 'Written answer', type: 'Open Ended' });
+    const question = (await added)[0];
+    const answered = waitForQuestions(socket, qs => qs[0]?.votes.length === 1, 'private answer');
+    socket.emit('vote', slug, question.id, privateAnswer, privateId, privateName);
+    await answered;
+    await jsonRequest('POST', `/api/discussions/${slug}/short-link`, { adminToken });
+    await jsonRequest('GET', `/api/discussions?admin=${adminToken}`);
+    // Exercise parser errors too: Express's default handler prints raw input.
+    const malformed = await fetch(`${baseUrl}/api/discussions`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: `{"secret":"${privateId}" invalid}`,
+    });
+    assert.equal(malformed.status, 400);
+    assert.deepEqual(await malformed.json(), { error: 'Invalid request' });
+    // Invalid integer input creates a PostgreSQL error whose detail contains
+    // the supplied value. It must keep a diagnostic code without the payload.
+    const failed = waitForEvent(socket, 'error');
+    socket.emit('vote', slug, privateAnswer, 'irrelevant', privateId, privateName);
+    await failed;
+    assert.match(serverOutput, /22P02/);
+    for (const secret of [adminToken, privateId, privateName, privateAnswer]) {
+      assert.equal(serverOutput.includes(secret), false, 'Sensitive value appeared in server logs');
+    }
+  } finally {
+    socket.disconnect();
+  }
 });
 
 test('HTTP API creates distinct discussions for colliding slugs', async () => {
@@ -677,7 +823,7 @@ test('client pure-JS SHA-256 fallback matches the server ownership-token hash', 
   // SHA-256 in insecure contexts (e.g. served over a plain http:// LAN IP via the
   // join-QR flow). The fallback MUST produce the same hex digest the server uses
   // for ownership tokens, or participants there can't recognize their own votes.
-  const { sha256Hex } = await import('../client/src/sha256.js');
+  const { sha256Hex } = await import('../client/src/sha256.mjs');
   const inputs = ['123:abcDEF', '42:café 🦦', 'x:y', '', 'a'.repeat(200), '9f3a:Mellow Otter'];
   for (const s of inputs) {
     const fallback = sha256Hex(new TextEncoder().encode(s));
@@ -691,9 +837,9 @@ test('participant handle formula matches between client and server', async () =>
   // the server's opaque handle: "participant-" + first 16 hex of sha256(userId).
   // The client computes it from the same sha256Hex this asserts against the
   // server hash, so they must agree — otherwise the self row fails open to
-  // showing its own controls again. (identity.js can't be imported directly here
-  // because of its extensionless ./sha256 import, so we re-derive the formula.)
-  const { sha256Hex } = await import('../client/src/sha256.js');
+  // showing its own controls again. The shared SHA module has an explicit .mjs
+  // extension so this check also works on older supported Node 20 releases.
+  const { sha256Hex } = await import('../client/src/sha256.mjs');
   const ids = ['user-1', 'guest-user-1', 'Z9f3a2b1c0d4e5f6', 'a'.repeat(80)];
   for (const id of ids) {
     const client = `participant-${sha256Hex(new TextEncoder().encode(String(id))).slice(0, 16)}`;
@@ -2178,7 +2324,7 @@ test('Duplicating a discussion preserves brainstorm interaction flags', async ()
   try {
     mod.emit('joinDiscussion', topic);
     const token = await claimModerator(mod, topic);
-    const question = await addBrainstormQuestion(mod, topic, 'Carry flags');
+    await addBrainstormQuestion(mod, topic, 'Carry flags');
 
     // Enable reactions but hide them, and enable comments — all non-default.
     const flaggedUpdate = waitForQuestions(
@@ -2919,21 +3065,4 @@ function collectServerOutput(chunk) {
 
 function uniqueTopic(prefix) {
   return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-}
-
-function assertSafeTestDatabase(connectionString) {
-  if (process.env.ALLOW_NON_TEST_DATABASE === '1') {
-    return;
-  }
-
-  const url = new URL(connectionString);
-  const databaseName = url.pathname.replace(/^\//, '');
-  const localHosts = new Set(['localhost', '127.0.0.1', '[::1]']);
-
-  if (!localHosts.has(url.hostname) || !databaseName.endsWith('_test')) {
-    throw new Error(
-      `Refusing to run destructive integration tests against ${url.hostname}/${databaseName}. ` +
-      'Use a localhost database whose name ends with "_test", or set ALLOW_NON_TEST_DATABASE=1 for a disposable database.'
-    );
-  }
 }

@@ -16,9 +16,7 @@ import {
 } from './identity';
 import { slugifyTopic } from './slugs';
 import OpinionSnapshots from './OpinionSnapshots';
-
-const VERSION = '0.1.8';
-console.log('Convora version:', VERSION);
+import OpenEndedQuestion from './OpenEndedQuestion';
 
 // Color themes a moderator can apply to a discussion. Keys and the palettes
 // they map to are defined in client/src/index.css ([data-theme] blocks) and
@@ -918,7 +916,6 @@ const DiscussionPage = () => {
     };
 
     const handleQuestionsUpdate = useCallback((updatedQuestions) => {
-        console.log('Received updated questions:', updatedQuestions);
         setQuestions(prevQuestions => {
             // The server always emits a full snapshot of the discussion's
             // questions, so we rebuild the list from the incoming set. Building
@@ -948,7 +945,6 @@ const DiscussionPage = () => {
                         maxValue: q.type === QuestionTypes.NUMERICAL ? parseInt(q.maxValue) : undefined
                     });
                 }
-                console.log('Updated question:', nextMap.get(q.id));
             });
             return Array.from(nextMap.values());
         });
@@ -1012,7 +1008,6 @@ const DiscussionPage = () => {
 
     useEffect(() => {
         if (topic !== discussionSlug) return undefined;
-        console.log('Current topic:', discussionSlug);
         // Re-join on every (re)connect, not just on mount. When a socket drops
         // and Socket.IO reconnects (routine on mobile / sleeping tabs), the
         // server sees a brand-new socket that belongs to no room — so without
@@ -1135,8 +1130,6 @@ const DiscussionPage = () => {
     }, [topic, userId]);
 
     const handleAddQuestion = () => {
-        console.log('Inside handleAddQuestion');
-
         // Check if question text is empty
         if (newQuestion.trim() === '') {
             console.error('Failed to add question: Question text is empty.');
@@ -1160,10 +1153,8 @@ const DiscussionPage = () => {
             }
             question.minValue = parseInt(minValue);
             question.maxValue = parseInt(maxValue);
-            console.log('Adding numerical question with min:', question.minValue, 'max:', question.maxValue);
         }
 
-        console.log('Adding question:', question);
         submitQuestion(question, false);
     };
 
@@ -1199,7 +1190,6 @@ const DiscussionPage = () => {
     };
 
     const handleVote = (questionId, value) => {
-        console.log('Voting:', questionId, value);
         // Send the name mode too: in pseudonym mode the server persists our
         // reserved handle instead of this possibly-pre-reservation displayName,
         // closing the submit-before-reservation collision window (#57). We send the
@@ -1211,7 +1201,6 @@ const DiscussionPage = () => {
     // Brainstorm answers are individual rows, so they're removed by vote id
     // (a participant can only delete their own).
     const handleDeleteVote = (questionId, voteId) => {
-        console.log('Deleting vote:', questionId, voteId);
         socket.emit('deleteVote', discussionSlug, voteId, userId);
     };
 
@@ -1336,7 +1325,7 @@ const DiscussionPage = () => {
         const userVote = question.votes ? question.votes.find(v => isMyVote(question, v)) : null;
 
         if (!question || typeof question !== 'object') {
-            console.error('Invalid question object:', question);
+            console.error('Invalid question object');
             return null;
         }
 
@@ -1394,11 +1383,9 @@ const DiscussionPage = () => {
                     </div>
                 );
             case QuestionTypes.NUMERICAL: {
-                // console.log("Question:", question)
                 const minValue = parseInt(question.minValue || question.min_value) || 0;
                 const maxValue = parseInt(question.maxValue || question.max_value) || 100;
                 const defaultValue = Math.floor((minValue + maxValue) / 2);
-                // console.log("Question:", question.id, "min:", minValue, "max:", maxValue, "default:", defaultValue);
 
                 const sliderValue = sliderValues[question.id] !== undefined
                     ? sliderValues[question.id]
@@ -2368,124 +2355,6 @@ QuestionEditor.propTypes = {
     onCancel: PropTypes.func.isRequired,
 };
 
-const OpenEndedQuestion = ({ question, userVote, handleVote, ownedVoteIds, upvotedVoteIds, handleResponseVote, locked, isAdmin, onModeratorDeleteVote }) => {
-    const [response, setResponse] = useState(userVote ? userVote.value : '');
-
-    useEffect(() => {
-        setResponse(userVote ? userVote.value : '');
-    }, [userVote]);
-
-    // Most-upvoted responses first; ties keep submission order (vote id).
-    const sortedResponses = [...(question.votes || [])].sort(
-        (a, b) => (b.upvotes || 0) - (a.upvotes || 0) || a.id - b.id
-    );
-
-    return (
-        <div>
-            {!locked && (
-                <>
-                    <textarea
-                        value={response}
-                        onChange={(e) => setResponse(e.target.value)}
-                        className="w-full p-2 border rounded mb-2"
-                        rows="4"
-                        placeholder="Enter your response here"
-                    />
-                    <button
-                        onClick={() => {
-                            const trimmed = response.trim();
-                            if (trimmed === '') {
-                                return;
-                            }
-                            console.log('Submitting open-ended response:', trimmed);
-                            handleVote(question.id, trimmed);
-                        }}
-                        disabled={response.trim() === ''}
-                        className="px-4 py-2 bg-primary text-white rounded hover:bg-opacity-90 transition duration-300 mb-4 disabled:opacity-50"
-                    >
-                        {userVote ? 'Update Response' : 'Submit Response'}
-                    </button>
-                </>
-            )}
-
-            {question.votes && question.votes.length > 0 && (
-                <div className="mt-4">
-                    <h3 className="font-semibold mb-2">All Responses:</h3>
-                    <ul className="space-y-2">
-                        {sortedResponses.map((vote) => {
-                            // Ownership is matched via the per-response token
-                            // (the server no longer sends raw user ids); the
-                            // parent precomputes the set of ids we own/upvoted.
-                            const isOwnResponse = ownedVoteIds.has(vote.id);
-                            const isYou = isOwnResponse;
-                            const upvotes = vote.upvotes || 0;
-                            const hasUpvoted = upvotedVoteIds.has(vote.id);
-                            return (
-                                <li key={vote.id} className="bg-gray-50 rounded-md p-3 flex items-start gap-3">
-                                    <button
-                                        onClick={() => handleResponseVote(vote.id)}
-                                        disabled={isOwnResponse || locked}
-                                        title={isOwnResponse ? "You can't upvote your own response" : 'Upvote'}
-                                        className={`flex flex-col items-center justify-center px-2 py-1 rounded-md border transition duration-200 ${hasUpvoted
-                                            ? 'bg-primary text-white border-primary'
-                                            : 'bg-white text-gray-600 border-gray-300 hover:border-primary'
-                                            } ${(isOwnResponse || locked) ? 'opacity-40 cursor-not-allowed' : ''}`}
-                                    >
-                                        <span className="leading-none">▲</span>
-                                        <span className="text-xs font-semibold">{upvotes}</span>
-                                    </button>
-                                    <div className="flex-1">
-                                        <div className="flex items-start justify-between gap-2">
-                                            <div className="text-xs font-semibold text-gray-500 mb-1">
-                                                {vote.pseudonym || 'Anonymous'}
-                                                {isYou && ' (you)'}
-                                            </div>
-                                            {isAdmin && (
-                                                <button
-                                                    onClick={() => onModeratorDeleteVote(question.id, vote.id)}
-                                                    title="Remove this response (moderator)"
-                                                    className="text-xs text-red-500 hover:text-red-700 shrink-0"
-                                                >
-                                                    Remove
-                                                </button>
-                                            )}
-                                        </div>
-                                        <div className="text-gray-800 whitespace-pre-wrap">{vote.value}</div>
-                                    </div>
-                                </li>
-                            );
-                        })}
-                    </ul>
-                </div>
-            )}
-        </div>
-    );
-};
-
-OpenEndedQuestion.propTypes = {
-    question: PropTypes.shape({
-        id: PropTypes.oneOfType([PropTypes.string, PropTypes.number]).isRequired,
-        votes: PropTypes.arrayOf(PropTypes.shape({
-            ownerToken: PropTypes.string,
-            value: PropTypes.string.isRequired,
-            pseudonym: PropTypes.string,
-            upvotes: PropTypes.number,
-            upvoterTokens: PropTypes.array
-        }))
-    }).isRequired,
-    userVote: PropTypes.shape({
-        ownerToken: PropTypes.string,
-        value: PropTypes.string
-    }),
-    handleVote: PropTypes.func.isRequired,
-    ownedVoteIds: PropTypes.instanceOf(Set).isRequired,
-    upvotedVoteIds: PropTypes.instanceOf(Set).isRequired,
-    handleResponseVote: PropTypes.func.isRequired,
-    locked: PropTypes.bool,
-    isAdmin: PropTypes.bool,
-    onModeratorDeleteVote: PropTypes.func
-};
-
 // Stacked divergence bar + summary for an Agreement question. Shows at a glance
 // how opinion splits, and labels the statement as consensus or divisive.
 const AgreementResults = ({ question }) => {
@@ -2865,7 +2734,6 @@ const BrainstormQuestion = ({
         if (idea.trim() === '') {
             return;
         }
-        console.log('Submitting brainstorm idea:', idea);
         handleVote(question.id, idea.trim());
         setIdea('');
     };

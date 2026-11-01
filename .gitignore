@@ -3,3 +3,6 @@
 .env
 /dist
 /.claude/worktrees
+/.context
+/test-results
+/playwright-report
