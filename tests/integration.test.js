@@ -253,14 +253,15 @@ test('HTTP API creates and fetches discussions', async () => {
   assert.equal(fetchResponse.body.topic, topic);
 });
 
-for (const { type, value, expected } of [
+for (const { type, value, expected, equivalentIds } of [
   { type: 'Numerical', value: '42', expected: 1 },
+  { type: 'Numerical', value: '42', expected: 1, equivalentIds: true },
   { type: 'Open Ended', value: 'An answer', expected: 1 },
   { type: 'Agreement', value: 'Agree', expected: 0 },
   { type: 'Yes/No', value: 'Yes', expected: 0 },
   { type: 'Brainstorm', value: 'An idea', expected: 10 },
 ]) {
-  test(`concurrent ${type} submissions preserve response and toggle semantics`, async () => {
+  test(`concurrent ${type} submissions${equivalentIds ? ' with equivalent IDs' : ''} preserve response and toggle semantics`, async () => {
     const created = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('concurrent-votes') });
     const question = await pool.query(
       'INSERT INTO questions (discussion_id, text, type) VALUES ($1, $2, $3) RETURNING id',
@@ -277,7 +278,8 @@ for (const { type, value, expected } of [
       // each writer reads an absent vote and then inserts its own duplicate.
       await blocker.query('BEGIN');
       await blocker.query('LOCK TABLE votes IN SHARE MODE');
-      submissions = Array.from({ length: 10 }, () => addVote(questionId, value, 'same-user', null));
+      const ids = equivalentIds ? [questionId, `00${questionId}`, `+${questionId}`] : [questionId];
+      submissions = Array.from({ length: 10 }, (_, index) => addVote(ids[index % ids.length], value, 'same-user', null));
       const deadline = Date.now() + 5000;
       let allWaiting = false;
       while (Date.now() < deadline) {
@@ -323,6 +325,40 @@ test('updating a poll repairs legacy duplicates without removing brainstorm idea
   assert.deepEqual(stored.rows.map(row => row.value), ['3', '4']);
   assert.equal((await pool.query('SELECT count(*)::int AS count FROM votes WHERE question_id = $1', [brainstorm])).rows[0].count, 2);
 });
+
+for (const { type, first, second } of [
+  { type: 'Agreement', first: 'Agree', second: 'Disagree' },
+  { type: 'Yes/No', first: 'Yes', second: 'No' },
+]) {
+  test(`undoing the displayed ${type} vote clears divergent legacy duplicates`, async () => {
+    const created = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('legacy-undo') });
+    const questions = await pool.query(
+      `INSERT INTO questions (discussion_id, text, type) VALUES
+       ($1, 'Opinion', $2), ($1, 'Ideas', 'Brainstorm') RETURNING id`, [created.body.id, type]
+    );
+    const [poll, brainstorm] = questions.rows.map(row => row.id);
+    await pool.query(
+      `INSERT INTO votes (question_id, user_id, value) VALUES
+       ($1, 'same-user', $3), ($1, 'same-user', $4), ($1, 'other-user', $3),
+       ($2, 'same-user', 'Idea one'), ($2, 'same-user', 'Idea two')`, [poll, brainstorm, first, second]
+    );
+    const socket = await connectSocket();
+    try {
+      const joined = waitForQuestions(socket, qs => qs.length === 2, 'legacy duplicate votes');
+      socket.emit('joinDiscussion', created.body.slug);
+      const current = (await joined)[0].votes[0];
+      assert.equal(current.value, first, 'The client selects its first owned response as current');
+      const undone = waitForQuestions(socket, qs => qs[0]?.votes.length === 1, 'legacy vote undone');
+      socket.emit('vote', created.body.slug, poll, current.value, 'same-user', '');
+      await undone;
+      const remaining = await pool.query('SELECT user_id, value FROM votes WHERE question_id = $1', [poll]);
+      assert.deepEqual(remaining.rows, [{ user_id: 'other-user', value: first }]);
+      assert.equal((await pool.query('SELECT count(*)::int AS count FROM votes WHERE question_id = $1', [brainstorm])).rows[0].count, 2);
+    } finally {
+      socket.disconnect();
+    }
+  });
+}
 
 test('request and vote logs omit credentials, identities, and answer contents', async () => {
   const created = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('private-logs') });

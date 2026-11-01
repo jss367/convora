@@ -6,9 +6,13 @@ function createVoteStore(pool) {
     let releaseError;
     try {
       await client.query('BEGIN');
-      const typeResult = await client.query('SELECT type FROM questions WHERE id = $1', [questionId]);
-      const questionType = typeResult.rows[0]?.type;
-      if (!questionType) throw new Error('Question not found');
+      const typeResult = await client.query('SELECT id, type FROM questions WHERE id = $1', [questionId]);
+      const question = typeResult.rows[0];
+      if (!question) throw new Error('Question not found');
+      // PostgreSQL accepts equivalent integer spellings such as 1, '01', '+1'.
+      // All must use the same lock key, not the caller's unnormalized value.
+      questionId = question.id;
+      const questionType = question.type;
 
       if (questionType === 'Brainstorm') {
         // Each idea is an independent response, including simultaneous ideas
@@ -25,12 +29,14 @@ function createVoteStore(pool) {
           `poll_vote:${questionId}:${userId}`,
         ]);
         const existing = await client.query(
-          'SELECT id, value FROM votes WHERE question_id = $1 AND user_id = $2 ORDER BY id DESC',
+          'SELECT id, value FROM votes WHERE question_id = $1 AND user_id = $2 ORDER BY id',
           [questionId, userId]
         );
         const current = existing.rows[0];
         // Repair duplicates left by older versions when this participant next
-        // answers. Keep the latest response and leave Brainstorm ideas alone.
+        // answers. Keep the first owned response, matching the client's current
+        // answer in getQuestions' ascending-ID list, so Undo toggles that answer.
+        // Brainstorm ideas are independent and never go through this repair.
         if (existing.rows.length > 1) {
           await client.query(
             'DELETE FROM votes WHERE question_id = $1 AND user_id = $2 AND id <> $3',
