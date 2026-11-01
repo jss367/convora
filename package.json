@@ -15,7 +15,7 @@
         "dev:db:down": "docker compose down",
         "build": "cd client && vite build",
         "test": "npm run test:integration",
-        "test:node": "node --test tests/integration.test.js",
+        "test:node": "node --test tests/*.test.js",
         "test:integration": "scripts/test-integration.sh",
         "heroku-postbuild": "npm install && cd client && npm install && npx vite build",
         "lint": "eslint . --max-warnings 0",
