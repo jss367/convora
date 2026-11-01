@@ -1,14 +1,29 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import PropTypes from 'prop-types';
 
 const OpenEndedQuestion = ({ question, userVote, handleVote, ownedVoteIds, upvotedVoteIds, handleResponseVote, locked, isAdmin, onModeratorDeleteVote }) => {
     const savedResponse = userVote?.value ?? '';
     const [response, setResponse] = useState(savedResponse);
+    const previousSaved = useRef({ questionId: question.id, value: savedResponse });
+    const submitted = useRef(null);
 
     // Socket broadcasts recreate vote objects even when this answer is unchanged.
-    // Only a changed saved answer or question should replace the local draft.
+    // A delayed save can also arrive after the participant has started a newer
+    // edit. Adopt remote changes only while clean or acknowledging that exact draft.
     useEffect(() => {
-        setResponse(savedResponse);
+        const previous = previousSaved.current;
+        const pending = submitted.current;
+        setResponse(current => {
+            if (previous.questionId !== question.id || current === previous.value
+                || (pending?.value === savedResponse && current === pending.draft)) {
+                return savedResponse;
+            }
+            return current;
+        });
+        if (previous.questionId !== question.id || pending?.value === savedResponse) {
+            submitted.current = null;
+        }
+        previousSaved.current = { questionId: question.id, value: savedResponse };
     }, [question.id, savedResponse]);
 
     // Most-upvoted responses first; ties keep submission order (vote id).
@@ -33,6 +48,7 @@ const OpenEndedQuestion = ({ question, userVote, handleVote, ownedVoteIds, upvot
                             if (trimmed === '') {
                                 return;
                             }
+                            submitted.current = { draft: response, value: trimmed };
                             handleVote(question.id, trimmed);
                         }}
                         disabled={response.trim() === ''}
