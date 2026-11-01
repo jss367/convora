@@ -1,18 +1,10 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import io from 'socket.io-client';
 import { QRCodeSVG } from 'qrcode.react';
-import {
-    getIdentity,
-    setNameMode,
-    setCustomName,
-    getDisplayName,
-    getEffectiveNameMode,
-    ownerToken,
-    participantHandle,
-    NameModes,
-    MAX_CUSTOM_NAME_LENGTH,
-} from './identity';
+import { getEffectiveNameMode, NameModes, MAX_CUSTOM_NAME_LENGTH } from './identity';
+import { useDiscussionSocket, useDiscussionRoom } from './hooks/useDiscussionRoom';
+import { useParticipantIdentity } from './hooks/useParticipantIdentity';
+import { useModeratorAccess } from './hooks/useModeratorAccess';
 import { slugifyTopic } from './slugs';
 import OpinionSnapshots from './OpinionSnapshots';
 import OpenEndedQuestion from './questions/OpenEndedQuestion';
@@ -62,25 +54,11 @@ const SortOptions = {
     MOST_CONTROVERSIAL: 'Most Controversial',
 };
 
-// In production the client is served by the same server it talks to, so we
-// default to a same-origin connection. Set VITE_SOCKET_URL only when the
-// client runs on a different origin than the API (e.g. `vite` dev server).
-// Use import.meta.env (Vite's mechanism) rather than process.env: `process` is
-// not defined in the browser, so an unreplaced process.env.* reference throws
-// at module load and blanks the page.
-const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || undefined;
-
-const socket = io(SOCKET_URL);
-
 const DiscussionPage = () => {
     const { topic } = useParams();
     const navigate = useNavigate();
     const discussionSlug = slugifyTopic(topic);
-    // Always-current slug, so async socket acks fired in one discussion can tell
-    // they've come back after the user navigated to a different one and bail out
-    // instead of writing the old room's handle into the new room's state.
-    const discussionSlugRef = useRef(discussionSlug);
-    discussionSlugRef.current = discussionSlug;
+    const socket = useDiscussionSocket();
     const [discussion, setDiscussion] = useState(null);
     const [questions, setQuestions] = useState([]);
     const [newQuestion, setNewQuestion] = useState('');
@@ -90,29 +68,6 @@ const DiscussionPage = () => {
     const [sliderValues, setSliderValues] = useState({});
     const [sortOption, setSortOption] = useState(SortOptions.MOST_RECENT);
     const [showUnansweredOnly, setShowUnansweredOnly] = useState(false);
-    const [identity, setIdentity] = useState(null);
-    // Always-current identity, so an async ack fired under one name mode can tell
-    // the user has since switched modes/name and avoid clobbering that newer choice.
-    const identityRef = useRef(identity);
-    identityRef.current = identity;
-    // The handle the server reserved for THIS discussion (unique within it). Null
-    // until the server responds, before which we show the local pseudonym as a
-    // preview. May differ from identity.pseudonym when the local pick collided.
-    const [assignedPseudonym, setAssignedPseudonym] = useState(null);
-    // Whether assignedPseudonym is an actual server-side reservation (vs. a
-    // preview handed back before the discussion row existed). We only stop asking
-    // once it's truly reserved — otherwise a shuffle before the first question
-    // could leave this user's handle un-inserted and free to collide later.
-    const [pseudonymReserved, setPseudonymReserved] = useState(false);
-    // A shuffle is in flight. We never allow more than one reservation-mutating
-    // request outstanding: the async server handlers can finish out of order, so
-    // overlapping shuffles (or a shuffle racing the initial reservation) could
-    // leave the client showing a handle the DB never reserved. The ref guards
-    // re-entry synchronously (defeats same-render double-clicks); the state just
-    // disables the button. Shuffle is only offered once the handle is reserved,
-    // so it can never overlap the idempotent initial request.
-    const shufflePendingRef = useRef(false);
-    const [shufflePending, setShufflePending] = useState(false);
     const [editingIdentity, setEditingIdentity] = useState(false);
     const [error, setError] = useState(null);
     const [newTopicName, setNewTopicName] = useState('');
@@ -131,11 +86,6 @@ const DiscussionPage = () => {
     const [shortLinkError, setShortLinkError] = useState('');
     const [shortLinkLoading, setShortLinkLoading] = useState(false);
     const [shortLinkCopied, setShortLinkCopied] = useState(false);
-    const [adminToken, setAdminToken] = useState(null);
-    // Mirror of adminToken readable inside async callbacks, so an in-flight
-    // checkModerator ack can tell whether the token it verified is still current.
-    const adminTokenRef = useRef(adminToken);
-    useEffect(() => { adminTokenRef.current = adminToken; }, [adminToken]);
     const [discussionState, setDiscussionState] = useState({
         locked: false, moderatorOnly: false, hasModerator: false, theme: DEFAULT_THEME,
         reactionsEnabled: false, reactionsVisible: true, commentsEnabled: false,
@@ -151,11 +101,6 @@ const DiscussionPage = () => {
     const [showClusters, setShowClusters] = useState(false);
     const [participants, setParticipants] = useState([]);
     const [showParticipants, setShowParticipants] = useState(false);
-    // Whether this viewer is the creator (only the creator may remove moderators).
-    const [canDemote, setCanDemote] = useState(false);
-    // This browser's own participant handle, so we can hide promote/remove on our
-    // own row (acting on yourself tangles the creator's admin_token with a grant).
-    const [selfHandle, setSelfHandle] = useState(null);
     const [showJoinQr, setShowJoinQr] = useState(false);
     const [joinQrSize, setJoinQrSize] = useState(DEFAULT_JOIN_QR_SIZE);
     // Holds the in-flight resize drag (start pointer + start size + latest size)
@@ -166,6 +111,22 @@ const DiscussionPage = () => {
     // selections. Only this user mutates it, so optimistic updates are safe; we
     // fetch the authoritative copy once on join to survive reloads.
     const [myBrainstorm, setMyBrainstorm] = useState({ ratings: {}, reactions: {} });
+
+    const closeParticipants = useCallback(() => setShowParticipants(false), []);
+    const {
+        identity, userId, displayName, effectivePseudonym, pseudonymReserved,
+        shufflePending, selfHandle, ownedVoteIds, upvotedVoteIds, ownedCommentIds,
+        isMyVote, handlePseudonymSync, handleRegeneratePseudonym,
+        handleSelectNameMode, handleCustomNameChange,
+    } = useParticipantIdentity(socket, { topic, discussionSlug, discussionId: discussion?.id, questions });
+    const {
+        adminToken, setAdminToken, canDemote, setCanDemote,
+        handleModeratorGranted, handleModeratorRevoked,
+    } = useModeratorAccess(socket, {
+        topic, discussionSlug,
+        discussionTitle: discussion?.slug === discussionSlug ? discussion.topic : null,
+        onRevoked: closeParticipants,
+    });
 
     const isAdmin = !!adminToken;
     const { locked, moderatorOnly } = discussionState;
@@ -208,12 +169,6 @@ const DiscussionPage = () => {
     };
 
     useEffect(() => {
-        // getIdentity() persists a stable userId (so vote de-duplication survives
-        // reloads) together with the chosen display name, both in localStorage.
-        setIdentity(getIdentity());
-    }, []);
-
-    useEffect(() => {
         if (topic === discussionSlug) return undefined;
 
         let cancelled = false;
@@ -244,186 +199,6 @@ const DiscussionPage = () => {
             cancelled = true;
         };
     }, [topic, discussionSlug, navigate]);
-
-    // The stable id used for vote ownership, and the name shown to everyone else
-    // (derived from the chosen mode: pseudonym, anonymous, or a typed-in name).
-    const userId = identity?.userId || null;
-    // The pseudonym actually shown/sent in this discussion: the server-reserved
-    // one once we have it, otherwise the local pick as a preview.
-    const effectivePseudonym = assignedPseudonym || identity?.pseudonym || '';
-    const displayName = identity ? getDisplayName(identity, assignedPseudonym) : '';
-
-    // Compute our own participant handle so the moderator panel can hide the
-    // promote/remove controls on our own row.
-    useEffect(() => {
-        if (!userId) {
-            setSelfHandle(null);
-            return undefined;
-        }
-        let cancelled = false;
-        participantHandle(userId).then((handle) => {
-            if (!cancelled) setSelfHandle(handle);
-        });
-        return () => { cancelled = true; };
-    }, [userId]);
-
-    // The server no longer broadcasts raw user ids — each vote carries a
-    // per-response ownership token (sha256(voteId + ':' + userId)) instead, so
-    // socket observers can't correlate one browser's responses across prompts,
-    // nor group one anonymous participant's separate ideas within a single
-    // Brainstorm prompt (each idea is a distinct response with its own token).
-    // To recognize our OWN votes we recompute that token per response and keep
-    // the ids that match in Sets. The hash is async (Web Crypto), so during the
-    // brief gap before the effect populates them a vote simply won't match
-    // (treated as not-ours). ownedVoteIds: responses we authored. upvotedVoteIds:
-    // responses we've upvoted. Both keyed by the response (vote) id.
-    // ownedCommentIds: brainstorm comments we authored. Comments carry the same
-    // per-row ownership token (keyed by the comment id) as votes, so we recognize
-    // our own the same way — and can show their Delete button — without the
-    // server exposing who wrote what.
-    const [ownedVoteIds, setOwnedVoteIds] = useState(() => new Set());
-    const [upvotedVoteIds, setUpvotedVoteIds] = useState(() => new Set());
-    const [ownedCommentIds, setOwnedCommentIds] = useState(() => new Set());
-    useEffect(() => {
-        if (!userId) {
-            setOwnedVoteIds(new Set());
-            setUpvotedVoteIds(new Set());
-            setOwnedCommentIds(new Set());
-            return undefined;
-        }
-        let cancelled = false;
-        const compute = async () => {
-            const owned = new Set();
-            const upvoted = new Set();
-            const ownedComments = new Set();
-            const allVotes = (questions || []).flatMap(q =>
-                Array.isArray(q.votes) ? q.votes : []
-            );
-            await Promise.all(allVotes.map(async (vote) => {
-                if (vote == null || vote.id === undefined || vote.id === null) return;
-                const myToken = await ownerToken(vote.id, userId);
-                if (myToken) {
-                    if (vote.ownerToken === myToken) owned.add(vote.id);
-                    if (Array.isArray(vote.upvoterTokens) && vote.upvoterTokens.includes(myToken)) {
-                        upvoted.add(vote.id);
-                    }
-                }
-                await Promise.all((Array.isArray(vote.comments) ? vote.comments : []).map(async (c) => {
-                    if (c == null || c.id === undefined || c.id === null) return;
-                    // Namespaced to match the server (`comment:<id>`), so a comment
-                    // token can never equal a vote token of the same numeric id and
-                    // link an author to an otherwise-anonymous idea.
-                    const myCommentToken = await ownerToken(`comment:${c.id}`, userId);
-                    if (myCommentToken && c.ownerToken === myCommentToken) ownedComments.add(c.id);
-                }));
-            }));
-            if (!cancelled) {
-                setOwnedVoteIds(owned);
-                setUpvotedVoteIds(upvoted);
-                setOwnedCommentIds(ownedComments);
-            }
-        };
-        compute();
-        return () => { cancelled = true; };
-    }, [userId, questions]);
-
-    // True when `vote` belongs to this browser, matched via its per-response
-    // ownership token rather than a raw user id.
-    const isMyVote = useCallback((question, vote) => {
-        if (!vote || vote.id === undefined || vote.id === null) return false;
-        return ownedVoteIds.has(vote.id);
-    }, [ownedVoteIds]);
-
-    // Adopt the moderator token for this topic: an ?admin=<token> URL param
-    // (shared admin link) takes precedence and is then persisted and stripped
-    // from the URL; otherwise fall back to a previously stored token.
-    useEffect(() => {
-        if (topic !== discussionSlug) return;
-        const storageKey = `convora_admin_${discussionSlug}`;
-        try {
-            const params = new URLSearchParams(window.location.search);
-            const fromUrl = params.get('admin');
-            if (fromUrl) {
-                localStorage.setItem(storageKey, fromUrl);
-                setAdminToken(fromUrl);
-                params.delete('admin');
-                const query = params.toString();
-                window.history.replaceState({}, '', `${window.location.pathname}${query ? `?${query}` : ''}`);
-                return;
-            }
-
-            const legacyKeys = [
-                `convora_admin_${topic}`,
-                discussion?.topic ? `convora_admin_${discussion.topic}` : null,
-            ].filter(key => key && key !== storageKey);
-            const storedToken = localStorage.getItem(storageKey)
-                || legacyKeys.map(key => localStorage.getItem(key)).find(Boolean)
-                || null;
-            if (storedToken) {
-                localStorage.setItem(storageKey, storedToken);
-            }
-            setAdminToken(storedToken);
-        } catch (e) {
-            console.warn('Failed to read admin token:', e);
-        }
-    }, [discussion?.topic, discussionSlug, topic]);
-
-    // Validate any adopted moderator token with the server. A token revoked
-    // while this user was offline (so they never got moderatorRevoked) would
-    // otherwise keep rendering a dead moderator UI; here we drop it once the
-    // server confirms it no longer grants moderation. We only clear on a
-    // definitive isModerator:false — never on a transient error. Re-run on
-    // reconnect too (like the identify effect), so a demotion missed during a
-    // disconnect is caught when Socket.IO reconnects rather than lingering
-    // until a reload.
-    useEffect(() => {
-        if (!adminToken) return;
-        let cancelled = false;
-        const verify = () => {
-            // Remember which token this check is about. A re-promotion can deliver
-            // a fresh token (handleModeratorGranted) while this check is in flight;
-            // only clear if the token we verified is still the current one, so a
-            // stale "not a moderator" ack can't wipe the newly adopted token the
-            // server pushed only once.
-            const checked = adminToken;
-            socket.emit('checkModerator', discussionSlug, checked, (resp) => {
-                if (cancelled || !resp || !resp.ok) return;
-                if (adminTokenRef.current !== checked) return;
-                if (resp.isModerator === false) {
-                    try {
-                        localStorage.removeItem(`convora_admin_${discussionSlug}`);
-                    } catch (e) {
-                        console.warn('Failed to clear admin token:', e);
-                    }
-                    setAdminToken(null);
-                    return;
-                }
-                // Initialize canDemote from the token itself, not from opening the
-                // participant panel. Without this, a creator who never opened the
-                // panel keeps canDemote=false, and a moderatorGranted push (e.g. an
-                // admin-link holder promotes the creator's row) would overwrite the
-                // real creator token with a weaker per-user grant — locking the
-                // creator out of removing moderators after a reload.
-                setCanDemote(resp.isCreator === true);
-            });
-        };
-        verify();
-        socket.on('connect', verify);
-        return () => { cancelled = true; socket.off('connect', verify); };
-    }, [discussionSlug, adminToken]);
-
-    // Reset the creator flag whenever the discussion changes. This component is
-    // reused (not remounted) when navigating between /discussion/:topic routes —
-    // React Router keeps the same instance and only the topic param changes — so
-    // canDemote would otherwise carry over from a previous discussion. The verify
-    // effect above only updates canDemote when adminToken is set, so navigating to
-    // a discussion with no/invalid token would leave a stale canDemote=true; that
-    // would make handleModeratorGranted drop a legitimate one-time grant if this
-    // user is promoted in the new discussion. Clearing here lets verify() (or a
-    // participant-list response) re-establish the correct value for the new topic.
-    useEffect(() => {
-        setCanDemote(false);
-    }, [discussionSlug]);
 
     useEffect(() => {
         const key = 'convora_show_clusters';
@@ -556,66 +331,6 @@ const DiscussionPage = () => {
         window.addEventListener('resize', handleResize);
         return () => window.removeEventListener('resize', handleResize);
     }, [showJoinQr, discussionSlug]);
-
-    // Push a changed broadcast name to the server so it retroactively renames
-    // this browser's already-submitted responses (otherwise prior responses keep
-    // the old name; switching to anonymous wouldn't actually hide them).
-    const applyIdentity = (updatedIdentity) => {
-        setIdentity(updatedIdentity);
-        if (updatedIdentity?.userId) {
-            socket.emit('updateDisplayName', discussionSlug, updatedIdentity.userId, getDisplayName(updatedIdentity, assignedPseudonym));
-        }
-    };
-
-    // Shuffle goes through the server so the new handle is still unique within
-    // this discussion. The server reserves it; we adopt it and rename this
-    // browser's existing responses (only meaningful in pseudonym mode). Gated on
-    // an existing reservation and a not-already-pending shuffle so there is only
-    // ever one reservation-mutating request in flight — otherwise out-of-order
-    // acks could mark an unreserved handle as reserved.
-    const handleRegeneratePseudonym = () => {
-        if (!userId || !pseudonymReserved || shufflePendingRef.current) return;
-        const slugAtRequest = discussionSlug;
-        const prevAssigned = assignedPseudonym;
-        shufflePendingRef.current = true;
-        setShufflePending(true);
-        socket.emit('regeneratePseudonym', discussionSlug, userId, (resp) => {
-            // Bail if we've navigated to another discussion since asking, so a
-            // late ack can't overwrite the new room's handle with this one's. The
-            // slug-change reset already cleared shufflePendingRef, so just return.
-            if (discussionSlugRef.current !== slugAtRequest) return;
-            shufflePendingRef.current = false;
-            setShufflePending(false);
-            // The discussion exists (we were already reserved), so a real
-            // reservation is expected; ignore anything else defensively.
-            if (!resp?.pseudonym || !resp.reserved) return;
-            setAssignedPseudonym(resp.pseudonym);
-            // Rename existing responses only if the shuffle changes the name we
-            // actually show. Compare under the CURRENT identity, not the one
-            // captured at click: if the user switched to anonymous/custom while the
-            // shuffle was in flight, that newer choice (already pushed via
-            // updateDisplayName) must win — so a no-op comparison suppresses this
-            // late rename instead of dragging responses back to the pseudonym.
-            const liveIdentity = identityRef.current;
-            const before = getDisplayName(liveIdentity, prevAssigned);
-            const after = getDisplayName(liveIdentity, resp.pseudonym);
-            if (after !== before) {
-                socket.emit('updateDisplayName', discussionSlug, userId, after);
-            }
-        });
-    };
-
-    const handleSelectNameMode = (mode) => {
-        applyIdentity(setNameMode(mode));
-    };
-
-    const handleCustomNameChange = (name) => {
-        // Switch into custom mode as soon as the participant types so the live
-        // preview reflects what they're entering. setCustomName persists the
-        // text first; setNameMode then reads it back and flips the mode.
-        setCustomName(name);
-        applyIdentity(setNameMode(NameModes.CUSTOM));
-    };
 
     const handleClaimModerator = () => {
         socket.emit('claimModerator', discussionSlug, (resp) => {
@@ -891,96 +606,14 @@ const DiscussionPage = () => {
         });
     }, []);
 
-    // Adopt a moderator token the server pushes to us when this user is promoted.
-    // Persist it under the same per-slug key the create/share flows use so the
-    // controls light up immediately and survive reloads.
-    //
-    // Skip adoption only when WE are the creator (canDemote): the creator
-    // authenticates with the discussion's admin_token, and if they click "Make
-    // moderator" on their own participant row, the per-user grant pushed back
-    // would otherwise replace that admin_token — downgrading them so
-    // verifyCreator no longer recognizes them. Everyone else adopts the grant,
-    // overwriting any token they already hold — important because a re-promoted
-    // user may still have a stale, revoked token in localStorage that the
-    // checkModerator load check hasn't cleared yet; the fresh push is
-    // authoritative and must win, or they'd be left with no usable token.
-    const handleModeratorGranted = useCallback(({ token }) => {
-        if (!token || canDemote) return;
-        try {
-            localStorage.setItem(`convora_admin_${discussionSlug}`, token);
-        } catch (e) {
-            console.warn('Failed to store admin token:', e);
-        }
-        setAdminToken(token);
-    }, [discussionSlug, canDemote]);
-
-    // A moderator we were granted was revoked: drop the stored token so the
-    // controls disappear. (That token is already invalid server-side.)
-    //
-    // Skip this when WE are the creator (canDemote): our credential is the
-    // discussion's admin_token, not a per-user grant. If the creator self-promotes
-    // (creating a dangling per-user grant on their own row) and then removes it,
-    // the server emits moderatorRevoked to their socket too — but only the
-    // per-user grant was deleted; the admin_token is still valid, so clearing it
-    // would wrongly strip the creator's controls after a reload.
-    const handleModeratorRevoked = useCallback(() => {
-        if (canDemote) return;
-        try {
-            localStorage.removeItem(`convora_admin_${discussionSlug}`);
-        } catch (e) {
-            console.warn('Failed to clear admin token:', e);
-        }
-        setAdminToken(null);
-        setShowParticipants(false);
-    }, [discussionSlug, canDemote]);
-
-    // Another tab of ours shuffled, freeing our old handle; adopt the new one so
-    // this tab stops submitting under a handle someone else can now claim. The
-    // shuffling tab already renamed our existing responses, so we just update the
-    // live handle (the server only sends this to our own sockets).
-    const handlePseudonymSync = useCallback((payload) => {
-        if (!payload?.pseudonym) return;
-        // Ignore a sync for a discussion we've since navigated away from — its
-        // handle is reserved only in that room and must not be adopted here.
-        if (payload.slug && payload.slug !== discussionSlugRef.current) return;
-        setAssignedPseudonym(payload.pseudonym);
-        setPseudonymReserved(true);
-    }, []);
-
-    useEffect(() => {
-        if (topic !== discussionSlug) return undefined;
-        // Re-join on every (re)connect, not just on mount. When a socket drops
-        // and Socket.IO reconnects (routine on mobile / sleeping tabs), the
-        // server sees a brand-new socket that belongs to no room — so without
-        // this the client silently stops counting toward presence and stops
-        // receiving room updates. Mirrors the identify effect below, which
-        // already re-fires on 'connect' for the same reason.
-        const joinRoom = () => socket.emit('joinDiscussion', discussionSlug);
-        joinRoom();
-        socket.on('connect', joinRoom);
-        socket.on('discussion', setDiscussion);
-        socket.on('questions', handleQuestionsUpdate);
-        socket.on('presence', setPresence);
-        socket.on('discussionState', setDiscussionState);
-        socket.on('similarQuestion', setSimilarPrompt);
-        socket.on('moderatorGranted', handleModeratorGranted);
-        socket.on('pseudonymSync', handlePseudonymSync);
-        socket.on('moderatorRevoked', handleModeratorRevoked);
-        return () => {
-            // Leave the room so the server stops counting this client toward the
-            // discussion's presence once the page unmounts (e.g. navigating home).
-            socket.emit('leaveDiscussion', discussionSlug);
-            socket.off('connect', joinRoom);
-            socket.off('discussion', setDiscussion);
-            socket.off('questions', handleQuestionsUpdate);
-            socket.off('presence', setPresence);
-            socket.off('discussionState', setDiscussionState);
-            socket.off('similarQuestion', setSimilarPrompt);
-            socket.off('moderatorGranted', handleModeratorGranted);
-            socket.off('pseudonymSync', handlePseudonymSync);
-            socket.off('moderatorRevoked', handleModeratorRevoked);
-        };
-    }, [topic, discussionSlug, handleQuestionsUpdate, handleModeratorGranted, handlePseudonymSync, handleModeratorRevoked]);
+    useDiscussionRoom(socket, {
+        topic, discussionSlug, userId,
+        onDiscussion: setDiscussion, onQuestions: handleQuestionsUpdate,
+        onPresence: setPresence, onState: setDiscussionState,
+        onSimilarQuestion: setSimilarPrompt, onBrainstormState: setMyBrainstorm,
+        onModeratorGranted: handleModeratorGranted, onModeratorRevoked: handleModeratorRevoked,
+        onPseudonymSync: handlePseudonymSync,
+    });
 
     // Mirror the discussion's chosen theme onto <html data-theme="..."> so the
     // CSS-variable palette (index.css) recolors every primary/secondary class,
@@ -993,27 +626,6 @@ const DiscussionPage = () => {
         return () => root.removeAttribute('data-theme');
     }, [theme]);
 
-    // Tell the server which persistent user this socket is, so it can route
-    // moderator grants to us. Re-sent after any reconnect so a promoted user
-    // doesn't silently lose their controls on a network blip.
-    useEffect(() => {
-        if (!userId || topic !== discussionSlug) return undefined;
-        const identify = () => socket.emit('identify', discussionSlug, userId);
-        identify();
-        socket.on('connect', identify);
-        return () => socket.off('connect', identify);
-    }, [topic, discussionSlug, userId]);
-
-    // A reserved handle belongs to one discussion, so drop it when navigating to
-    // another one (the route param changes without remounting) — the effect
-    // below then re-reserves a name in the new discussion.
-    useEffect(() => {
-        setAssignedPseudonym(null);
-        setPseudonymReserved(false);
-        shufflePendingRef.current = false;
-        setShufflePending(false);
-    }, [discussionSlug]);
-
     // The rename editor is scoped to one discussion. This component is reused
     // across /discussion/:topic routes (only the param changes), so close any
     // open editor and clear its draft when the slug changes — otherwise a draft
@@ -1022,53 +634,6 @@ const DiscussionPage = () => {
         setEditingTitle(false);
         setTitleDraft('');
     }, [discussionSlug]);
-
-    // Ask the server for a handle that's unique within this discussion. We wait
-    // until the discussion exists (so there's a row to reserve against) and our
-    // identity has loaded (so we can propose our local pick). Keep asking until
-    // the server confirms a real reservation (not just a preview), and if it
-    // hands back a different handle because ours was taken, push it to any
-    // responses we've already submitted so they stop showing the colliding name.
-    useEffect(() => {
-        if (!identity || !userId || topic !== discussionSlug || !discussion?.id) return undefined;
-        if (pseudonymReserved) return undefined; // already reserved for this discussion
-        let cancelled = false;
-        const preferred = assignedPseudonym || identity.pseudonym || '';
-        socket.emit('requestPseudonym', discussionSlug, userId, preferred, (resp) => {
-            if (cancelled || !resp?.pseudonym) return;
-            setAssignedPseudonym(resp.pseudonym);
-            if (!resp.reserved) return; // only a preview; the effect will retry
-            setPseudonymReserved(true);
-            // If the reserved handle changes the name we'd actually show, rename
-            // any responses already submitted under the old one. Comparing the
-            // derived display name (not just the mode) also covers custom mode
-            // with a blank name — which falls back to the pseudonym — while
-            // correctly leaving a real custom name or anonymous untouched.
-            const before = getDisplayName(identity, preferred);
-            const after = getDisplayName(identity, resp.pseudonym);
-            if (after !== before) {
-                socket.emit('updateDisplayName', discussionSlug, userId, after);
-            }
-        });
-        return () => { cancelled = true; };
-    }, [identity, userId, topic, discussionSlug, discussion?.id, pseudonymReserved, assignedPseudonym]);
-
-    // Restore this user's own brainstorm ratings/reactions on join/reload. The
-    // server only ever returns the requesting user's own selections.
-    useEffect(() => {
-        if (!userId) return undefined;
-        // Guard the async ack: this component is reused across discussions, so a
-        // late reply for the previous topic must not overwrite the new topic's
-        // brainstorm state.
-        let cancelled = false;
-        socket.emit('getBrainstormState', topic, userId, (state) => {
-            if (cancelled) return;
-            if (state) {
-                setMyBrainstorm({ ratings: state.ratings || {}, reactions: state.reactions || {} });
-            }
-        });
-        return () => { cancelled = true; };
-    }, [topic, userId]);
 
     const handleAddQuestion = () => {
         // Check if question text is empty

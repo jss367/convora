@@ -1,6 +1,6 @@
 -- Convora database schema.
 --
--- Applied automatically on server startup (see initSchema in server.js), so a
+-- Applied automatically on server startup (see initializeDatabase in database.js), so a
 -- fresh/empty Postgres database is ready to use without any manual restore.
 -- Every statement is idempotent (IF NOT EXISTS), so it is safe to run on an
 -- already-populated database (e.g. one restored from latest.dump) too.

@@ -12,6 +12,7 @@ const { once } = require('node:events');
 const { Pool } = require('pg');
 const { io } = require('socket.io-client');
 const { createVoteStore } = require('../votes');
+const { initializeDatabase } = require('../database');
 const { assertSafeTestDatabase } = require('../scripts/test-database');
 
 const rootDir = path.resolve(__dirname, '..');
@@ -64,6 +65,42 @@ test('server startup creates schema and applies the pseudonym migration', async 
     ORDER BY table_name, column_name
   `);
   assert.deepEqual(columns.rows.map((row) => row.column_name), ['short_code', 'pseudonym']);
+});
+
+test('initialization upgrades legacy interaction flags once and preserves later moderator settings', async () => {
+  await stopServer();
+  try {
+    const created = await pool.query(
+      "INSERT INTO discussions (topic, slug, theme, locked) VALUES ('Legacy interactions', 'legacy-interactions', 'orange', TRUE) RETURNING id"
+    );
+    const discussionId = created.rows[0].id;
+    await pool.query(
+      `INSERT INTO questions (discussion_id, text, type, reactions_enabled, reactions_visible, comments_enabled)
+       VALUES ($1, 'Hidden ideas', 'Brainstorm', TRUE, FALSE, TRUE),
+              ($1, 'Other prompt', 'Agreement', FALSE, TRUE, FALSE)`, [discussionId]
+    );
+    await pool.query(`ALTER TABLE discussions DROP COLUMN reactions_enabled,
+      DROP COLUMN reactions_visible, DROP COLUMN comments_enabled`);
+    await initializeDatabase(pool);
+    const upgraded = await pool.query(
+      'SELECT reactions_enabled, reactions_visible, comments_enabled, theme, locked FROM discussions WHERE id = $1', [discussionId]
+    );
+    assert.deepEqual(upgraded.rows[0], {
+      reactions_enabled: true, reactions_visible: false, comments_enabled: true, theme: 'orange', locked: true,
+    });
+
+    await pool.query(`UPDATE discussions SET reactions_enabled = FALSE,
+      reactions_visible = TRUE, comments_enabled = FALSE WHERE id = $1`, [discussionId]);
+    await initializeDatabase(pool);
+    const restarted = await pool.query(
+      'SELECT reactions_enabled, reactions_visible, comments_enabled, theme, locked FROM discussions WHERE id = $1', [discussionId]
+    );
+    assert.deepEqual(restarted.rows[0], {
+      reactions_enabled: false, reactions_visible: true, comments_enabled: false, theme: 'orange', locked: true,
+    });
+  } finally {
+    await startServer();
+  }
 });
 
 test('opinion snapshots enforce moderator access and validate names and question types', async () => {
