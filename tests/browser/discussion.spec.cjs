@@ -99,3 +99,60 @@ for (const { initial, submitted, draft } of [
     }
   });
 }
+
+for (const whitespaceOnly of [false, true]) {
+  test(`an unchanged save${whitespaceOnly ? ' with surrounding whitespace' : ''} does not block updates from another tab`, async ({ page, context, request }) => {
+    const response = await request.post('/api/discussions', {
+      data: { topic: `Unchanged answer ${Date.now()}` },
+    });
+    expect(response.ok()).toBeTruthy();
+    const discussion = await response.json();
+    const pool = new Pool({
+      connectionString: process.env.DATABASE_URL || 'postgresql://convora:convora@127.0.0.1:54330/convora_test',
+    });
+    let upgraded = false;
+    let broadcasts = 0;
+    page.on('websocket', socket => {
+      socket.on('framesent', event => { if (event.payload === '5') upgraded = true; });
+      socket.on('framereceived', event => {
+        if (typeof event.payload === 'string' && event.payload.startsWith('42["questions",')) broadcasts += 1;
+      });
+    });
+    const other = await context.newPage();
+    try {
+      await pool.query(
+        "INSERT INTO questions (discussion_id, text, type) VALUES ($1, 'Explain your answer', 'Open Ended')",
+        [discussion.id]
+      );
+      await page.goto(`/discussion/${discussion.slug}`);
+      const answer = page.getByPlaceholder('Enter your response here');
+      await answer.fill('Original answer');
+      await page.getByRole('button', { name: 'Submit Response', exact: true }).click();
+      await expect(page.getByRole('button', { name: 'Update Response', exact: true })).toBeVisible();
+      await expect.poll(() => upgraded).toBe(true);
+
+      if (whitespaceOnly) await answer.fill('  Original answer  ');
+      const beforeSave = broadcasts;
+      await page.getByRole('button', { name: 'Update Response', exact: true }).click();
+      // Wait for the same-value acknowledgment itself, not unchanged DOM text.
+      await expect.poll(() => broadcasts).toBeGreaterThan(beforeSave);
+      await expect(answer).toHaveValue('Original answer');
+
+      await other.goto(page.url());
+      const otherAnswer = other.getByPlaceholder('Enter your response here');
+      await expect(otherAnswer).toHaveValue('Original answer');
+      await otherAnswer.fill('Updated in another tab');
+      await other.getByRole('button', { name: 'Update Response', exact: true }).click();
+      await expect(page.getByRole('listitem').getByText('Updated in another tab', { exact: true })).toBeVisible();
+      await expect(answer).toHaveValue('Updated in another tab');
+      await page.reload();
+      await expect(answer).toHaveValue('Updated in another tab');
+    } finally {
+      await other.close();
+      await pool.query('DELETE FROM votes WHERE question_id IN (SELECT id FROM questions WHERE discussion_id = $1)', [discussion.id]);
+      await pool.query('DELETE FROM questions WHERE discussion_id = $1', [discussion.id]);
+      await pool.query('DELETE FROM discussions WHERE id = $1', [discussion.id]);
+      await pool.end();
+    }
+  });
+}

@@ -10,6 +10,8 @@ const OpenEndedQuestion = ({ question, userVote, handleVote, ownedVoteIds, upvot
     // Socket broadcasts recreate vote objects even when this answer is unchanged.
     // A delayed save can also arrive after the participant has started a newer
     // edit. Adopt remote changes only while clean or acknowledging that exact draft.
+    // Observe fresh vote objects too: an unchanged save still needs to clear
+    // pending state even though its saved text did not change.
     useEffect(() => {
         const previous = previousSaved.current;
         const pending = submitted.current;
@@ -26,7 +28,7 @@ const OpenEndedQuestion = ({ question, userVote, handleVote, ownedVoteIds, upvot
             submitted.current = null;
         }
         previousSaved.current = { questionId: question.id, value: savedResponse };
-    }, [question.id, savedResponse]);
+    }, [question.id, savedResponse, userVote]);
 
     // Most-upvoted responses first; ties keep submission order (vote id).
     const sortedResponses = [...(question.votes || [])].sort(
