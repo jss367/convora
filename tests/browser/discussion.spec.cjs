@@ -46,46 +46,56 @@ test('an open-ended edit survives another participant voting and can be saved', 
   }
 });
 
-test('an edit made during a delayed save stays focused and can be submitted afterward', async ({ page, request }) => {
-  const response = await request.post('/api/discussions', {
-    data: { topic: `Delayed answer ${Date.now()}` },
-  });
-  expect(response.ok()).toBeTruthy();
-  const discussion = await response.json();
-  const pool = new Pool({
-    connectionString: process.env.DATABASE_URL || 'postgresql://convora:convora@127.0.0.1:54330/convora_test',
-  });
-  const blocker = await pool.connect();
-  try {
-    await pool.query(
-      "INSERT INTO questions (discussion_id, text, type) VALUES ($1, 'Explain your answer', 'Open Ended')",
-      [discussion.id]
-    );
-    await page.goto(`/discussion/${discussion.slug}`);
-    const answer = page.getByPlaceholder('Enter your response here');
-    await answer.fill('Submitted answer');
-    // Delay the real save, rather than replacing the API or socket with mocks.
-    await blocker.query('BEGIN');
-    await blocker.query('LOCK TABLE votes IN SHARE MODE');
-    await page.getByRole('button', { name: 'Submit Response', exact: true }).click();
-    await answer.fill('A newer draft typed before acknowledgment');
-    await expect(answer).toBeFocused();
-    await blocker.query('COMMIT');
+for (const { initial, submitted, draft } of [
+  { initial: '', submitted: 'Submitted answer', draft: 'A newer draft typed before acknowledgment' },
+  { initial: 'Earlier answer', submitted: 'Updated answer', draft: 'Earlier answer' },
+]) {
+  test(`an edit made during a delayed save stays focused${initial ? ' when reverting to the earlier answer' : ''}`, async ({ page, request }) => {
+    const response = await request.post('/api/discussions', {
+      data: { topic: `Delayed answer ${Date.now()}` },
+    });
+    expect(response.ok()).toBeTruthy();
+    const discussion = await response.json();
+    const pool = new Pool({
+      connectionString: process.env.DATABASE_URL || 'postgresql://convora:convora@127.0.0.1:54330/convora_test',
+    });
+    const blocker = await pool.connect();
+    try {
+      await pool.query(
+        "INSERT INTO questions (discussion_id, text, type) VALUES ($1, 'Explain your answer', 'Open Ended')",
+        [discussion.id]
+      );
+      await page.goto(`/discussion/${discussion.slug}`);
+      const answer = page.getByPlaceholder('Enter your response here');
+      if (initial) {
+        await answer.fill(initial);
+        await page.getByRole('button', { name: 'Submit Response', exact: true }).click();
+        await expect(page.getByRole('button', { name: 'Update Response', exact: true })).toBeVisible();
+      }
+      await answer.fill(submitted);
+      // Delay the real save, rather than replacing the API or socket with mocks.
+      await blocker.query('BEGIN');
+      await blocker.query('LOCK TABLE votes IN SHARE MODE');
+      await page.getByRole('button', { name: initial ? 'Update Response' : 'Submit Response', exact: true }).click();
+      await answer.fill(draft);
+      await expect(answer).toBeFocused();
+      await blocker.query('COMMIT');
 
-    await expect(page.getByRole('listitem').getByText('Submitted answer', { exact: true })).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Update Response', exact: true })).toBeVisible();
-    await expect(answer).toHaveValue('A newer draft typed before acknowledgment');
-    await expect(answer).toBeFocused();
-    await page.getByRole('button', { name: 'Update Response', exact: true }).click();
-    await expect(page.getByRole('listitem').getByText('A newer draft typed before acknowledgment', { exact: true })).toBeVisible();
-    await page.reload();
-    await expect(answer).toHaveValue('A newer draft typed before acknowledgment');
-  } finally {
-    await blocker.query('ROLLBACK');
-    blocker.release();
-    await pool.query('DELETE FROM votes WHERE question_id IN (SELECT id FROM questions WHERE discussion_id = $1)', [discussion.id]);
-    await pool.query('DELETE FROM questions WHERE discussion_id = $1', [discussion.id]);
-    await pool.query('DELETE FROM discussions WHERE id = $1', [discussion.id]);
-    await pool.end();
-  }
-});
+      await expect(page.getByRole('listitem').getByText(submitted, { exact: true })).toBeVisible();
+      await expect(page.getByRole('button', { name: 'Update Response', exact: true })).toBeVisible();
+      await expect(answer).toHaveValue(draft);
+      await expect(answer).toBeFocused();
+      await page.getByRole('button', { name: 'Update Response', exact: true }).click();
+      await expect(page.getByRole('listitem').getByText(draft, { exact: true })).toBeVisible();
+      await page.reload();
+      await expect(answer).toHaveValue(draft);
+    } finally {
+      await blocker.query('ROLLBACK');
+      blocker.release();
+      await pool.query('DELETE FROM votes WHERE question_id IN (SELECT id FROM questions WHERE discussion_id = $1)', [discussion.id]);
+      await pool.query('DELETE FROM questions WHERE discussion_id = $1', [discussion.id]);
+      await pool.query('DELETE FROM discussions WHERE id = $1', [discussion.id]);
+      await pool.end();
+    }
+  });
+}

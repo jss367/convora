@@ -14,8 +14,10 @@ const OpenEndedQuestion = ({ question, userVote, handleVote, ownedVoteIds, upvot
         const previous = previousSaved.current;
         const pending = submitted.current;
         setResponse(current => {
-            if (previous.questionId !== question.id || current === previous.value
-                || (pending?.value === savedResponse && current === pending.draft)) {
+            const canAdopt = pending
+                ? pending.value === savedResponse && current === pending.draft
+                : current === previous.value;
+            if (previous.questionId !== question.id || canAdopt) {
                 return savedResponse;
             }
             return current;
