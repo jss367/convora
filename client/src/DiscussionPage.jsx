@@ -122,7 +122,11 @@ const DiscussionPage = () => {
     const {
         adminToken, setAdminToken, canDemote, setCanDemote,
         handleModeratorGranted, handleModeratorRevoked,
-    } = useModeratorAccess(socket, { topic, discussionSlug, discussionTitle: discussion?.topic, onRevoked: closeParticipants });
+    } = useModeratorAccess(socket, {
+        topic, discussionSlug,
+        discussionTitle: discussion?.slug === discussionSlug ? discussion.topic : null,
+        onRevoked: closeParticipants,
+    });
 
     const isAdmin = !!adminToken;
     const { locked, moderatorOnly } = discussionState;

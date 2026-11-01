@@ -42,6 +42,18 @@ test('a dropped connection rejoins the room without losing identity or a draft',
 
 test('switching discussions leaves the previous room and keeps responses isolated', async ({ page, browser, rooms }) => {
   const original = await rooms.create('Original room');
+  const moderatorChecks = [];
+  let upgraded = false;
+  page.on('websocket', connection => {
+    connection.on('framesent', ({ payload }) => {
+      if (payload === '5') upgraded = true;
+      if (typeof payload !== 'string' || !payload.startsWith('42')) return;
+      const start = payload.indexOf('[');
+      if (start === -1) return;
+      const [event, slug, token] = JSON.parse(payload.slice(start));
+      if (event === 'checkModerator') moderatorChecks.push({ slug, token });
+    });
+  });
   const observerContext = await browser.newContext();
   try {
     const observer = await observerContext.newPage();
@@ -51,6 +63,7 @@ test('switching discussions leaves the previous room and keeps responses isolate
     await page.getByPlaceholder('Enter your response here').fill('Original room answer');
     await page.getByRole('button', { name: 'Submit Response', exact: true }).click();
     await expect(page.getByRole('button', { name: 'Update Response', exact: true })).toBeVisible();
+    await expect.poll(() => upgraded).toBe(true);
     const identity = await page.evaluate(() => localStorage.getItem('convora_identity'));
     await page.getByRole('button', { name: 'More ▾', exact: true }).click();
     await page.getByRole('menuitem', { name: 'Duplicate Discussion', exact: true }).click();
@@ -64,6 +77,13 @@ test('switching discussions leaves the previous room and keeps responses isolate
     await expect(page.getByRole('heading', { name: `Discussion: ${title}`, exact: true })).toBeVisible();
     await expect(page.getByText('1 person here now', { exact: true })).toBeVisible();
     await expect(observer.getByText('1 person here now', { exact: true })).toBeVisible();
+    const credentials = { [original.slug]: original.adminToken, [result.newSlug]: result.adminToken };
+    await expect.poll(() => moderatorChecks.filter(check => check.slug === result.newSlug).length).toBeGreaterThan(0);
+    // Check actual emitted requests, not just the eventual UI: a stale-token
+    // rejection can otherwise race adoption and delete the new room's access.
+    expect(moderatorChecks.filter(check => check.token !== credentials[check.slug]).map(check => check.slug)).toEqual([]);
+    expect(await page.evaluate(slug => localStorage.getItem(`convora_admin_${slug}`), original.slug)).toBe(original.adminToken);
+    expect(await page.evaluate(slug => localStorage.getItem(`convora_admin_${slug}`), result.newSlug)).toBe(result.adminToken);
     await expect(page.getByRole('listitem').getByText('Original room answer', { exact: true })).toHaveCount(0);
     await page.getByPlaceholder('Enter your response here').fill('New room answer');
     await page.getByRole('button', { name: 'Submit Response', exact: true }).click();
@@ -95,6 +115,9 @@ test('switching discussions leaves the previous room and keeps responses isolate
     await expect(page.getByPlaceholder('Enter your response here')).toHaveValue('New room answer');
     await expect(page.getByText('1 person here now', { exact: true })).toBeVisible();
     await expect(observer.getByText('1 person here now', { exact: true })).toBeVisible();
+    expect(moderatorChecks.filter(check => check.token !== credentials[check.slug]).map(check => check.slug)).toEqual([]);
+    expect(await page.evaluate(slug => localStorage.getItem(`convora_admin_${slug}`), original.slug)).toBe(original.adminToken);
+    expect(await page.evaluate(slug => localStorage.getItem(`convora_admin_${slug}`), result.newSlug)).toBe(result.adminToken);
   } finally {
     await observerContext.close();
   }

@@ -2,13 +2,30 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 // Moderator credentials and creator authority are verified again on reconnect.
 export function useModeratorAccess(socket, { topic, discussionSlug, discussionTitle, onRevoked }) {
-    const [adminToken, setAdminToken] = useState(null);
-    // Mirror of adminToken readable inside async callbacks, so an in-flight
-    // checkModerator ack can tell whether the token it verified is still current.
-    const adminTokenRef = useRef(adminToken);
-    useEffect(() => { adminTokenRef.current = adminToken; }, [adminToken]);
-    // Whether this viewer is the creator (only the creator may remove moderators).
-    const [canDemote, setCanDemote] = useState(false);
+    const [access, setAccess] = useState({ slug: null, token: null, canDemote: false });
+    const accessRef = useRef(access);
+    const activeSlug = useRef(discussionSlug);
+    activeSlug.current = discussionSlug;
+    // A route change invalidates the previous room's authority immediately,
+    // before passive effects adopt credentials for the new room.
+    const adminToken = access.slug === discussionSlug ? access.token : null;
+    const canDemote = access.slug === discussionSlug && access.canDemote;
+    const setAdminToken = useCallback(token => {
+        if (activeSlug.current !== discussionSlug) return;
+        const previous = accessRef.current;
+        const next = {
+            slug: discussionSlug, token,
+            canDemote: previous.slug === discussionSlug && previous.token === token && previous.canDemote,
+        };
+        accessRef.current = next;
+        setAccess(next);
+    }, [discussionSlug]);
+    const setCanDemote = useCallback(value => {
+        if (activeSlug.current !== discussionSlug || accessRef.current.slug !== discussionSlug) return;
+        const next = { ...accessRef.current, canDemote: value === true };
+        accessRef.current = next;
+        setAccess(next);
+    }, [discussionSlug]);
     // Adopt the moderator token for this topic: an ?admin=<token> URL param
     // (shared admin link) takes precedence and is then persisted and stripped
     // from the URL; otherwise fall back to a previously stored token.
@@ -41,7 +58,7 @@ export function useModeratorAccess(socket, { topic, discussionSlug, discussionTi
         } catch (e) {
             console.warn('Failed to read admin token:', e);
         }
-    }, [discussionTitle, discussionSlug, topic]);
+    }, [discussionTitle, discussionSlug, topic, setAdminToken]);
 
     // Validate any adopted moderator token with the server. A token revoked
     // while this user was offline (so they never got moderatorRevoked) would
@@ -52,8 +69,10 @@ export function useModeratorAccess(socket, { topic, discussionSlug, discussionTi
     // disconnect is caught when Socket.IO reconnects rather than lingering
     // until a reload.
     useEffect(() => {
-        if (!adminToken) return;
+        if (!adminToken || topic !== discussionSlug) return;
         let cancelled = false;
+        const isCurrent = () => activeSlug.current === discussionSlug
+            && accessRef.current.slug === discussionSlug && accessRef.current.token === adminToken;
         const verify = () => {
             // Remember which token this check is about. A re-promotion can deliver
             // a fresh token (handleModeratorGranted) while this check is in flight;
@@ -61,16 +80,19 @@ export function useModeratorAccess(socket, { topic, discussionSlug, discussionTi
             // stale "not a moderator" ack can't wipe the newly adopted token the
             // server pushed only once.
             const checked = adminToken;
+            if (!isCurrent()) return;
             socket.emit('checkModerator', discussionSlug, checked, (resp) => {
                 if (cancelled || !resp || !resp.ok) return;
-                if (adminTokenRef.current !== checked) return;
+                if (!isCurrent()) return;
                 if (resp.isModerator === false) {
                     try {
-                        localStorage.removeItem(`convora_admin_${discussionSlug}`);
+                        const key = `convora_admin_${discussionSlug}`;
+                        if (localStorage.getItem(key) === checked) localStorage.removeItem(key);
                     } catch (e) {
                         console.warn('Failed to clear admin token:', e);
                     }
                     setAdminToken(null);
+                    onRevoked();
                     return;
                 }
                 // Initialize canDemote from the token itself, not from opening the
@@ -85,20 +107,7 @@ export function useModeratorAccess(socket, { topic, discussionSlug, discussionTi
         verify();
         socket.on('connect', verify);
         return () => { cancelled = true; socket.off('connect', verify); };
-    }, [socket, discussionSlug, adminToken]);
-
-    // Reset the creator flag whenever the discussion changes. This component is
-    // reused (not remounted) when navigating between /discussion/:topic routes —
-    // React Router keeps the same instance and only the topic param changes — so
-    // canDemote would otherwise carry over from a previous discussion. The verify
-    // effect above only updates canDemote when adminToken is set, so navigating to
-    // a discussion with no/invalid token would leave a stale canDemote=true; that
-    // would make handleModeratorGranted drop a legitimate one-time grant if this
-    // user is promoted in the new discussion. Clearing here lets verify() (or a
-    // participant-list response) re-establish the correct value for the new topic.
-    useEffect(() => {
-        setCanDemote(false);
-    }, [discussionSlug]);
+    }, [socket, topic, discussionSlug, adminToken, setAdminToken, setCanDemote, onRevoked]);
 
     // Adopt a moderator token the server pushes to us when this user is promoted.
     // Persist it under the same per-slug key the create/share flows use so the
@@ -121,7 +130,7 @@ export function useModeratorAccess(socket, { topic, discussionSlug, discussionTi
             console.warn('Failed to store admin token:', e);
         }
         setAdminToken(token);
-    }, [discussionSlug, canDemote]);
+    }, [discussionSlug, canDemote, setAdminToken]);
 
     // A moderator we were granted was revoked: drop the stored token so the
     // controls disappear. (That token is already invalid server-side.)
@@ -141,7 +150,7 @@ export function useModeratorAccess(socket, { topic, discussionSlug, discussionTi
         }
         setAdminToken(null);
         onRevoked();
-    }, [discussionSlug, canDemote, onRevoked]);
+    }, [discussionSlug, canDemote, setAdminToken, onRevoked]);
 
     return { adminToken, setAdminToken, canDemote, setCanDemote, handleModeratorGranted, handleModeratorRevoked };
 }
