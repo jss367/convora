@@ -10,7 +10,7 @@
 // together in localStorage so a page refresh keeps the same identity, the same
 // display name and the same votes.
 
-import { sha256Hex } from './sha256';
+import { sha256Hex } from './sha256.mjs';
 
 const STORAGE_KEY = 'convora_identity';
 // Pre-pseudonym clients stored just the stable id under this key. We migrate it

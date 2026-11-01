@@ -6,6 +6,12 @@ Convora uses a single-server setup where the backend Node.js/Express server serv
 
 The frontend is React and the backend is Node.js.
 
+`votes.js` owns transactional response writes, including serialization of
+simultaneous poll submissions from the same participant. Brainstorm ideas
+remain separate responses. `client/src/OpenEndedQuestion.jsx` owns the written
+answer editor. `logging.js` keeps raw database errors and their potentially
+sensitive details out of server logs.
+
 ## Running the Application Locally
 
 ### Option A: Docker Postgres
@@ -104,6 +110,19 @@ Run against an already-running database:
 ```bash
 DATABASE_URL=postgresql://convora:convora@127.0.0.1:54330/convora_test npm run test:node
 ```
+
+Run lint with `npm run lint`. For browser tests, install Chromium once with
+`npx playwright install chromium`, then run:
+
+```bash
+DATABASE_URL=postgresql://convora:convora@127.0.0.1:54330/convora_test npm run test:browser
+```
+
+The browser suite builds the client, starts its own server on port 4173, and exercises live updates
+between two isolated browser sessions. It uses the same disposable-database
+guard as the integration tests and cleans up the discussion it creates. Run
+the integration and browser suites sequentially when sharing a test database.
+GitHub Actions runs all checks on Node 20.15 and the latest Node 20 release.
 
 The default test harness uses a separate Docker Compose project and port
 (`convora-test`, `54330`) from the dev database (`54329`). Set `KEEP_TEST_DB=1`

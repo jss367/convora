@@ -52,6 +52,20 @@ the real HTTP and Socket.IO paths:
 npm test
 ```
 
+Run static checks and the browser regression test:
+
+```bash
+npm run lint
+npx playwright install chromium
+# Use a disposable local database whose name ends in _test.
+DATABASE_URL=postgresql://convora:convora@127.0.0.1:54330/convora_test npm run test:browser
+```
+
+The browser command builds the client and starts an isolated test server.
+
+GitHub Actions runs lint, the production build, PostgreSQL integration tests,
+and Chromium interaction tests on Node 20.15 and the latest Node 20 release.
+
 ## Website
 
 [https://convora-e40a9ae358dc.herokuapp.com/](https://convora-e40a9ae358dc.herokuapp.com/)

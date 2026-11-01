@@ -9,6 +9,8 @@ const crypto = require('crypto');
 const cors = require('cors');
 const { analyzeClusters } = require('./clustering');
 const { buildOpinionSnapshot, OPINION_TYPES } = require('./opinion-snapshots');
+const { createVoteStore } = require('./votes');
+const { logError } = require('./logging');
 
 const app = express();
 const server = http.createServer(app);
@@ -17,7 +19,7 @@ const isProduction = process.env.NODE_ENV === 'production';
 const clientUrl = process.env.CLIENT_URL || 'http://localhost:3000';
 
 app.use((req, res, next) => {
-  console.log(`${new Date().toISOString()} - ${req.method} ${req.url}`);
+  console.log(`${new Date().toISOString()} - ${req.method} ${req.path}`);
   next();
 });
 
@@ -40,6 +42,8 @@ const pool = new Pool({
   ssl: isProduction ? { rejectUnauthorized: false } : false,
 });
 
+const { addVote } = createVoteStore(pool);
+
 function parseOptions(options) {
   if (Array.isArray(options)) {
     return options;
@@ -49,7 +53,7 @@ function parseOptions(options) {
       const parsed = JSON.parse(options);
       return Array.isArray(parsed) ? parsed : [options];
     } catch (e) {
-      console.warn('Failed to parse options as JSON, falling back to comma-separated string:', options);
+      console.warn('Failed to parse options as JSON, falling back to comma-separated string');
       return options.split(',').map(opt => opt.trim());
     }
   }
@@ -798,7 +802,7 @@ io.on('connection', (socket) => {
       socket.emit('questions', questions);
       socket.emit('discussionState', await getDiscussionState(discussionSlug));
     } catch (error) {
-      console.error('Error getting questions:', error);
+      logError('Error getting questions:', error);
       socket.emit('error', { message: 'Failed to get questions' });
     }
   });
@@ -846,9 +850,6 @@ io.on('connection', (socket) => {
       token = undefined;
     }
     const discussionSlug = slugifyTopic(topic);
-    console.log('Received addQuestion event');
-    console.log('topic:', discussionSlug);
-    console.log('question:', question);
 
     // Report the outcome back to the submitter so the client only clears its
     // draft once the question is actually added — not when it's bounced as a
@@ -895,14 +896,12 @@ io.on('connection', (socket) => {
       }
 
       await addQuestion(discussionSlug, normalizedQuestion);
-      console.log('Question added successfully');
       const updatedQuestions = await getQuestions(discussionSlug);
-      console.log('Retrieved updated questions:', updatedQuestions);
       io.to(discussionSlug).emit('discussion', await getDiscussionBySlug(discussionSlug));
       io.to(discussionSlug).emit('questions', updatedQuestions);
       reply({ added: true });
     } catch (error) {
-      console.error('Error adding question:', error);
+      logError('Error adding question:', error);
       socket.emit('error', { message: 'Failed to add question' });
       reply({ added: false, reason: 'error' });
     }
@@ -969,7 +968,7 @@ io.on('connection', (socket) => {
       const questions = await getQuestions(discussionSlug);
       io.to(discussionSlug).emit('questions', questions);
     } catch (error) {
-      console.error('Error handling vote:', error);
+      logError('Error handling vote:', error);
       socket.emit('error', { message: 'Failed to handle vote' });
     }
   });
@@ -987,7 +986,7 @@ io.on('connection', (socket) => {
         cb({ success: false, error: 'already_claimed' });
       }
     } catch (error) {
-      console.error('Error claiming moderator:', error);
+      logError('Error claiming moderator:', error);
       if (typeof cb === 'function') cb({ success: false, error: 'server_error' });
     }
   });
@@ -1008,7 +1007,7 @@ io.on('connection', (socket) => {
       const canDemote = !!(await verifyCreator(discussionSlug, token));
       cb({ success: true, participants: await listParticipants(discussionSlug), canDemote });
     } catch (error) {
-      console.error('Error listing participants:', error);
+      logError('Error listing participants:', error);
       cb({ success: false, error: 'server_error' });
     }
   });
@@ -1047,7 +1046,7 @@ io.on('connection', (socket) => {
         cb({ success: true, participants: await listParticipants(discussionSlug), canDemote });
       }
     } catch (error) {
-      console.error('Error promoting moderator:', error);
+      logError('Error promoting moderator:', error);
       if (typeof cb === 'function') cb({ success: false, error: 'server_error' });
     }
   });
@@ -1077,7 +1076,7 @@ io.on('connection', (socket) => {
         cb({ success: true, participants: await listParticipants(discussionSlug), canDemote: true });
       }
     } catch (error) {
-      console.error('Error demoting moderator:', error);
+      logError('Error demoting moderator:', error);
       if (typeof cb === 'function') cb({ success: false, error: 'server_error' });
     }
   });
@@ -1099,7 +1098,7 @@ io.on('connection', (socket) => {
       const isCreator = discussionId ? !!(await verifyCreator(slug, token)) : false;
       cb({ ok: true, isModerator: !!discussionId, isCreator });
     } catch (error) {
-      console.error('Error checking moderator status:', error);
+      logError('Error checking moderator status:', error);
       cb({ ok: false });
     }
   });
@@ -1125,7 +1124,7 @@ io.on('connection', (socket) => {
       await pool.query('DELETE FROM questions WHERE id = $1 AND discussion_id = $2', [questionId, discussionId]);
       io.to(discussionSlug).emit('questions', await getQuestions(discussionSlug));
     } catch (error) {
-      console.error('Error deleting question:', error);
+      logError('Error deleting question:', error);
       socket.emit('error', { message: 'Failed to delete question' });
     }
   });
@@ -1141,7 +1140,7 @@ io.on('connection', (socket) => {
       await pool.query('UPDATE discussions SET locked = $1 WHERE id = $2', [!!locked, discussionId]);
       await emitDiscussionState(discussionSlug);
     } catch (error) {
-      console.error('Error setting lock state:', error);
+      logError('Error setting lock state:', error);
       socket.emit('error', { message: 'Failed to update discussion' });
     }
   });
@@ -1157,7 +1156,7 @@ io.on('connection', (socket) => {
       await pool.query('UPDATE discussions SET moderator_only_questions = $1 WHERE id = $2', [!!moderatorOnly, discussionId]);
       await emitDiscussionState(discussionSlug);
     } catch (error) {
-      console.error('Error setting moderator-only state:', error);
+      logError('Error setting moderator-only state:', error);
       socket.emit('error', { message: 'Failed to update discussion' });
     }
   });
@@ -1179,7 +1178,7 @@ io.on('connection', (socket) => {
       await pool.query('UPDATE discussions SET theme = $1 WHERE id = $2', [theme, discussionId]);
       await emitDiscussionState(discussionSlug);
     } catch (error) {
-      console.error('Error setting theme:', error);
+      logError('Error setting theme:', error);
       socket.emit('error', { message: 'Failed to update discussion' });
     }
   });
@@ -1220,7 +1219,7 @@ io.on('connection', (socket) => {
         reply({ updated: false, reason: 'duplicate' });
         return;
       }
-      console.error('Error setting topic:', error);
+      logError('Error setting topic:', error);
       socket.emit('error', { message: 'Failed to rename discussion' });
       reply({ updated: false, reason: 'error' });
     }
@@ -1237,7 +1236,7 @@ io.on('connection', (socket) => {
       await pool.query('UPDATE questions SET pinned = $1 WHERE id = $2 AND discussion_id = $3', [!!pinned, questionId, discussionId]);
       io.to(discussionSlug).emit('questions', await getQuestions(discussionSlug));
     } catch (error) {
-      console.error('Error setting pin state:', error);
+      logError('Error setting pin state:', error);
       socket.emit('error', { message: 'Failed to update question' });
     }
   });
@@ -1306,7 +1305,7 @@ io.on('connection', (socket) => {
       io.to(discussionSlug).emit('questions', await getQuestions(discussionSlug));
       reply({ updated: true });
     } catch (error) {
-      console.error('Error editing question:', error);
+      logError('Error editing question:', error);
       socket.emit('error', { message: 'Failed to edit question' });
       reply({ updated: false, reason: 'error' });
     }
@@ -1321,7 +1320,7 @@ io.on('connection', (socket) => {
       const questions = await getQuestions(discussionSlug);
       io.to(discussionSlug).emit('questions', questions);
     } catch (error) {
-      console.error('Error toggling response vote:', error);
+      logError('Error toggling response vote:', error);
       socket.emit('error', { message: 'Failed to upvote response' });
     }
   });
@@ -1345,7 +1344,7 @@ io.on('connection', (socket) => {
       await setResponseRating(responseId, userId, axis, value);
       io.to(discussionSlug).emit('questions', await getQuestions(discussionSlug));
     } catch (error) {
-      console.error('Error setting response rating:', error);
+      logError('Error setting response rating:', error);
       socket.emit('error', { message: 'Failed to rate response' });
     }
   });
@@ -1364,7 +1363,7 @@ io.on('connection', (socket) => {
       await toggleResponseReaction(responseId, userId, reaction);
       io.to(discussionSlug).emit('questions', await getQuestions(discussionSlug));
     } catch (error) {
-      console.error('Error toggling response reaction:', error);
+      logError('Error toggling response reaction:', error);
       socket.emit('error', { message: 'Failed to react to response' });
     }
   });
@@ -1408,7 +1407,7 @@ io.on('connection', (socket) => {
       io.to(discussionSlug).emit('questions', await getQuestions(discussionSlug));
       reply({ added: true });
     } catch (error) {
-      console.error('Error adding response comment:', error);
+      logError('Error adding response comment:', error);
       socket.emit('error', { message: 'Failed to add comment' });
       reply({ added: false });
     }
@@ -1431,7 +1430,7 @@ io.on('connection', (socket) => {
       );
       io.to(discussionSlug).emit('questions', await getQuestions(discussionSlug));
     } catch (error) {
-      console.error('Error deleting response comment:', error);
+      logError('Error deleting response comment:', error);
       socket.emit('error', { message: 'Failed to delete comment' });
     }
   });
@@ -1457,7 +1456,7 @@ io.on('connection', (socket) => {
       );
       io.to(discussionSlug).emit('questions', await getQuestions(discussionSlug));
     } catch (error) {
-      console.error('Error deleting comment (moderator):', error);
+      logError('Error deleting comment (moderator):', error);
       socket.emit('error', { message: 'Failed to delete comment' });
     }
   });
@@ -1497,7 +1496,7 @@ io.on('connection', (socket) => {
       await emitDiscussionState(discussionSlug);
       io.to(discussionSlug).emit('questions', await getQuestions(discussionSlug));
     } catch (error) {
-      console.error('Error setting discussion flags:', error);
+      logError('Error setting discussion flags:', error);
       socket.emit('error', { message: 'Failed to update discussion' });
     }
   });
@@ -1523,7 +1522,7 @@ io.on('connection', (socket) => {
       );
       await emitDiscussionState(discussionSlug);
     } catch (error) {
-      console.error('Error setting reaction keys:', error);
+      logError('Error setting reaction keys:', error);
       socket.emit('error', { message: 'Failed to update reactions' });
     }
   });
@@ -1536,7 +1535,7 @@ io.on('connection', (socket) => {
       const state = await getMyBrainstormState(topic, userId);
       if (typeof ack === 'function') ack(state);
     } catch (error) {
-      console.error('Error fetching brainstorm state:', error);
+      logError('Error fetching brainstorm state:', error);
       if (typeof ack === 'function') ack({ ratings: {}, reactions: {} });
     }
   });
@@ -1550,7 +1549,7 @@ io.on('connection', (socket) => {
       const questions = await getQuestions(discussionSlug);
       io.to(discussionSlug).emit('questions', questions);
     } catch (error) {
-      console.error('Error deleting vote:', error);
+      logError('Error deleting vote:', error);
       socket.emit('error', { message: 'Failed to delete vote' });
     }
   });
@@ -1588,7 +1587,7 @@ io.on('connection', (socket) => {
       );
       io.to(discussionSlug).emit('questions', await getQuestions(discussionSlug));
     } catch (error) {
-      console.error('Error deleting response (moderator):', error);
+      logError('Error deleting response (moderator):', error);
       socket.emit('error', { message: 'Failed to delete response' });
     }
   });
@@ -1613,7 +1612,7 @@ io.on('connection', (socket) => {
       }
       cb(await assignPseudonym(slugifyTopic(topic), userId, preferred));
     } catch (error) {
-      console.error('Error assigning pseudonym:', error);
+      logError('Error assigning pseudonym:', error);
       // Fall back to the proposed name so the client still has something to show,
       // flagged unreserved so the client keeps trying to reserve it.
       cb({ pseudonym: sanitizePseudonym(preferred) || null, reserved: false });
@@ -1641,7 +1640,7 @@ io.on('connection', (socket) => {
         emitPseudonymSync(discussionSlug, userId, result.pseudonym, socket.id);
       }
     } catch (error) {
-      console.error('Error regenerating pseudonym:', error);
+      logError('Error regenerating pseudonym:', error);
       cb({ pseudonym: null, reserved: false });
     }
   });
@@ -1676,7 +1675,7 @@ io.on('connection', (socket) => {
       );
       io.to(discussionSlug).emit('questions', await getQuestions(discussionSlug));
     } catch (error) {
-      console.error('Error updating display name:', error);
+      logError('Error updating display name:', error);
       socket.emit('error', { message: 'Failed to update display name' });
     }
   });
@@ -1687,11 +1686,6 @@ io.on('connection', (socket) => {
     // remaining participants.
     emitPresence(socket.data.topic);
   });
-});
-
-app.use((req, res, next) => {
-  console.log('Request body:', req.body);
-  next();
 });
 
 // HTTP routes
@@ -1705,7 +1699,7 @@ app.post('/api/discussions', async (req, res) => {
     const discussion = await createDiscussion(topic);
     res.json({ success: true, ...discussion });
   } catch (err) {
-    console.error(err);
+    logError('Request failed:', err);
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -1718,7 +1712,7 @@ app.get('/api/discussions/resolve/:topic', async (req, res) => {
     }
     res.json(discussion);
   } catch (err) {
-    console.error(err);
+    logError('Request failed:', err);
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -1746,7 +1740,7 @@ app.post('/api/discussions/:topic/short-link', async (req, res) => {
       shortPath: `/s/${result.shortCode}`,
     });
   } catch (err) {
-    console.error('Error generating short link:', err);
+    logError('Error generating short link:', err);
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -1767,7 +1761,7 @@ app.get('/api/discussions/:id', async (req, res) => {
       res.status(404).json({ error: 'Discussion not found' });
     }
   } catch (err) {
-    console.error(err);
+    logError('Request failed:', err);
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -2072,9 +2066,6 @@ function ownerToken(idPart, userId) {
 }
 
 async function addQuestion(topic, question) {
-  console.log('Entering addQuestion');
-  console.log('Topic:', topic);
-  console.log('Question:', question);
 
   const normalizedQuestion = normalizeQuestionPayload(question);
   if (!normalizedQuestion) {
@@ -2105,14 +2096,13 @@ async function addQuestion(topic, question) {
     );
 
     await client.query('COMMIT');
-    console.log('Question added successfully:', questionResult.rows[0]);
     return {
       ...questionResult.rows[0],
       options: parseOptions(questionResult.rows[0].options)
     };
   } catch (e) {
     await client.query('ROLLBACK');
-    console.error('Error in addQuestion:', e);
+    logError('Error in addQuestion:', e);
     throw e;
   } finally {
     client.release();
@@ -2196,7 +2186,7 @@ async function migrateUniqueDiscussionTopics() {
     console.log('Discussion topic uniqueness migration completed');
   } catch (e) {
     await client.query('ROLLBACK');
-    console.error('Error migrating discussion topic uniqueness:', e);
+    logError('Error migrating discussion topic uniqueness:', e);
     throw e;
   } finally {
     client.release();
@@ -2253,7 +2243,7 @@ async function migrateDiscussionSlugs() {
     console.log('Discussion slug migration completed');
   } catch (e) {
     await client.query('ROLLBACK');
-    console.error('Error migrating discussion slugs:', e);
+    logError('Error migrating discussion slugs:', e);
     throw e;
   } finally {
     client.release();
@@ -2292,7 +2282,7 @@ async function migrateResponseVotesTable() {
     `);
     console.log('response_votes table migration completed');
   } catch (e) {
-    console.error('Error creating response_votes table:', e);
+    logError('Error creating response_votes table:', e);
     throw e;
   }
 }
@@ -2435,7 +2425,7 @@ async function migrateModerationAndDedup() {
   try {
     await pool.query('CREATE EXTENSION IF NOT EXISTS pg_trgm');
   } catch (e) {
-    console.error('pg_trgm extension migration failed; similarity checks will be skipped:', e.message);
+    logError('pg_trgm extension migration failed; similarity checks will be skipped:', e);
   }
   console.log('Moderation + dedup migration completed');
 }
@@ -2882,7 +2872,7 @@ async function findSimilarQuestion(topic, text) {
     return result.rows.length > 0 ? result.rows[0].text : null;
   } catch (e) {
     // If pg_trgm isn't available, skip dedup rather than blocking submission.
-    console.error('Similarity check failed (skipping dedup):', e.message);
+    logError('Similarity check failed (skipping dedup):', e);
     return null;
   }
 }
@@ -3121,82 +3111,6 @@ async function assignPseudonym(slug, userId, preferred, { regenerate = false } =
   }
 }
 
-async function addVote(questionId, vote, userId, pseudonym) {
-  pseudonym = sanitizePseudonym(pseudonym);
-  console.log('Adding vote:', questionId, vote, userId, pseudonym);
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-
-    // Brainstorm questions allow each user to add many separate ideas, so every
-    // submission is a brand new row rather than an update to a single answer.
-    const typeResult = await client.query(
-      'SELECT type FROM questions WHERE id = $1',
-      [questionId]
-    );
-    const questionType = typeResult.rows[0] && typeResult.rows[0].type;
-
-    if (questionType === 'Brainstorm') {
-      await client.query(
-        'INSERT INTO votes (question_id, user_id, value, pseudonym) VALUES ($1, $2, $3, $4)',
-        [questionId, userId, vote, pseudonym]
-      );
-      await client.query('COMMIT');
-      console.log('Brainstorm idea added successfully');
-      return;
-    }
-
-    // Check if the user has already voted on this question
-    const existingVoteResult = await client.query(
-      'SELECT * FROM votes WHERE question_id = $1 AND user_id = $2',
-      [questionId, userId]
-    );
-
-    if (existingVoteResult.rows.length > 0) {
-      console.log('User has already voted');
-      const existingVote = existingVoteResult.rows[0];
-      // Arrays (e.g. multi-value responses) are stored as JSON strings
-      if (Array.isArray(vote)) {
-        await client.query(
-          'UPDATE votes SET value = $1, pseudonym = $2 WHERE id = $3',
-          [JSON.stringify(vote), pseudonym, existingVote.id]
-        );
-      } else if (existingVote.value === vote && (questionType === 'Agreement' || questionType === 'Yes/No')) {
-        // Agreement and Yes/No votes toggle: re-selecting your current option
-        // undoes it. This must stay scoped to those single-choice opinion types —
-        // for Open Ended, re-submitting the same text means "keep it", not
-        // "delete it".
-        console.log('Voting for a option they already voted for');
-        await client.query(
-          'DELETE FROM votes WHERE id = $1',
-          [existingVote.id]
-        );
-      } else {
-        console.log('Voting for a different option');
-        await client.query(
-          'UPDATE votes SET value = $1, pseudonym = $2 WHERE id = $3',
-          [vote, pseudonym, existingVote.id]
-        );
-      }
-    } else {
-      console.log('User has not voted yet');
-      await client.query(
-        'INSERT INTO votes (question_id, user_id, value, pseudonym) VALUES ($1, $2, $3, $4)',
-        [questionId, userId, Array.isArray(vote) ? JSON.stringify(vote) : vote, pseudonym]
-      );
-    }
-
-    await client.query('COMMIT');
-    console.log('Vote added/updated successfully');
-  } catch (e) {
-    await client.query('ROLLBACK');
-    console.error('Error in addVote:', e);
-    throw e;
-  } finally {
-    client.release();
-  }
-}
-
 // Toggle a user's upvote on an open-ended response. Adds the upvote if absent,
 // removes it if already present.
 async function toggleResponseVote(topic, responseId, userId) {
@@ -3371,12 +3285,10 @@ async function getMyBrainstormState(topic, userId) {
 // Removes a single vote (used for Brainstorm ideas). The user_id check ensures a
 // participant can only delete their own ideas.
 async function deleteVote(voteId, userId) {
-  console.log('Deleting vote:', voteId, userId);
   await pool.query(
     'DELETE FROM votes WHERE id = $1 AND user_id = $2',
     [voteId, userId]
   );
-  console.log('Vote deleted successfully');
 }
 
 app.get('/api/discussions', async (req, res) => {
@@ -3386,7 +3298,7 @@ app.get('/api/discussions', async (req, res) => {
     );
     res.json(result.rows);
   } catch (err) {
-    console.error(err);
+    logError('Request failed:', err);
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -3417,7 +3329,7 @@ app.get('/api/discussions/:topic/snapshots', async (req, res) => {
     );
     res.json({ snapshots: result.rows });
   } catch (err) {
-    console.error('Error loading opinion snapshots:', err);
+    logError('Error loading opinion snapshots:', err);
     res.status(500).json({ error: 'Could not load opinion snapshots.' });
   }
 });
@@ -3472,11 +3384,11 @@ app.post('/api/discussions/:topic/snapshots', async (req, res) => {
       try {
         await client.query('ROLLBACK');
       } catch (rollbackErr) {
-        console.error('Error rolling back opinion snapshot transaction:', rollbackErr);
+        logError('Error rolling back opinion snapshot transaction:', rollbackErr);
         releaseError = rollbackErr;
       }
     }
-    console.error('Error saving opinion snapshot:', err);
+    logError('Error saving opinion snapshot:', err);
     res.status(500).json({ error: 'Could not save the opinion snapshot. Try again.' });
   } finally {
     if (client) client.release(releaseError);
@@ -3493,7 +3405,7 @@ app.get('/api/discussions/:topic/summary', async (req, res) => {
 
     res.json(summary);
   } catch (err) {
-    console.error(err);
+    logError('Request failed:', err);
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -3523,7 +3435,7 @@ app.get('/api/discussions/:topic/clusters', async (req, res) => {
       ...analysis,
     });
   } catch (err) {
-    console.error(err);
+    logError('Request failed:', err);
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -3540,7 +3452,7 @@ app.get('/api/discussions/:topic/export.json', async (req, res) => {
     res.setHeader('Content-Disposition', `attachment; filename="${sanitizeFilename(req.params.topic)}-summary.json"`);
     res.send(JSON.stringify(summary, null, 2));
   } catch (err) {
-    console.error(err);
+    logError('Request failed:', err);
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -3557,7 +3469,7 @@ app.get('/api/discussions/:topic/report.html', async (req, res) => {
     res.setHeader('Content-Disposition', `attachment; filename="${sanitizeFilename(req.params.topic)}-final-report.html"`);
     res.send(renderReportHtml(summary));
   } catch (err) {
-    console.error(err);
+    logError('Request failed:', err);
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -3619,14 +3531,13 @@ app.get('/api/discussions/:topic/export.csv', async (req, res) => {
     res.setHeader('Content-Disposition', `attachment; filename="${sanitizeFilename(req.params.topic)}-responses.csv"`);
     res.send(csv);
   } catch (err) {
-    console.error(err);
+    logError('Request failed:', err);
     res.status(500).json({ error: 'Server error' });
   }
 });
 
 app.post('/api/duplicate-discussion', async (req, res) => {
   const { originalTopic, newTopic } = req.body;
-  console.log(`Attempting to duplicate discussion. Original: ${originalTopic}, New: ${newTopic}`);
 
   if (!originalTopic || !newTopic) {
     console.log('Missing required fields');
@@ -3726,7 +3637,7 @@ app.post('/api/duplicate-discussion', async (req, res) => {
     });
   } catch (error) {
     await client.query('ROLLBACK');
-    console.error('Error duplicating discussion:', error);
+    logError('Error duplicating discussion:', error);
     res.status(500).json({ error: 'Failed to duplicate discussion' });
   } finally {
     client.release();
@@ -3746,7 +3657,7 @@ app.get('/s/:shortCode', async (req, res) => {
 
     res.redirect(302, `/discussion/${result.rows[0].slug}`);
   } catch (err) {
-    console.error('Error resolving short link:', err);
+    logError('Error resolving short link:', err);
     res.status(500).send('Server error');
   }
 });
@@ -3754,6 +3665,16 @@ app.get('/s/:shortCode', async (req, res) => {
 // Catch-all route
 app.get(/.*/, (req, res) => {
   res.sendFile(path.join(__dirname, 'dist', 'index.html'));
+});
+
+// Express's default error handler prints raw errors, including parser input and
+// database details. Route unexpected failures through the same safe logger.
+app.use((error, req, res, next) => {
+  logError('Unhandled request error:', error);
+  if (res.headersSent) return next(new Error('Request failed'));
+  const status = Number.isInteger(error.status) && error.status >= 400 && error.status < 500
+    ? error.status : 500;
+  res.status(status).json({ error: status < 500 ? 'Invalid request' : 'Server error' });
 });
 
 // Ensure the database schema exists before serving requests. schema.sql is
@@ -3785,6 +3706,6 @@ initSchema()
     server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
   })
   .catch((err) => {
-    console.error('Failed to initialize database, exiting:', err);
+    logError('Failed to initialize database, exiting:', err);
     process.exit(1);
   });
