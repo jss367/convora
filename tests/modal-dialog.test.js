@@ -120,3 +120,39 @@ test('background focus is redirected into the top modal until it closes', () => 
   assert.equal(env.document.activeElement, env.trigger);
   assert.equal(env.listeners.size, 0);
 });
+
+
+for (const nested of [false, true]) {
+  test(`successful duplication focuses destination content with reused route${nested ? ' and a stacked prompt' : ''}`, async () => {
+    const env = setup();
+    const destination = { isConnected: true, focus() { env.document.activeElement = this; } };
+    const destinationMore = { isConnected: true, focus() { env.document.activeElement = this; } };
+    const duplicateReturnFocusRef = { current: env.trigger };
+    const actionsMenuButtonRef = { current: env.trigger };
+    const duplicate = env.mount(() => {}, duplicateReturnFocusRef);
+    const similar = nested ? env.mount(() => {}) : null;
+    const source = readFileSync(require.resolve('../client/src/DiscussionPage.jsx'), 'utf8');
+    const start = source.indexOf('    const handleDuplicateDiscussion =');
+    const end = source.indexOf('    const handleQuestionsUpdate =', start);
+    const handler = vm.runInNewContext(`${source.slice(start, end)}\nhandleDuplicateDiscussion`, {
+      newTopicName: 'Destination', discussionSlug: 'original', console,
+      duplicateReturnFocusRef, actionsMenuButtonRef, discussionContentRef: { current: destination },
+      fetch: async () => ({ ok: true, json: async () => ({ newSlug: 'destination' }) }),
+      navigate: path => {
+        assert.equal(path, '/discussion/destination');
+        // React Router reuses DiscussionPage; its More ref now targets the
+        // destination control when dialog cleanup runs.
+        actionsMenuButtonRef.current = destinationMore;
+      },
+      setShowDuplicateModal: open => { assert.equal(open, false); duplicate.unmount(); },
+      setNewTopicName() {}, setError: error => assert.fail(error),
+    });
+    await handler();
+    if (similar) {
+      assert.equal(env.document.activeElement, similar.items[0]);
+      similar.unmount();
+    }
+    assert.equal(env.document.activeElement, destination);
+    assert.equal(env.listeners.size, 0);
+  });
+}

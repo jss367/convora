@@ -102,8 +102,10 @@ const DiscussionPage = () => {
     // by then, so its focus returns to the More button.
     const shareButtonRef = useRef(null);
     const actionsMenuButtonRef = useRef(null);
+    const discussionContentRef = useRef(null);
+    const duplicateReturnFocusRef = useRef(null);
     const shareDialogRef = useModalDialog(showShareModal, () => setShowShareModal(false), shareButtonRef);
-    const duplicateDialogRef = useModalDialog(showDuplicateModal, () => setShowDuplicateModal(false), actionsMenuButtonRef);
+    const duplicateDialogRef = useModalDialog(showDuplicateModal, () => setShowDuplicateModal(false), duplicateReturnFocusRef);
     const similarDialogRef = useModalDialog(Boolean(similarPrompt), () => setSimilarPrompt(null));
     const questionPendingRef = useRef(false);
     const [adminLinkCopied, setAdminLinkCopied] = useState(false);
@@ -571,6 +573,11 @@ const DiscussionPage = () => {
                         console.warn('Failed to store admin token:', e);
                     }
                 }
+                // The route reuses this component. Successful navigation must
+                // land on destination content instead of its unrelated More
+                // button. A stacked prompt inherits this target if it outlives
+                // the Duplicate dialog.
+                duplicateReturnFocusRef.current = discussionContentRef.current;
                 navigate(`/discussion/${result.newSlug}`);
             } else {
                 const errorData = await response.json();
@@ -1059,7 +1066,13 @@ const DiscussionPage = () => {
     );
 
     return (
-        <div className="max-w-4xl mx-auto mt-10 px-4">
+        <div
+            ref={discussionContentRef}
+            role="region"
+            aria-label={`Discussion: ${topic}`}
+            tabIndex={-1}
+            className="max-w-4xl mx-auto mt-10 px-4"
+        >
             {isAdmin && editingTitle ? (
                 <div className="mb-2 flex flex-col items-center gap-2">
                     <input
@@ -1246,6 +1259,7 @@ const DiscussionPage = () => {
                                     role="menuitem"
                                     onClick={() => {
                                         setShowActionsMenu(false);
+                                        duplicateReturnFocusRef.current = actionsMenuButtonRef.current;
                                         setShowDuplicateModal(true);
                                     }}
                                     className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"

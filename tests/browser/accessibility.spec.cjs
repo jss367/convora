@@ -167,3 +167,27 @@ test('Share and Duplicate stay above the floating QR and contain background focu
   await resize.focus();
   await expect(resize).toBeFocused();
 });
+
+
+test('successful duplication focuses destination content when the route reuses DiscussionPage', async ({ page, rooms }) => {
+  const room = await rooms.create('Duplicate navigation focus');
+  await page.goto(`/discussion/${room.slug}`);
+  await page.evaluate(() => { window.duplicateFocusMarker = 'same-page'; });
+  const more = page.getByRole('button', { name: 'More ▾', exact: true });
+  const dialog = page.getByRole('dialog', { name: 'Duplicate Discussion', exact: true });
+  await more.click();
+  await page.getByRole('menuitem', { name: 'Duplicate Discussion', exact: true }).click();
+  await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(more).toBeFocused();
+  await more.press('Enter');
+  await page.getByRole('menuitem', { name: 'Duplicate Discussion', exact: true }).click();
+  await dialog.getByRole('textbox', { name: 'New topic name', exact: true }).fill(`Focus copy ${room.slug}`);
+  const response = page.waitForResponse(r => r.url().endsWith('/api/duplicate-discussion') && r.request().method() === 'POST');
+  await dialog.getByRole('button', { name: 'Duplicate', exact: true }).click();
+  const result = await (await response).json();
+  await rooms.trackSlug(result.newSlug);
+  await expect(page).toHaveURL(new RegExp(`/discussion/${result.newSlug}$`));
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByRole('region', { name: `Discussion: ${result.newSlug}`, exact: true })).toBeFocused();
+  expect(await page.evaluate(() => window.duplicateFocusMarker)).toBe('same-page');
+});
