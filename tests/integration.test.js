@@ -67,6 +67,15 @@ test('server startup creates schema and applies the pseudonym migration', async 
   assert.deepEqual(columns.rows.map((row) => row.column_name), ['short_code', 'pseudonym']);
 });
 
+test('initialization adds the vote lookup index to existing databases idempotently', async () => {
+  await pool.query('DROP INDEX IF EXISTS votes_question_id_idx');
+  await initializeDatabase(pool);
+  await initializeDatabase(pool);
+  const index = await pool.query("SELECT indexdef FROM pg_indexes WHERE tablename = 'votes' AND indexname = 'votes_question_id_idx'");
+  assert.equal(index.rows.length, 1);
+  assert.match(index.rows[0].indexdef, /USING btree \(question_id\)/);
+});
+
 test('initialization upgrades legacy interaction flags once and preserves later moderator settings', async () => {
   await stopServer();
   try {
@@ -285,20 +294,64 @@ test('HTTP API creates and fetches discussions', async () => {
   assert.match(createResponse.body.slug, /^http-/);
   assert.match(createResponse.body.adminToken, /^[a-f0-9]{32}$/);
 
-  const fetchResponse = await jsonRequest('GET', `/api/discussions/${createResponse.body.id}`);
+  const fetchResponse = await jsonRequest('GET', `/api/discussions/resolve/${createResponse.body.slug}`);
   assert.equal(fetchResponse.status, 200);
   assert.equal(fetchResponse.body.topic, topic);
+});
+
+test('discussions are unlisted: the listing endpoint returns only slugs the caller already knows', async () => {
+  const mine = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('unlisted-mine') });
+  const theirs = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('Unlisted Theirs') });
+
+  // An anonymous visitor who knows no slugs learns nothing.
+  for (const query of ['', '?slugs=', '?slugs=,', '?admin=anything', '?slugs[]=x', '?slugs=%25', '?slugs=*']) {
+    const anonymous = await jsonRequest('GET', `/api/discussions${query}`);
+    assert.equal(anonymous.status, 200);
+    assert.deepEqual(anonymous.body, [], `GET /api/discussions${query} leaked discussions`);
+  }
+
+  // Knowing one slug reveals that discussion and no other.
+  const known = await jsonRequest('GET', `/api/discussions?slugs=${mine.body.slug},no-such-discussion`);
+  assert.equal(known.status, 200);
+  assert.deepEqual(known.body.map(row => row.slug), [mine.body.slug]);
+  assert.equal(known.body[0].topic, mine.body.topic);
+  assert.deepEqual(Object.keys(known.body[0]).sort(), ['created_at', 'slug', 'topic']);
+  assert.equal(JSON.stringify(known.body).includes(theirs.body.slug), false);
+
+  // Only exact slugs match; titles and partial slugs are not a search.
+  assert.notEqual(theirs.body.topic, theirs.body.slug);
+  const byTitle = await jsonRequest('GET', `/api/discussions?slugs=${encodeURIComponent(theirs.body.topic)}`);
+  assert.deepEqual(byTitle.body.filter(row => row.slug === theirs.body.slug), []);
+  const byPrefix = await jsonRequest('GET', '/api/discussions?slugs=unlisted');
+  assert.deepEqual(byPrefix.body, []);
+
+  // Sequential ids must not be an alternative way to enumerate discussions.
+  const byId = await fetch(`${baseUrl}/api/discussions/${theirs.body.id}`);
+  assert.equal((await byId.text()).includes(theirs.body.slug), false);
+
+  // Creating a discussion is not announced to unrelated connected clients.
+  const bystander = await connectSocket();
+  try {
+    let announced = false;
+    bystander.onAny(() => { announced = true; });
+    const quiet = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('unlisted-quiet') });
+    assert.equal(quiet.status, 200);
+    await new Promise(resolve => setTimeout(resolve, 200));
+    assert.equal(announced, false);
+  } finally {
+    bystander.disconnect();
+  }
 });
 
 for (const { type, value, expected, equivalentIds } of [
   { type: 'Numerical', value: '42', expected: 1 },
   { type: 'Numerical', value: '42', expected: 1, equivalentIds: true },
   { type: 'Open Ended', value: 'An answer', expected: 1 },
-  { type: 'Agreement', value: 'Agree', expected: 0 },
-  { type: 'Yes/No', value: 'Yes', expected: 0 },
-  { type: 'Brainstorm', value: 'An idea', expected: 10 },
+  { type: 'Agreement', value: 'Agree', expected: 1 },
+  { type: 'Yes/No', value: 'Yes', expected: 1 },
+  { type: 'Brainstorm', value: 'An idea', expected: 1 },
 ]) {
-  test(`concurrent ${type} submissions${equivalentIds ? ' with equivalent IDs' : ''} preserve response and toggle semantics`, async () => {
+  test(`concurrent ${type} submissions${equivalentIds ? ' with equivalent IDs' : ''} store one response per poll and distinct brainstorm idea`, async () => {
     const created = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('concurrent-votes') });
     const question = await pool.query(
       'INSERT INTO questions (discussion_id, text, type) VALUES ($1, $2, $3) RETURNING id',
@@ -386,7 +439,7 @@ for (const { type, first, second } of [
       const current = (await joined)[0].votes[0];
       assert.equal(current.value, first, 'The client selects its first owned response as current');
       const undone = waitForQuestions(socket, qs => qs[0]?.votes.length === 1, 'legacy vote undone');
-      socket.emit('vote', created.body.slug, poll, current.value, 'same-user', '');
+      socket.emit('clearVote', created.body.slug, poll, 'same-user');
       await undone;
       const remaining = await pool.query('SELECT user_id, value FROM votes WHERE question_id = $1', [poll]);
       assert.deepEqual(remaining.rows, [{ user_id: 'other-user', value: first }]);
@@ -630,7 +683,7 @@ test('Socket.IO adds questions and broadcasts votes with pseudonyms', async () =
   }
 });
 
-test('Yes/No questions record a single choice that toggles off when reselected', async () => {
+test('Yes/No questions record a single choice that only an explicit clear removes', async () => {
   const topic = uniqueTopic('yesno');
   const author = await connectSocket();
   const voter = await connectSocket();
@@ -673,17 +726,107 @@ test('Yes/No questions record a single choice that toggles off when reselected',
     voter.emit('vote', topic, question.id, 'No', 'yn-user', 'Decider');
     await noUpdate;
 
-    // Re-selecting the current choice toggles it off, like Agreement votes.
-    const toggleOffUpdate = waitForQuestions(
+    // Re-selecting the current choice keeps it: a vote sets, it never toggles.
+    const reselected = await new Promise((resolve) => {
+      voter.emit('vote', topic, question.id, 'No', 'yn-user', 'Decider', undefined, resolve);
+    });
+    assert.deepEqual(reselected, { ok: true });
+    assert.deepEqual(await storedVotes(question.id), [{ user_id: 'yn-user', value: 'No' }]);
+
+    // Undo is its own action, and repeating it is harmless.
+    const clearedUpdate = waitForQuestions(
       author,
       (qs) => qs[0] && qs[0].votes.length === 0,
-      'toggle off'
+      'explicit clear'
     );
-    voter.emit('vote', topic, question.id, 'No', 'yn-user', 'Decider');
-    await toggleOffUpdate;
+    voter.emit('clearVote', topic, question.id, 'yn-user');
+    await clearedUpdate;
+    const clearedAgain = await new Promise((resolve) => {
+      voter.emit('clearVote', topic, question.id, 'yn-user', resolve);
+    });
+    assert.deepEqual(clearedAgain, { ok: true });
+    assert.deepEqual(await storedVotes(question.id), []);
   } finally {
     author.disconnect();
     voter.disconnect();
+  }
+});
+
+function storedVotes(questionId) {
+  return pool.query('SELECT user_id, value FROM votes WHERE question_id = $1 ORDER BY id', [questionId])
+    .then(result => result.rows);
+}
+
+// Regression for #72: on a slow connection a participant taps the same option
+// twice and both emits arrive back to back. The vote must stay set.
+for (const { type, first, second } of [
+  { type: 'Agreement', first: 'Agree', second: 'Disagree' },
+  { type: 'Yes/No', first: 'Yes', second: 'No' },
+]) {
+  test(`two identical ${type} vote emits in a row leave the vote set`, async () => {
+    const created = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('double-tap') });
+    const inserted = await pool.query(
+      'INSERT INTO questions (discussion_id, text, type) VALUES ($1, $2, $3) RETURNING id',
+      [created.body.id, 'Double tap', type]
+    );
+    const questionId = inserted.rows[0].id;
+    const socket = await connectSocket();
+    const vote = value => new Promise((resolve) => {
+      socket.emit('vote', created.body.slug, questionId, value, 'double-tapper', 'Tapper', undefined, resolve);
+    });
+    try {
+      // A first vote tapped twice.
+      assert.deepEqual(await Promise.all([vote(first), vote(first)]), [{ ok: true }, { ok: true }]);
+      assert.deepEqual(await storedVotes(questionId), [{ user_id: 'double-tapper', value: first }]);
+
+      // The reported case: change the vote, tapping the new option twice.
+      assert.deepEqual(await Promise.all([vote(second), vote(second)]), [{ ok: true }, { ok: true }]);
+      assert.deepEqual(await storedVotes(questionId), [{ user_id: 'double-tapper', value: second }]);
+
+      // A rejected vote is acknowledged as failed and changes nothing.
+      assert.deepEqual(await vote('Maybe so'), { ok: false });
+      assert.deepEqual(await storedVotes(questionId), [{ user_id: 'double-tapper', value: second }]);
+    } finally {
+      socket.disconnect();
+    }
+  });
+}
+
+test('clearing a vote only applies to single-choice polls in an unlocked discussion', async () => {
+  const created = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('clear-scope') });
+  const inserted = await pool.query(
+    `INSERT INTO questions (discussion_id, text, type) VALUES
+     ($1, 'Opinion', 'Agreement'), ($1, 'Estimate', 'Numerical'), ($1, 'Ideas', 'Brainstorm') RETURNING id`,
+    [created.body.id]
+  );
+  const [agreement, numerical, brainstorm] = inserted.rows.map(row => row.id);
+  await pool.query(
+    `INSERT INTO votes (question_id, user_id, value) VALUES
+     ($1, 'clearer', 'Agree'), ($1, 'bystander', 'Agree'), ($2, 'clearer', '7'), ($3, 'clearer', 'An idea')`,
+    [agreement, numerical, brainstorm]
+  );
+  const socket = await connectSocket();
+  const clear = (questionId, userId = 'clearer') => new Promise((resolve) => {
+    socket.emit('clearVote', created.body.slug, questionId, userId, resolve);
+  });
+  try {
+    assert.deepEqual(await clear(numerical), { ok: false });
+    assert.deepEqual(await clear(brainstorm), { ok: false });
+    assert.equal((await storedVotes(numerical)).length, 1);
+    assert.equal((await storedVotes(brainstorm)).length, 1);
+
+    await pool.query('UPDATE discussions SET locked = TRUE WHERE id = $1', [created.body.id]);
+    assert.deepEqual(await clear(agreement), { ok: false });
+    assert.equal((await storedVotes(agreement)).length, 2);
+
+    await pool.query('UPDATE discussions SET locked = FALSE WHERE id = $1', [created.body.id]);
+    assert.deepEqual(await clear(agreement), { ok: true });
+    // Only the caller's own vote goes; the socket is pinned to its first identity.
+    assert.deepEqual(await storedVotes(agreement), [{ user_id: 'bystander', value: 'Agree' }]);
+    assert.deepEqual(await clear(agreement, 'bystander'), { ok: true });
+    assert.deepEqual(await storedVotes(agreement), [{ user_id: 'bystander', value: 'Agree' }]);
+  } finally {
+    socket.disconnect();
   }
 });
 
@@ -1004,6 +1147,46 @@ test("Socket.IO de-correlates one participant's multiple Brainstorm ideas", asyn
   } finally {
     author.disconnect();
     voter.disconnect();
+  }
+});
+
+test('a Brainstorm idea that repeats an existing one is rejected, ignoring case and whitespace', async () => {
+  const topic = uniqueTopic('brainstorm-duplicates');
+  const first = await connectSocket();
+  const second = await connectSocket();
+
+  try {
+    first.emit('joinDiscussion', topic);
+    second.emit('joinDiscussion', topic);
+    const question = await addBrainstormQuestion(first, topic, 'How can students explore careers?');
+    const other = await addBrainstormQuestion(first, topic, 'What else would help?');
+    const vote = (socket, questionId, value, userId) =>
+      emitWithAck(socket, 'vote', topic, questionId, value, userId, 'Name', 'custom');
+
+    assert.deepEqual(
+      await vote(first, question.id, 'Internships and job shadowing', 'user-one'), { ok: true, added: true });
+    // Another participant, and the original author, repeating it are both refused.
+    assert.deepEqual(
+      await vote(second, question.id, '  internships   and JOB\tshadowing ', 'user-two'),
+      { ok: false, added: false, reason: 'duplicate' });
+    assert.deepEqual(
+      await vote(first, question.id, 'Internships and job shadowing', 'user-one'),
+      { ok: false, added: false, reason: 'duplicate' });
+    // A different idea, and the same idea on another prompt, are still accepted.
+    assert.deepEqual(await vote(second, question.id, 'Internships', 'user-two'), { ok: true, added: true });
+    assert.deepEqual(
+      await vote(second, other.id, 'Internships and job shadowing', 'user-two'), { ok: true, added: true });
+
+    const stored = await pool.query(
+      'SELECT question_id, value FROM votes WHERE question_id = ANY($1) ORDER BY id', [[question.id, other.id]]);
+    assert.deepEqual(stored.rows, [
+      { question_id: question.id, value: 'Internships and job shadowing' },
+      { question_id: question.id, value: 'Internships' },
+      { question_id: other.id, value: 'Internships and job shadowing' },
+    ]);
+  } finally {
+    first.disconnect();
+    second.disconnect();
   }
 });
 
@@ -1749,8 +1932,11 @@ test('Brainstorm agreement votes accumulate into a distribution', async () => {
 
     const agreeUpdate = waitForQuestions(
       mod,
-      (qs) => qs[0] && qs[0].votes[0] && (qs[0].votes[0].agreementCounts || {})['Strongly Agree'] === 1,
-      'agreement counted'
+      (qs) => {
+        const counts = qs[0]?.votes[0]?.agreementCounts || {};
+        return counts['Strongly Agree'] === 1 && counts.Disagree === 1;
+      },
+      'both agreement votes counted'
     );
     raterA.emit('setResponseRating', topic, responseId, 'agreement', 'Strongly Agree', 'user-a');
     raterB.emit('setResponseRating', topic, responseId, 'agreement', 'Disagree', 'user-b');

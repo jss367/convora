@@ -48,7 +48,7 @@ const pool = new Pool({
   ssl: isProduction ? { rejectUnauthorized: false } : false,
 });
 
-const { addVote } = createVoteStore(pool);
+const { addVote, clearVote } = createVoteStore(pool);
 
 function sanitizeFilename(value) {
   return String(value || 'discussion')
@@ -343,13 +343,22 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('vote', async (topic, questionId, vote, claimedUserId, pseudonym, mode) => {
+  // "Set my vote to this value": repeating the same vote leaves it set. Undo is
+  // the separate clearVote event below. The optional ack tells the sender when
+  // the vote has been handled so its pending state can clear.
+  socket.on('vote', async (topic, questionId, vote, claimedUserId, pseudonym, mode, ack) => {
+    if (typeof mode === 'function' && ack === undefined) {
+      ack = mode;
+      mode = undefined;
+    }
+    const reply = (ok, details = {}) => { if (typeof ack === 'function') ack({ ok, ...details }); };
     const discussionSlug = slugifyTopic(topic);
     // Attribute the vote to the socket's pinned identity, not to whatever id the
     // message carries, so a client can't cast votes as another participant.
     const userId = bindSocketUser(socket, claimedUserId);
     if (!userId) {
       socket.emit('error', { message: 'Failed to handle vote' });
+      reply(false);
       return;
     }
     try {
@@ -359,10 +368,12 @@ io.on('connection', (socket) => {
       const target = await getQuestionForTopic(discussionSlug, questionId);
       if (!target) {
         socket.emit('error', { message: 'Invalid question for this discussion.' });
+        reply(false);
         return;
       }
       if (target.locked) {
         socket.emit('error', { message: 'Voting is closed for this discussion.' });
+        reply(false);
         return;
       }
       // Single-choice opinion types only accept their known options. Without
@@ -371,10 +382,12 @@ io.on('connection', (socket) => {
       // analysis (which scores votes by their agreement label).
       if (target.type === 'Agreement' && !AGREEMENT_OPTIONS.includes(vote)) {
         socket.emit('error', { message: 'Invalid vote.' });
+        reply(false);
         return;
       }
       if (target.type === 'Yes/No' && !YES_NO_OPTIONS.includes(vote)) {
         socket.emit('error', { message: 'Invalid vote.' });
+        reply(false);
         return;
       }
       // Numerical votes must be a finite number within the question's configured
@@ -394,18 +407,61 @@ io.on('connection', (socket) => {
         const { minValue, maxValue } = getQuestionRange({ min_value: target.minValue, max_value: target.maxValue });
         if (!Number.isFinite(num) || num < minValue || num > maxValue) {
           socket.emit('error', { message: 'Invalid vote.' });
+          reply(false);
           return;
         }
       }
       // Persist the reserved handle in pseudonym mode rather than the client's
       // (possibly pre-reservation, colliding) local pick — see canonicalPseudonym.
       const handle = await canonicalPseudonym(discussionSlug, target.discussionId, userId, mode, pseudonym);
-      await addVote(questionId, vote, userId, handle);
+      const result = await addVote(questionId, vote, userId, handle);
+      if (result.reason === 'duplicate') {
+        // An identical Brainstorm idea is already listed. Tell the submitter
+        // (via the optional ack) so they can vote on that one instead.
+        reply(false, { added: false, reason: 'duplicate' });
+        socket.emit('error', { message: 'That idea has already been added.' });
+        return;
+      }
       const questions = await getQuestions(discussionSlug);
       io.to(discussionSlug).emit('questions', questions);
+      reply(true, target.type === 'Brainstorm' ? { added: true } : {});
     } catch (error) {
       logError('Error handling vote:', error);
       socket.emit('error', { message: 'Failed to handle vote' });
+      reply(false);
+    }
+  });
+
+  // Explicit undo for single-choice polls. Clearing an already-absent vote is a
+  // no-op, so a retried or duplicated emit is harmless.
+  socket.on('clearVote', async (topic, questionId, claimedUserId, ack) => {
+    const reply = (ok) => { if (typeof ack === 'function') ack({ ok }); };
+    const discussionSlug = slugifyTopic(topic);
+    const userId = bindSocketUser(socket, claimedUserId);
+    if (!userId) {
+      socket.emit('error', { message: 'Failed to handle vote' });
+      reply(false);
+      return;
+    }
+    try {
+      const target = await getQuestionForTopic(discussionSlug, questionId);
+      if (!target || !['Agreement', 'Yes/No'].includes(target.type)) {
+        socket.emit('error', { message: 'Invalid question for this discussion.' });
+        reply(false);
+        return;
+      }
+      if (target.locked) {
+        socket.emit('error', { message: 'Voting is closed for this discussion.' });
+        reply(false);
+        return;
+      }
+      await clearVote(questionId, userId);
+      io.to(discussionSlug).emit('questions', await getQuestions(discussionSlug));
+      reply(true);
+    } catch (error) {
+      logError('Error clearing vote:', error);
+      socket.emit('error', { message: 'Failed to handle vote' });
+      reply(false);
     }
   });
 
@@ -1177,27 +1233,6 @@ app.post('/api/discussions/:topic/short-link', async (req, res) => {
     });
   } catch (err) {
     logError('Error generating short link:', err);
-    res.status(500).json({ error: 'Server error' });
-  }
-});
-
-app.get('/api/discussions/:id', async (req, res) => {
-  const { id } = req.params;
-  try {
-    // Select explicit columns, never admin_token: this endpoint is public and
-    // the discussion id is discoverable via GET /api/discussions, so returning
-    // the moderator secret here would let anyone claim moderator controls.
-    const result = await pool.query(
-      'SELECT id, topic, slug, short_code, created_at, locked FROM discussions WHERE id = $1',
-      [id]
-    );
-    if (result.rows.length > 0) {
-      res.json(result.rows[0]);
-    } else {
-      res.status(404).json({ error: 'Discussion not found' });
-    }
-  } catch (err) {
-    logError('Request failed:', err);
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -2325,10 +2360,31 @@ async function deleteVote(voteId, userId) {
   );
 }
 
+// Discussions are unlisted: they are reachable by link or short link only, so
+// there is deliberately no endpoint that enumerates them. This lookup returns
+// only the discussions whose exact slugs the caller already knows (the browser
+// remembers the ones it created or opened) and nothing when no slugs are sent.
+const MAX_KNOWN_SLUGS = 50;
+
 app.get('/api/discussions', async (req, res) => {
   try {
+    const raw = Array.isArray(req.query.slugs) ? req.query.slugs : [req.query.slugs];
+    const slugs = [...new Set(
+      raw
+        .filter(value => typeof value === 'string')
+        .flatMap(value => value.split(','))
+        // Exact canonical slugs only: this must not double as a title search.
+        .filter(slug => slug !== '' && slugifyTopic(slug) === slug)
+    )].slice(0, MAX_KNOWN_SLUGS);
+    if (slugs.length === 0) {
+      return res.json([]);
+    }
     const result = await pool.query(
-      'SELECT id, topic, slug, created_at FROM discussions ORDER BY created_at DESC'
+      `SELECT DISTINCT ON (slug) topic, slug, created_at
+         FROM discussions
+        WHERE slug = ANY($1::text[])
+        ORDER BY slug, id DESC`,
+      [slugs]
     );
     res.json(result.rows);
   } catch (err) {

@@ -197,11 +197,12 @@ BrainstormIdea.propTypes = {
 // comments on top, revealing them when the room shifts from generating ideas to
 // evaluating them.
 const BrainstormQuestion = ({
-    question, ownedVoteIds, ownedCommentIds, handleVote, handleDeleteVote, locked, isAdmin, myBrainstorm,
+    question, ownedVoteIds, ownedCommentIds, handleVote, pending, handleDeleteVote, locked, isAdmin, myBrainstorm,
     activeReactionKeys, onSetRating, onToggleReaction, onAddComment, onDeleteComment,
     onModeratorDeleteVote, onModeratorDeleteComment,
 }) => {
     const [idea, setIdea] = useState('');
+    const [duplicateIdea, setDuplicateIdea] = useState(null);
     const votes = question.votes || [];
     // Whether reactions/comments are available is set discussion-wide by the
     // moderator (see the moderator bar in DiscussionPage); each question carries
@@ -212,10 +213,16 @@ const BrainstormQuestion = ({
     const reactionsActive = reactionsEnabled && reactionsVisible;
 
     const submitIdea = () => {
-        if (idea.trim() === '') {
+        if (idea.trim() === '' || pending) {
             return;
         }
-        handleVote(question.id, idea.trim());
+        const submitted = idea.trim();
+        setDuplicateIdea(null);
+        // The server stores an idea once (ignoring case and spacing) and says
+        // so when it turns this one down as a duplicate.
+        handleVote(question.id, submitted, (result) => {
+            if (result && result.reason === 'duplicate') setDuplicateIdea(submitted);
+        });
         setIdea('');
     };
 
@@ -232,11 +239,16 @@ const BrainstormQuestion = ({
                     />
                     <button
                         onClick={submitIdea}
-                        disabled={idea.trim() === ''}
+                        disabled={idea.trim() === '' || pending}
                         className="px-4 py-2 bg-primary text-white rounded hover:bg-opacity-90 transition duration-300 mb-4 disabled:opacity-50"
                     >
-                        Add Idea
+                        {pending ? 'Saving…' : 'Add Idea'}
                     </button>
+                    {duplicateIdea && (
+                        <p className="text-sm text-amber-700 mb-4" role="status">
+                            &ldquo;{duplicateIdea}&rdquo; is already on the list, so it wasn&rsquo;t added again. You can vote on the existing idea instead.
+                        </p>
+                    )}
                 </>
             )}
 
@@ -297,6 +309,7 @@ BrainstormQuestion.propTypes = {
     ownedVoteIds: PropTypes.instanceOf(Set).isRequired,
     ownedCommentIds: PropTypes.instanceOf(Set).isRequired,
     handleVote: PropTypes.func.isRequired,
+    pending: PropTypes.bool,
     handleDeleteVote: PropTypes.func.isRequired,
     locked: PropTypes.bool,
     isAdmin: PropTypes.bool,

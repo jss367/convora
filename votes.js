@@ -1,11 +1,47 @@
 // Vote persistence is separate from transport handlers so every caller uses the
 // same transaction and concurrency rules. Pseudonyms are sanitized by callers.
+
+// SQL for the form in which two Brainstorm ideas count as the same idea:
+// whitespace runs collapsed to one space, ends trimmed, lowercased. Done in SQL
+// on both sides so the stored and submitted text are normalized identically.
+const NORMALIZED_IDEA = (expr) => `lower(btrim(regexp_replace(${expr}, '\\s+', ' ', 'g')))`;
+
 function createVoteStore(pool) {
-  async function addVote(questionId, vote, userId, pseudonym) {
+  async function inTransaction(work) {
     const client = await pool.connect();
     let releaseError;
     try {
       await client.query('BEGIN');
+      const result = await work(client);
+      await client.query('COMMIT');
+      return result;
+    } catch (error) {
+      try {
+        await client.query('ROLLBACK');
+      } catch (rollbackError) {
+        releaseError = rollbackError;
+      }
+      throw error;
+    } finally {
+      client.release(releaseError);
+    }
+  }
+
+  // A transaction alone does not protect the absent-row case. Serialize one
+  // participant's writes to a poll across sockets/processes before reading the
+  // current vote. Read Committed gives the waiter a fresh view after the lock.
+  function lockPollVote(client, questionId, userId) {
+    return client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
+      `poll_vote:${questionId}:${userId}`,
+    ]);
+  }
+
+  // "Set my answer to this value." Repeating a poll submission leaves that
+  // answer stored. Removing an answer is the separate clearVote action and is
+  // never inferred from a repeated value, so a retried or double-tapped vote
+  // cannot delete itself.
+  function addVote(questionId, vote, userId, pseudonym) {
+    return inTransaction(async client => {
       const typeResult = await client.query('SELECT id, type FROM questions WHERE id = $1', [questionId]);
       const question = typeResult.rows[0];
       if (!question) throw new Error('Question not found');
@@ -15,19 +51,30 @@ function createVoteStore(pool) {
       const questionType = question.type;
 
       if (questionType === 'Brainstorm') {
-        // Each idea is an independent response, including simultaneous ideas
-        // submitted by the same participant.
+        // Each idea is an independent response, so one participant can add many.
+        // The same idea twice (from anyone) would split its ratings, so it is
+        // stored once: ideas match when equal ignoring case and whitespace.
+        // The check-then-insert is serialized per question, otherwise two
+        // simultaneous submissions would both see no match and both insert.
+        await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
+          `brainstorm_idea:${questionId}`,
+        ]);
+        const existing = await client.query(
+          `SELECT 1 FROM votes
+           WHERE question_id = $1
+             AND ${NORMALIZED_IDEA('value')} = ${NORMALIZED_IDEA('$2::text')}
+           LIMIT 1`,
+          [questionId, vote]
+        );
+        if (existing.rows.length > 0) {
+          return { added: false, reason: 'duplicate' };
+        }
         await client.query(
           'INSERT INTO votes (question_id, user_id, value, pseudonym) VALUES ($1, $2, $3, $4)',
           [questionId, userId, vote, pseudonym]
         );
       } else {
-        // A transaction alone does not protect the absent-row case. Serialize
-        // submissions across sockets/processes before reading the current vote.
-        // Read Committed gives the waiter a fresh view after acquiring the lock.
-        await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
-          `poll_vote:${questionId}:${userId}`,
-        ]);
+        await lockPollVote(client, questionId, userId);
         const existing = await client.query(
           'SELECT id, value FROM votes WHERE question_id = $1 AND user_id = $2 ORDER BY id',
           [questionId, userId]
@@ -35,7 +82,7 @@ function createVoteStore(pool) {
         const current = existing.rows[0];
         // Repair duplicates left by older versions when this participant next
         // answers. Keep the first owned response, matching the client's current
-        // answer in getQuestions' ascending-ID list, so Undo toggles that answer.
+        // answer in getQuestions' ascending-ID list, so an update edits that answer.
         // Brainstorm ideas are independent and never go through this repair.
         if (existing.rows.length > 1) {
           await client.query(
@@ -50,28 +97,31 @@ function createVoteStore(pool) {
             'INSERT INTO votes (question_id, user_id, value, pseudonym) VALUES ($1, $2, $3, $4)',
             [questionId, userId, value, pseudonym]
           );
-        } else if (current.value === vote && ['Agreement', 'Yes/No'].includes(questionType)) {
-          await client.query('DELETE FROM votes WHERE id = $1', [current.id]);
         } else {
           await client.query('UPDATE votes SET value = $1, pseudonym = $2 WHERE id = $3', [
             value, pseudonym, current.id,
           ]);
         }
       }
-      await client.query('COMMIT');
-    } catch (error) {
-      try {
-        await client.query('ROLLBACK');
-      } catch (rollbackError) {
-        releaseError = rollbackError;
-      }
-      throw error;
-    } finally {
-      client.release(releaseError);
-    }
+      return { added: true };
+    });
   }
 
-  return { addVote };
+  // "Remove my answer to this poll." Clearing an absent vote is a no-op, and
+  // duplicates left by older versions go too. Brainstorm ideas are independent
+  // responses removed one at a time by id, never through this.
+  function clearVote(questionId, userId) {
+    return inTransaction(async client => {
+      const typeResult = await client.query('SELECT id, type FROM questions WHERE id = $1', [questionId]);
+      const question = typeResult.rows[0];
+      if (!question) throw new Error('Question not found');
+      if (question.type === 'Brainstorm') return;
+      await lockPollVote(client, question.id, userId);
+      await client.query('DELETE FROM votes WHERE question_id = $1 AND user_id = $2', [question.id, userId]);
+    });
+  }
+
+  return { addVote, clearVote };
 }
 
 module.exports = { createVoteStore };

@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import io from 'socket.io-client';
+import { rememberDiscussion } from '../knownDiscussions';
 
 // Same-origin by default; split-origin deployments can provide the socket URL.
 const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || undefined;
@@ -11,6 +12,99 @@ export function useDiscussionSocket() {
         return () => socket.disconnect();
     }, [socket]);
     return socket;
+}
+
+// True while the page cannot reach the server: the socket dropped or failed to
+// connect, or the browser reports being offline (which it knows well before the
+// socket's heartbeat times out). The initial connection attempt is not a loss.
+export function useConnectionLost(socket) {
+    const [socketDown, setSocketDown] = useState(false);
+    const [offline, setOffline] = useState(() => typeof navigator !== 'undefined' && navigator.onLine === false);
+    useEffect(() => {
+        const up = () => setSocketDown(false);
+        const down = reason => {
+            // Our own disconnect() on unmount is not a lost connection.
+            if (reason !== 'io client disconnect') setSocketDown(true);
+        };
+        const goOffline = () => setOffline(true);
+        const goOnline = () => setOffline(false);
+        socket.on('connect', up);
+        socket.on('disconnect', down);
+        socket.on('connect_error', down);
+        window.addEventListener('offline', goOffline);
+        window.addEventListener('online', goOnline);
+        return () => {
+            socket.off('connect', up);
+            socket.off('disconnect', down);
+            socket.off('connect_error', down);
+            window.removeEventListener('offline', goOffline);
+            window.removeEventListener('online', goOnline);
+        };
+    }, [socket]);
+    return socketDown || offline;
+}
+
+// Tracks answers that were emitted but not yet acknowledged, one per question,
+// so their controls can show a saving state and refuse a second tap. Emits made
+// while disconnected are buffered by Socket.IO and stay pending until the
+// replayed emit is acknowledged.
+export function usePendingVotes(socket) {
+    // questionId -> the value being saved (null while clearing the vote).
+    const [pendingVotes, setPendingVotes] = useState({});
+    const inFlight = useRef(new Map());
+
+    useEffect(() => {
+        // connected can still be true after a sleeping tab's heartbeat expires;
+        // Socket.IO buffers that emit until reconnect. Track actual sends so a
+        // disconnect never unlocks controls for an answer still in the buffer.
+        const markSent = (event, topic, questionId) => {
+            if (event !== 'vote' && event !== 'clearVote') return;
+            const entry = inFlight.current.get(questionId);
+            if (entry) entry.sent = true;
+        };
+        // An emit that had already left when the connection dropped is never
+        // acknowledged or resent. Stop waiting; rejoining the room on reconnect
+        // rebroadcasts the questions, which shows whether it was applied.
+        const dropSent = () => {
+            const lost = [...inFlight.current].filter(([, entry]) => entry.sent).map(([id]) => id);
+            if (lost.length === 0) return;
+            for (const id of lost) inFlight.current.delete(id);
+            setPendingVotes(prev => {
+                const next = { ...prev };
+                for (const id of lost) delete next[id];
+                return next;
+            });
+        };
+        socket.onAnyOutgoing(markSent);
+        socket.on('disconnect', dropSent);
+        return () => {
+            socket.offAnyOutgoing(markSent);
+            socket.off('disconnect', dropSent);
+        };
+    }, [socket]);
+
+    // Emits `event` with an acknowledgment callback appended. Returns false,
+    // without emitting, when this question already has an answer in flight.
+    const sendVote = useCallback((questionId, value, event, ...args) => {
+        if (inFlight.current.has(questionId)) return false;
+        const onResult = typeof args[args.length - 1] === 'function' ? args.pop() : undefined;
+        const entry = { sent: false };
+        inFlight.current.set(questionId, entry);
+        setPendingVotes(prev => ({ ...prev, [questionId]: value }));
+        socket.emit(event, ...args, result => {
+            if (inFlight.current.get(questionId) !== entry) return;
+            inFlight.current.delete(questionId);
+            setPendingVotes(prev => {
+                const next = { ...prev };
+                delete next[questionId];
+                return next;
+            });
+            if (onResult) onResult(result);
+        });
+        return true;
+    }, [socket]);
+
+    return [pendingVotes, sendVote];
 }
 
 // Subscribe once per room. Callback changes (for example creator verification)
@@ -30,7 +124,12 @@ export function useDiscussionRoom(socket, handlers) {
         };
         const listeners = Object.entries(events).map(([event, callback]) => {
             const listener = payload => {
-                if (current.current.discussionSlug === discussionSlug) current.current[callback](payload);
+                if (current.current.discussionSlug !== discussionSlug) return;
+                // Discussions are unlisted, so the home page can only show the
+                // ones this browser has opened. The payload is null when the
+                // discussion does not exist; rememberDiscussion ignores that.
+                if (event === 'discussion' && payload?.slug === discussionSlug) rememberDiscussion(payload);
+                current.current[callback](payload);
             };
             socket.on(event, listener);
             return [event, listener];
