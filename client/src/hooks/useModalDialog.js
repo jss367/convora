@@ -5,6 +5,10 @@ const FOCUSABLE = [
     'textarea:not([disabled])', '[tabindex]:not([tabindex="-1"])',
 ].join(', ');
 
+// A delayed similarity response can open a second panel over Share. Only the
+// top panel may handle keys or restore focus while another modal remains open.
+const activeDialogs = [];
+
 // Keyboard and focus behavior for a modal panel. Attach the returned ref to the
 // panel element, which also needs role="dialog", aria-modal="true",
 // aria-labelledby pointing at its heading, and tabIndex={-1}.
@@ -30,9 +34,13 @@ export function useModalDialog(open, onClose, returnFocusRef) {
         const focusable = () => Array.from(panel.querySelectorAll(FOCUSABLE))
             .filter((el) => el.getClientRects().length > 0);
 
-        (panel.querySelector('[data-autofocus]') || focusable()[0] || panel).focus();
+        const focusInitial = () => (panel.querySelector('[data-autofocus]') || focusable()[0] || panel).focus();
+        const dialog = { panel, focusInitial };
+        activeDialogs.push(dialog);
+        focusInitial();
 
         const onKeyDown = (event) => {
+            if (activeDialogs[activeDialogs.length - 1] !== dialog) return;
             if (event.key === 'Escape') {
                 // Escape that only dismisses an input method's suggestions is not ours.
                 if (event.isComposing) return;
@@ -65,8 +73,17 @@ export function useModalDialog(open, onClose, returnFocusRef) {
 
         return () => {
             document.removeEventListener('keydown', onKeyDown);
+            const wasTop = activeDialogs[activeDialogs.length - 1] === dialog;
+            activeDialogs.splice(activeDialogs.indexOf(dialog), 1);
+            if (!wasTop) return;
             const target = (returnFocusRef && returnFocusRef.current) || previouslyFocused;
-            if (target && target.isConnected && typeof target.focus === 'function') target.focus();
+            const remaining = activeDialogs[activeDialogs.length - 1];
+            if (target && target.isConnected && typeof target.focus === 'function'
+                && (!remaining || remaining.panel.contains(target))) {
+                target.focus();
+            } else if (remaining) {
+                remaining.focusInitial();
+            }
         };
     }, [open, returnFocusRef]);
 
