@@ -1189,27 +1189,6 @@ app.post('/api/discussions/:topic/short-link', async (req, res) => {
   }
 });
 
-app.get('/api/discussions/:id', async (req, res) => {
-  const { id } = req.params;
-  try {
-    // Select explicit columns, never admin_token: this endpoint is public and
-    // the discussion id is discoverable via GET /api/discussions, so returning
-    // the moderator secret here would let anyone claim moderator controls.
-    const result = await pool.query(
-      'SELECT id, topic, slug, short_code, created_at, locked FROM discussions WHERE id = $1',
-      [id]
-    );
-    if (result.rows.length > 0) {
-      res.json(result.rows[0]);
-    } else {
-      res.status(404).json({ error: 'Discussion not found' });
-    }
-  } catch (err) {
-    logError('Request failed:', err);
-    res.status(500).json({ error: 'Server error' });
-  }
-});
-
 // Database functions
 async function resolveDiscussionRoute(routeTopic) {
   const displayTopic = formatTopicTitle(routeTopic);
@@ -2333,10 +2312,31 @@ async function deleteVote(voteId, userId) {
   );
 }
 
+// Discussions are unlisted: they are reachable by link or short link only, so
+// there is deliberately no endpoint that enumerates them. This lookup returns
+// only the discussions whose exact slugs the caller already knows (the browser
+// remembers the ones it created or opened) and nothing when no slugs are sent.
+const MAX_KNOWN_SLUGS = 50;
+
 app.get('/api/discussions', async (req, res) => {
   try {
+    const raw = Array.isArray(req.query.slugs) ? req.query.slugs : [req.query.slugs];
+    const slugs = [...new Set(
+      raw
+        .filter(value => typeof value === 'string')
+        .flatMap(value => value.split(','))
+        // Exact canonical slugs only: this must not double as a title search.
+        .filter(slug => slug !== '' && slugifyTopic(slug) === slug)
+    )].slice(0, MAX_KNOWN_SLUGS);
+    if (slugs.length === 0) {
+      return res.json([]);
+    }
     const result = await pool.query(
-      'SELECT id, topic, slug, created_at FROM discussions ORDER BY created_at DESC'
+      `SELECT DISTINCT ON (slug) topic, slug, created_at
+         FROM discussions
+        WHERE slug = ANY($1::text[])
+        ORDER BY slug, id DESC`,
+      [slugs]
     );
     res.json(result.rows);
   } catch (err) {
