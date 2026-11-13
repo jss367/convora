@@ -695,12 +695,16 @@ const DiscussionPage = () => {
         }
     };
 
-    const handleVote = (questionId, value) => {
+    // onResult is optional. The server acks a stored vote with { added: true }
+    // and a repeated Brainstorm idea with { added: false, reason: 'duplicate' }.
+    const handleVote = (questionId, value, onResult) => {
         // Send the name mode too: in pseudonym mode the server persists our
         // reserved handle instead of this possibly-pre-reservation displayName,
         // closing the submit-before-reservation collision window (#57). We send the
         // EFFECTIVE mode so a blank-custom name (shown as the pseudonym) canonicalizes.
-        socket.emit('vote', discussionSlug, questionId, value, userId, displayName, getEffectiveNameMode(identity));
+        const args = [discussionSlug, questionId, value, userId, displayName, getEffectiveNameMode(identity)];
+        if (typeof onResult === 'function') args.push(onResult);
+        socket.emit('vote', ...args);
         setSliderValues(prev => ({ ...prev, [questionId]: undefined }));
     };
 

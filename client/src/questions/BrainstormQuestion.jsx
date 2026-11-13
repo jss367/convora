@@ -202,6 +202,7 @@ const BrainstormQuestion = ({
     onModeratorDeleteVote, onModeratorDeleteComment,
 }) => {
     const [idea, setIdea] = useState('');
+    const [duplicateIdea, setDuplicateIdea] = useState(null);
     const votes = question.votes || [];
     // Whether reactions/comments are available is set discussion-wide by the
     // moderator (see the moderator bar in DiscussionPage); each question carries
@@ -215,7 +216,13 @@ const BrainstormQuestion = ({
         if (idea.trim() === '') {
             return;
         }
-        handleVote(question.id, idea.trim());
+        const submitted = idea.trim();
+        setDuplicateIdea(null);
+        // The server stores an idea once (ignoring case and spacing) and says
+        // so when it turns this one down as a duplicate.
+        handleVote(question.id, submitted, (result) => {
+            if (result && result.reason === 'duplicate') setDuplicateIdea(submitted);
+        });
         setIdea('');
     };
 
@@ -237,6 +244,11 @@ const BrainstormQuestion = ({
                     >
                         Add Idea
                     </button>
+                    {duplicateIdea && (
+                        <p className="text-sm text-amber-700 mb-4" role="status">
+                            &ldquo;{duplicateIdea}&rdquo; is already on the list, so it wasn&rsquo;t added again. You can vote on the existing idea instead.
+                        </p>
+                    )}
                 </>
             )}
 

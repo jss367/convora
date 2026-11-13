@@ -343,7 +343,7 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('vote', async (topic, questionId, vote, claimedUserId, pseudonym, mode) => {
+  socket.on('vote', async (topic, questionId, vote, claimedUserId, pseudonym, mode, ack) => {
     const discussionSlug = slugifyTopic(topic);
     // Attribute the vote to the socket's pinned identity, not to whatever id the
     // message carries, so a client can't cast votes as another participant.
@@ -400,9 +400,17 @@ io.on('connection', (socket) => {
       // Persist the reserved handle in pseudonym mode rather than the client's
       // (possibly pre-reservation, colliding) local pick — see canonicalPseudonym.
       const handle = await canonicalPseudonym(discussionSlug, target.discussionId, userId, mode, pseudonym);
-      await addVote(questionId, vote, userId, handle);
+      const result = await addVote(questionId, vote, userId, handle);
+      if (result.reason === 'duplicate') {
+        // An identical Brainstorm idea is already listed. Tell the submitter
+        // (via the optional ack) so they can vote on that one instead.
+        if (typeof ack === 'function') ack({ added: false, reason: 'duplicate' });
+        socket.emit('error', { message: 'That idea has already been added.' });
+        return;
+      }
       const questions = await getQuestions(discussionSlug);
       io.to(discussionSlug).emit('questions', questions);
+      if (typeof ack === 'function') ack({ added: true });
     } catch (error) {
       logError('Error handling vote:', error);
       socket.emit('error', { message: 'Failed to handle vote' });
