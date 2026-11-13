@@ -14,6 +14,7 @@ const { io } = require('socket.io-client');
 const { createVoteStore } = require('../votes');
 const { initializeDatabase } = require('../database');
 const { assertSafeTestDatabase } = require('../scripts/test-database');
+const { cleanupDiscussions } = require('./helpers/cleanup-discussions.cjs');
 
 const rootDir = path.resolve(__dirname, '..');
 const databaseUrl = process.env.DATABASE_URL || 'postgresql://convora:convora@127.0.0.1:54330/convora_test';
@@ -35,17 +36,7 @@ test.before(async () => {
 });
 
 test.beforeEach(async () => {
-  // The server can still be finishing a read for the previous test's sockets.
-  // That read and this TRUNCATE lock the same tables in different orders, so
-  // Postgres occasionally aborts one of them as a deadlock; retry when it is us.
-  for (let attempt = 1; ; attempt += 1) {
-    try {
-      await pool.query('TRUNCATE TABLE votes, questions, discussions RESTART IDENTITY CASCADE');
-      return;
-    } catch (error) {
-      if (error.code !== '40P01' || attempt === 3) throw error;
-    }
-  }
+  await cleanupDiscussions(pool);
 });
 
 test.after(async () => {
@@ -299,7 +290,7 @@ test('HTTP API creates and fetches discussions', async () => {
 
   assert.equal(createResponse.status, 200);
   assert.equal(createResponse.body.success, true);
-  assert.equal(createResponse.body.id, 1);
+  assert.ok(Number.isInteger(createResponse.body.id) && createResponse.body.id > 0);
   assert.equal(createResponse.body.topic, topic);
   assert.match(createResponse.body.slug, /^http-/);
   assert.match(createResponse.body.adminToken, /^[a-f0-9]{32}$/);
