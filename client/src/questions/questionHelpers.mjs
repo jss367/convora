@@ -23,7 +23,7 @@ export function sortQuestionsMostRecent(questions) {
 // Returns null when there is no usable number (untouched, cleared, or
 // mid-typing input such as "-"), which callers treat as "nothing selected".
 export function clampNumericalValue(raw, min, max) {
-    if (raw === null || raw === undefined || raw === '') {
+    if (raw === null || raw === undefined || (typeof raw === 'string' && raw.trim() === '')) {
         return null;
     }
     const parsed = Math.trunc(Number(raw));

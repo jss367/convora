@@ -54,7 +54,14 @@ test('clampNumericalValue keeps typed and slider values inside the question rang
 
 test('clampNumericalValue reports "nothing selected" as null', async () => {
   const { clampNumericalValue } = await helpers;
-  for (const raw of [undefined, null, '', '-', 'abc', NaN]) {
+  for (const raw of [undefined, null, '', '   ', '-', 'abc', NaN]) {
     assert.equal(clampNumericalValue(raw, 0, 100), null, `expected null for ${String(raw)}`);
   }
+});
+
+test('signed drafts stay unset until digits arrive and clamp independently of the raw text', async () => {
+  const { clampNumericalValue } = await helpers;
+  const drafts = ['-', '-1', '-15', '-150'];
+  assert.deepEqual(drafts.map(raw => clampNumericalValue(raw, -100, 100)), [null, -1, -15, -100]);
+  assert.deepEqual(drafts, ['-', '-1', '-15', '-150']);
 });

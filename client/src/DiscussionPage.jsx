@@ -934,11 +934,11 @@ const DiscussionPage = () => {
                                         onClick={(e) => { if (isUnset) handleSliderChange(question.id, parseInt(e.target.value)); }}
                                     />
                                     <input
-                                        type="number"
-                                        min={minValue}
-                                        max={maxValue}
-                                        step={1}
-                                        inputMode="numeric"
+                                        // A number input sanitizes a lone minus
+                                        // to '', losing it on a controlled render.
+                                        // Text preserves intermediate signed input.
+                                        type="text"
+                                        inputMode="decimal"
                                         value={inputValue}
                                         placeholder="–"
                                         aria-label={`Type your answer to: ${question.text}`}

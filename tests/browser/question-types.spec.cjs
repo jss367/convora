@@ -1,6 +1,42 @@
 const { test, expect } = require('@playwright/test');
 const { Pool } = require('pg');
 
+test('negative numerical answers preserve a lone minus through controlled rerenders', async ({ page, request }) => {
+  const response = await request.post('/api/discussions', { data: { topic: `Negative entry ${Date.now()}` } });
+  expect(response.ok()).toBeTruthy();
+  const discussion = await response.json();
+  const pool = new Pool({
+    connectionString: process.env.DATABASE_URL || 'postgresql://convora:convora@127.0.0.1:54330/convora_test',
+  });
+  try {
+    await pool.query(
+      "INSERT INTO questions (discussion_id, text, type, min_value, max_value) VALUES ($1, 'Temperature', 'Numerical', -100, 100)",
+      [discussion.id]
+    );
+    await page.goto(`/discussion/${discussion.slug}`);
+    const input = page.getByRole('textbox', { name: 'Type your answer to: Temperature' });
+    const slider = page.getByRole('slider');
+    const submit = page.getByRole('button', { name: 'Submit', exact: true });
+    await input.pressSequentially('-');
+    await expect(input).toHaveValue('-');
+    await expect(submit).toBeDisabled();
+    await input.pressSequentially('1');
+    await expect(input).toHaveValue('-1');
+    await expect(slider).toHaveValue('-1');
+    await input.pressSequentially('5');
+    await expect(input).toHaveValue('-15');
+    await expect(slider).toHaveValue('-15');
+    await submit.click();
+    await expect(input).toHaveValue('-15');
+    await expect(page.getByRole('button', { name: 'Update Vote', exact: true })).toBeDisabled();
+  } finally {
+    await pool.query('DELETE FROM votes WHERE question_id IN (SELECT id FROM questions WHERE discussion_id = $1)', [discussion.id]);
+    await pool.query('DELETE FROM questions WHERE discussion_id = $1', [discussion.id]);
+    await pool.query('DELETE FROM discussions WHERE id = $1', [discussion.id]);
+    await pool.end();
+  }
+});
+
 test('question editing, numerical and binary voting, and brainstorm comments still work together', async ({ page, request }) => {
   const response = await request.post('/api/discussions', { data: { topic: `Question types ${Date.now()}` } });
   expect(response.ok()).toBeTruthy();
@@ -36,7 +72,7 @@ test('question editing, numerical and binary voting, and brainstorm comments sti
     // by accident, and no midpoint to anchor on.
     const submit = page.getByRole('button', { name: 'Submit', exact: true });
     const slider = page.getByRole('slider');
-    const numberBox = page.getByRole('spinbutton', { name: 'Type your answer to: Estimate effort' });
+    const numberBox = page.getByRole('textbox', { name: 'Type your answer to: Estimate effort' });
     await expect(submit).toBeDisabled();
     await expect(numberBox).toHaveValue('');
     await expect(slider).toHaveClass(/slider-unset/);
