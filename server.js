@@ -2754,7 +2754,9 @@ app.get('/s/:shortCode', async (req, res) => {
 
 // Catch-all route
 app.get(/.*/, (req, res) => {
-  res.sendFile(path.join(__dirname, 'dist', 'index.html'));
+  // Pass the directory as `root`: with a single absolute path, send rejects any
+  // dot-directory in it, which breaks checkouts under paths like `.worktrees/`.
+  res.sendFile('index.html', { root: path.join(__dirname, 'dist') });
 });
 
 // Express's default error handler prints raw errors, including parser input and

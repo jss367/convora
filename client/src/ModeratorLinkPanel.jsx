@@ -8,6 +8,8 @@ import PropTypes from 'prop-types';
 // panel shown to the creator right after creating a discussion, and a small
 // reminder that stays until the link has been copied once in this browser.
 
+// A saved link belongs to the credential, which can rotate on re-promotion.
+// Legacy '1' markers cannot establish that the current link was copied.
 const SAVED_KEY_PREFIX = 'convora_modlink_saved_';
 
 // Router state a creation flow passes to navigate() so the discussion page
@@ -16,55 +18,72 @@ export const moderatorLinkPromptState = slug => ({ moderatorLinkPrompt: slug });
 
 // Storage can be unavailable (private mode, blocked site data); then the
 // reminder just falls back to in-memory state for this page view.
-function readSaved(slug) {
+function readSaved(slug, token) {
     try {
-        return localStorage.getItem(`${SAVED_KEY_PREFIX}${slug}`) === '1';
+        return !!token && localStorage.getItem(`${SAVED_KEY_PREFIX}${slug}`) === token;
     } catch {
         return false;
     }
 }
 
-function writeSaved(slug) {
+function writeSaved(slug, token) {
     try {
-        localStorage.setItem(`${SAVED_KEY_PREFIX}${slug}`, '1');
+        localStorage.setItem(`${SAVED_KEY_PREFIX}${slug}`, token);
     } catch (error) {
         console.warn('Failed to remember that the moderator link was saved:', error);
     }
 }
 
-export function useModeratorLinkPrompt(discussionSlug) {
+export function useModeratorLinkPrompt(discussionSlug, adminToken) {
     const location = useLocation();
     const navigate = useNavigate();
     // mode is 'created' (the one-time panel) or 'manual' (copying failed, so
     // the link is shown for the moderator to copy by hand).
-    const [panel, setPanel] = useState({ slug: null, mode: null });
-    const [savedSlug, setSavedSlug] = useState(null);
+    const [panel, setPanel] = useState({ visit: null, mode: null });
+    const [savedCredential, setSavedCredential] = useState(null);
+    // Identify each visit, so returning to the same slug cannot revive its old
+    // panel or accept a clipboard promise started before leaving.
+    const visitRef = useRef(null);
+    if (visitRef.current?.slug !== discussionSlug) visitRef.current = { slug: discussionSlug };
+    const visit = visitRef.current;
+    const credentialRef = useRef(adminToken);
+    credentialRef.current = adminToken;
+    const mountedRef = useRef(true);
+    useEffect(() => {
+        mountedRef.current = true;
+        return () => { mountedRef.current = false; };
+    }, []);
+    const isCurrent = useCallback(() => mountedRef.current && visitRef.current === visit
+        && credentialRef.current === adminToken, [visit, adminToken]);
     const toolbarButtonRef = useRef(null);
 
     // Consume the creation flag: open the panel and strip the flag from the
     // history entry so a reload or back/forward does not show it again.
     useEffect(() => {
         if (!discussionSlug || location.state?.moderatorLinkPrompt !== discussionSlug) return;
-        setPanel({ slug: discussionSlug, mode: 'created' });
+        setPanel({ visit, mode: 'created' });
         navigate(`${location.pathname}${location.search}${location.hash}`, { replace: true, state: null });
-    }, [discussionSlug, location, navigate]);
+    }, [discussionSlug, location, navigate, visit]);
 
     const markSaved = useCallback(() => {
-        writeSaved(discussionSlug);
-        setSavedSlug(discussionSlug);
-    }, [discussionSlug]);
+        if (!isCurrent() || !adminToken) return;
+        writeSaved(discussionSlug, adminToken);
+        setSavedCredential({ slug: discussionSlug, token: adminToken });
+    }, [discussionSlug, adminToken, isCurrent]);
     const showManual = useCallback(() => {
-        setPanel({ slug: discussionSlug, mode: 'manual' });
-    }, [discussionSlug]);
+        if (!isCurrent()) return;
+        setPanel({ visit, mode: 'manual' });
+    }, [visit, isCurrent]);
     const dismiss = useCallback(() => {
-        setPanel({ slug: null, mode: null });
+        setPanel({ visit: null, mode: null });
         toolbarButtonRef.current?.focus();
     }, []);
 
     return {
-        mode: panel.slug === discussionSlug ? panel.mode : null,
-        saved: savedSlug === discussionSlug || readSaved(discussionSlug),
-        markSaved, showManual, dismiss, toolbarButtonRef,
+        mode: panel.visit === visit ? panel.mode : null,
+        saved: !!adminToken && ((savedCredential?.slug === discussionSlug
+            && savedCredential.token === adminToken) || readSaved(discussionSlug, adminToken)),
+        markSaved, showManual, dismiss, toolbarButtonRef, isCurrent,
     };
 }
 

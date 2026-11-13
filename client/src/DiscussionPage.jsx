@@ -99,7 +99,6 @@ const DiscussionPage = () => {
     const [similarPrompt, setSimilarPrompt] = useState(null);
     const questionPendingRef = useRef(false);
     const [adminLinkCopied, setAdminLinkCopied] = useState(false);
-    const moderatorLink = useModeratorLinkPrompt(discussionSlug);
     // Id of the question a moderator is currently editing inline (null when none).
     const [editingQuestionId, setEditingQuestionId] = useState(null);
     // Experimental "opinion groups" view, hidden behind a ?clusters=1 flag so it
@@ -135,6 +134,8 @@ const DiscussionPage = () => {
         onRevoked: closeParticipants,
     });
 
+    const moderatorLink = useModeratorLinkPrompt(discussionSlug, adminToken);
+    useEffect(() => { setAdminLinkCopied(false); }, [discussionSlug, adminToken]);
     const isAdmin = !!adminToken;
     const { locked, moderatorOnly } = discussionState;
     const theme = THEME_KEYS.includes(discussionState.theme) ? discussionState.theme : DEFAULT_THEME;
@@ -387,10 +388,14 @@ const DiscussionPage = () => {
     const handleCopyAdminLink = async () => {
         try {
             await navigator.clipboard.writeText(adminUrl);
+            if (!moderatorLink.isCurrent()) return;
             setAdminLinkCopied(true);
-            setTimeout(() => setAdminLinkCopied(false), 2000);
+            setTimeout(() => {
+                if (moderatorLink.isCurrent()) setAdminLinkCopied(false);
+            }, 2000);
             moderatorLink.markSaved();
         } catch (err) {
+            if (!moderatorLink.isCurrent()) return;
             console.error('Failed to copy admin link:', err);
             // Show the link in a field so it can be copied by hand.
             moderatorLink.showManual();
