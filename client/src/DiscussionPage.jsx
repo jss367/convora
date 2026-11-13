@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { QRCodeSVG } from 'qrcode.react';
 import { getEffectiveNameMode, NameModes, MAX_CUSTOM_NAME_LENGTH } from './identity';
-import { useDiscussionSocket, useDiscussionRoom } from './hooks/useDiscussionRoom';
+import { useDiscussionSocket, useDiscussionRoom, useConnectionLost, usePendingVotes } from './hooks/useDiscussionRoom';
 import { useParticipantIdentity } from './hooks/useParticipantIdentity';
 import { useModeratorAccess } from './hooks/useModeratorAccess';
 import { slugifyTopic } from './slugs';
@@ -59,6 +59,8 @@ const DiscussionPage = () => {
     const navigate = useNavigate();
     const discussionSlug = slugifyTopic(topic);
     const socket = useDiscussionSocket();
+    const connectionLost = useConnectionLost(socket);
+    const [pendingVotes, sendVote] = usePendingVotes(socket);
     const [discussion, setDiscussion] = useState(null);
     const [questions, setQuestions] = useState([]);
     const [newQuestion, setNewQuestion] = useState('');
@@ -700,8 +702,21 @@ const DiscussionPage = () => {
         // reserved handle instead of this possibly-pre-reservation displayName,
         // closing the submit-before-reservation collision window (#57). We send the
         // EFFECTIVE mode so a blank-custom name (shown as the pseudonym) canonicalizes.
-        socket.emit('vote', discussionSlug, questionId, value, userId, displayName, getEffectiveNameMode(identity));
+        // A vote means "set my answer to this value" and is safe to repeat; undo
+        // is the separate handleClearVote. While one is awaiting the server's
+        // acknowledgment the question's controls are disabled and a second
+        // submission is refused (#72).
+        const sent = sendVote(
+            questionId, value,
+            'vote', discussionSlug, questionId, value, userId, displayName, getEffectiveNameMode(identity)
+        );
+        if (!sent) return;
         setSliderValues(prev => ({ ...prev, [questionId]: undefined }));
+    };
+
+    // Explicit undo for Agreement and Yes/No votes.
+    const handleClearVote = (questionId) => {
+        sendVote(questionId, null, 'clearVote', discussionSlug, questionId, userId);
     };
 
     // Brainstorm answers are individual rows, so they're removed by vote id
@@ -829,6 +844,27 @@ const DiscussionPage = () => {
 
     const renderVotingMechanism = (question) => {
         const userVote = question.votes ? question.votes.find(v => isMyVote(question, v)) : null;
+        // undefined when idle; otherwise the value being saved (null = clearing).
+        const pendingVote = pendingVotes[question.id];
+        const votePending = pendingVote !== undefined;
+        // One button per option of a single-choice poll: it sets that option, or
+        // explicitly clears it when it is already this participant's vote.
+        const renderOptionVoteButton = (option) => {
+            const isMine = Boolean(userVote && userVote.value === option);
+            const saving = votePending && (pendingVote === option || (pendingVote === null && isMine));
+            return (
+                <button
+                    onClick={() => (isMine ? handleClearVote(question.id) : handleVote(question.id, option))}
+                    disabled={votePending}
+                    className={`px-4 py-2 rounded-md transition duration-300 disabled:opacity-60 disabled:cursor-not-allowed ${isMine
+                        ? 'bg-primary text-white hover:bg-opacity-90'
+                        : 'bg-secondary text-white hover:bg-opacity-90'
+                        }`}
+                >
+                    {saving ? 'Saving…' : isMine ? 'Undo Vote' : 'Vote'}
+                </button>
+            );
+        };
 
         if (!question || typeof question !== 'object') {
             console.error('Invalid question object');
@@ -847,15 +883,7 @@ const DiscussionPage = () => {
                                         <span className="font-medium">
                                             {option}: {question.votes ? question.votes.filter(v => v.value === option).length : 0}
                                         </span>
-                                        <button
-                                            onClick={() => handleVote(question.id, option)}
-                                            className={`px-4 py-2 rounded-md transition duration-300 ${userVote && userVote.value === option
-                                                ? 'bg-primary text-white hover:bg-opacity-90'
-                                                : 'bg-secondary text-white hover:bg-opacity-90'
-                                                }`}
-                                        >
-                                            {userVote && userVote.value === option ? 'Undo Vote' : 'Vote'}
-                                        </button>
+                                        {renderOptionVoteButton(option)}
                                     </div>
                                 ))}
                             </div>
@@ -873,15 +901,7 @@ const DiscussionPage = () => {
                                         <span className="font-medium">
                                             {option}: {question.votes ? question.votes.filter(v => v.value === option).length : 0}
                                         </span>
-                                        <button
-                                            onClick={() => handleVote(question.id, option)}
-                                            className={`px-4 py-2 rounded-md transition duration-300 ${userVote && userVote.value === option
-                                                ? 'bg-primary text-white hover:bg-opacity-90'
-                                                : 'bg-secondary text-white hover:bg-opacity-90'
-                                                }`}
-                                        >
-                                            {userVote && userVote.value === option ? 'Undo Vote' : 'Vote'}
-                                        </button>
+                                        {renderOptionVoteButton(option)}
                                     </div>
                                 ))}
                             </div>
@@ -919,9 +939,10 @@ const DiscussionPage = () => {
                                 </div>
                                 <button
                                     onClick={() => handleVote(question.id, sliderValue)}
-                                    className={`mt-4 px-4 py-2 rounded-md transition duration-300 ${userVote ? 'bg-primary text-white hover:bg-opacity-90' : 'bg-secondary text-white hover:bg-opacity-90'}`}
+                                    disabled={votePending}
+                                    className={`mt-4 px-4 py-2 rounded-md transition duration-300 disabled:opacity-60 disabled:cursor-not-allowed ${userVote ? 'bg-primary text-white hover:bg-opacity-90' : 'bg-secondary text-white hover:bg-opacity-90'}`}
                                 >
-                                    {userVote ? 'Update Vote' : 'Submit'}
+                                    {votePending ? 'Saving…' : userVote ? 'Update Vote' : 'Submit'}
                                 </button>
                             </>
                         )}
@@ -929,7 +950,7 @@ const DiscussionPage = () => {
                 );
             }
             case QuestionTypes.OPEN_ENDED: {
-                return <OpenEndedQuestion question={question} userVote={userVote} handleVote={handleVote} ownedVoteIds={ownedVoteIds} upvotedVoteIds={upvotedVoteIds} handleResponseVote={handleResponseVote} locked={locked} isAdmin={isAdmin} onModeratorDeleteVote={handleModeratorDeleteVote} />;
+                return <OpenEndedQuestion question={question} userVote={userVote} handleVote={handleVote} pending={votePending} ownedVoteIds={ownedVoteIds} upvotedVoteIds={upvotedVoteIds} handleResponseVote={handleResponseVote} locked={locked} isAdmin={isAdmin} onModeratorDeleteVote={handleModeratorDeleteVote} />;
             }
             case QuestionTypes.BRAINSTORM: {
                 return <BrainstormQuestion
@@ -937,6 +958,7 @@ const DiscussionPage = () => {
                     ownedVoteIds={ownedVoteIds}
                     ownedCommentIds={ownedCommentIds}
                     handleVote={handleVote}
+                    pending={votePending}
                     handleDeleteVote={handleDeleteVote}
                     locked={locked}
                     isAdmin={isAdmin}
@@ -1667,6 +1689,14 @@ const DiscussionPage = () => {
             </div>
             )}
             {error && <div className="text-red-500 mb-4">{error}</div>}
+            {connectionLost && (
+                <div
+                    role="status"
+                    className="fixed bottom-4 left-1/2 z-50 -translate-x-1/2 rounded-full bg-gray-900 px-4 py-2 text-sm text-white shadow-lg"
+                >
+                    Connection lost. Reconnecting…
+                </div>
+            )}
             {/* Sorting and filtering controls */}
             <div className="mb-6 flex justify-between items-center">
                 <select

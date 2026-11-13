@@ -197,7 +197,7 @@ BrainstormIdea.propTypes = {
 // comments on top, revealing them when the room shifts from generating ideas to
 // evaluating them.
 const BrainstormQuestion = ({
-    question, ownedVoteIds, ownedCommentIds, handleVote, handleDeleteVote, locked, isAdmin, myBrainstorm,
+    question, ownedVoteIds, ownedCommentIds, handleVote, pending, handleDeleteVote, locked, isAdmin, myBrainstorm,
     activeReactionKeys, onSetRating, onToggleReaction, onAddComment, onDeleteComment,
     onModeratorDeleteVote, onModeratorDeleteComment,
 }) => {
@@ -212,7 +212,7 @@ const BrainstormQuestion = ({
     const reactionsActive = reactionsEnabled && reactionsVisible;
 
     const submitIdea = () => {
-        if (idea.trim() === '') {
+        if (idea.trim() === '' || pending) {
             return;
         }
         handleVote(question.id, idea.trim());
@@ -232,10 +232,10 @@ const BrainstormQuestion = ({
                     />
                     <button
                         onClick={submitIdea}
-                        disabled={idea.trim() === ''}
+                        disabled={idea.trim() === '' || pending}
                         className="px-4 py-2 bg-primary text-white rounded hover:bg-opacity-90 transition duration-300 mb-4 disabled:opacity-50"
                     >
-                        Add Idea
+                        {pending ? 'Saving…' : 'Add Idea'}
                     </button>
                 </>
             )}
@@ -297,6 +297,7 @@ BrainstormQuestion.propTypes = {
     ownedVoteIds: PropTypes.instanceOf(Set).isRequired,
     ownedCommentIds: PropTypes.instanceOf(Set).isRequired,
     handleVote: PropTypes.func.isRequired,
+    pending: PropTypes.bool,
     handleDeleteVote: PropTypes.func.isRequired,
     locked: PropTypes.bool,
     isAdmin: PropTypes.bool,

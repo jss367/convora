@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import io from 'socket.io-client';
 
 // Same-origin by default; split-origin deployments can provide the socket URL.
@@ -11,6 +11,93 @@ export function useDiscussionSocket() {
         return () => socket.disconnect();
     }, [socket]);
     return socket;
+}
+
+// True while the page cannot reach the server: the socket dropped or failed to
+// connect, or the browser reports being offline (which it knows well before the
+// socket's heartbeat times out). The initial connection attempt is not a loss.
+export function useConnectionLost(socket) {
+    const [socketDown, setSocketDown] = useState(false);
+    const [offline, setOffline] = useState(() => typeof navigator !== 'undefined' && navigator.onLine === false);
+    useEffect(() => {
+        const up = () => setSocketDown(false);
+        const down = reason => {
+            // Our own disconnect() on unmount is not a lost connection.
+            if (reason !== 'io client disconnect') setSocketDown(true);
+        };
+        const goOffline = () => setOffline(true);
+        const goOnline = () => setOffline(false);
+        socket.on('connect', up);
+        socket.on('disconnect', down);
+        socket.on('connect_error', down);
+        window.addEventListener('offline', goOffline);
+        window.addEventListener('online', goOnline);
+        return () => {
+            socket.off('connect', up);
+            socket.off('disconnect', down);
+            socket.off('connect_error', down);
+            window.removeEventListener('offline', goOffline);
+            window.removeEventListener('online', goOnline);
+        };
+    }, [socket]);
+    return socketDown || offline;
+}
+
+// Tracks answers that were emitted but not yet acknowledged, one per question,
+// so their controls can show a saving state and refuse a second tap. Emits made
+// while disconnected are buffered by Socket.IO and stay pending until the
+// replayed emit is acknowledged.
+export function usePendingVotes(socket) {
+    // questionId -> the value being saved (null while clearing the vote).
+    const [pendingVotes, setPendingVotes] = useState({});
+    const inFlight = useRef(new Map());
+
+    useEffect(() => {
+        // Buffered emits are flushed on connect.
+        const markSent = () => {
+            for (const entry of inFlight.current.values()) entry.sent = true;
+        };
+        // An emit that had already left when the connection dropped is never
+        // acknowledged or resent. Stop waiting; rejoining the room on reconnect
+        // rebroadcasts the questions, which shows whether it was applied.
+        const dropSent = () => {
+            const lost = [...inFlight.current].filter(([, entry]) => entry.sent).map(([id]) => id);
+            if (lost.length === 0) return;
+            for (const id of lost) inFlight.current.delete(id);
+            setPendingVotes(prev => {
+                const next = { ...prev };
+                for (const id of lost) delete next[id];
+                return next;
+            });
+        };
+        socket.on('connect', markSent);
+        socket.on('disconnect', dropSent);
+        return () => {
+            socket.off('connect', markSent);
+            socket.off('disconnect', dropSent);
+        };
+    }, [socket]);
+
+    // Emits `event` with an acknowledgment callback appended. Returns false,
+    // without emitting, when this question already has an answer in flight.
+    const sendVote = useCallback((questionId, value, event, ...args) => {
+        if (inFlight.current.has(questionId)) return false;
+        const entry = { sent: socket.connected };
+        inFlight.current.set(questionId, entry);
+        setPendingVotes(prev => ({ ...prev, [questionId]: value }));
+        socket.emit(event, ...args, () => {
+            if (inFlight.current.get(questionId) !== entry) return;
+            inFlight.current.delete(questionId);
+            setPendingVotes(prev => {
+                const next = { ...prev };
+                delete next[questionId];
+                return next;
+            });
+        });
+        return true;
+    }, [socket]);
+
+    return [pendingVotes, sendVote];
 }
 
 // Subscribe once per room. Callback changes (for example creator verification)

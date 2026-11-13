@@ -294,11 +294,11 @@ for (const { type, value, expected, equivalentIds } of [
   { type: 'Numerical', value: '42', expected: 1 },
   { type: 'Numerical', value: '42', expected: 1, equivalentIds: true },
   { type: 'Open Ended', value: 'An answer', expected: 1 },
-  { type: 'Agreement', value: 'Agree', expected: 0 },
-  { type: 'Yes/No', value: 'Yes', expected: 0 },
+  { type: 'Agreement', value: 'Agree', expected: 1 },
+  { type: 'Yes/No', value: 'Yes', expected: 1 },
   { type: 'Brainstorm', value: 'An idea', expected: 10 },
 ]) {
-  test(`concurrent ${type} submissions${equivalentIds ? ' with equivalent IDs' : ''} preserve response and toggle semantics`, async () => {
+  test(`concurrent ${type} submissions${equivalentIds ? ' with equivalent IDs' : ''} store one response per poll and every brainstorm idea`, async () => {
     const created = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('concurrent-votes') });
     const question = await pool.query(
       'INSERT INTO questions (discussion_id, text, type) VALUES ($1, $2, $3) RETURNING id',
@@ -386,7 +386,7 @@ for (const { type, first, second } of [
       const current = (await joined)[0].votes[0];
       assert.equal(current.value, first, 'The client selects its first owned response as current');
       const undone = waitForQuestions(socket, qs => qs[0]?.votes.length === 1, 'legacy vote undone');
-      socket.emit('vote', created.body.slug, poll, current.value, 'same-user', '');
+      socket.emit('clearVote', created.body.slug, poll, 'same-user');
       await undone;
       const remaining = await pool.query('SELECT user_id, value FROM votes WHERE question_id = $1', [poll]);
       assert.deepEqual(remaining.rows, [{ user_id: 'other-user', value: first }]);
@@ -630,7 +630,7 @@ test('Socket.IO adds questions and broadcasts votes with pseudonyms', async () =
   }
 });
 
-test('Yes/No questions record a single choice that toggles off when reselected', async () => {
+test('Yes/No questions record a single choice that only an explicit clear removes', async () => {
   const topic = uniqueTopic('yesno');
   const author = await connectSocket();
   const voter = await connectSocket();
@@ -673,17 +673,107 @@ test('Yes/No questions record a single choice that toggles off when reselected',
     voter.emit('vote', topic, question.id, 'No', 'yn-user', 'Decider');
     await noUpdate;
 
-    // Re-selecting the current choice toggles it off, like Agreement votes.
-    const toggleOffUpdate = waitForQuestions(
+    // Re-selecting the current choice keeps it: a vote sets, it never toggles.
+    const reselected = await new Promise((resolve) => {
+      voter.emit('vote', topic, question.id, 'No', 'yn-user', 'Decider', undefined, resolve);
+    });
+    assert.deepEqual(reselected, { ok: true });
+    assert.deepEqual(await storedVotes(question.id), [{ user_id: 'yn-user', value: 'No' }]);
+
+    // Undo is its own action, and repeating it is harmless.
+    const clearedUpdate = waitForQuestions(
       author,
       (qs) => qs[0] && qs[0].votes.length === 0,
-      'toggle off'
+      'explicit clear'
     );
-    voter.emit('vote', topic, question.id, 'No', 'yn-user', 'Decider');
-    await toggleOffUpdate;
+    voter.emit('clearVote', topic, question.id, 'yn-user');
+    await clearedUpdate;
+    const clearedAgain = await new Promise((resolve) => {
+      voter.emit('clearVote', topic, question.id, 'yn-user', resolve);
+    });
+    assert.deepEqual(clearedAgain, { ok: true });
+    assert.deepEqual(await storedVotes(question.id), []);
   } finally {
     author.disconnect();
     voter.disconnect();
+  }
+});
+
+function storedVotes(questionId) {
+  return pool.query('SELECT user_id, value FROM votes WHERE question_id = $1 ORDER BY id', [questionId])
+    .then(result => result.rows);
+}
+
+// Regression for #72: on a slow connection a participant taps the same option
+// twice and both emits arrive back to back. The vote must stay set.
+for (const { type, first, second } of [
+  { type: 'Agreement', first: 'Agree', second: 'Disagree' },
+  { type: 'Yes/No', first: 'Yes', second: 'No' },
+]) {
+  test(`two identical ${type} vote emits in a row leave the vote set`, async () => {
+    const created = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('double-tap') });
+    const inserted = await pool.query(
+      'INSERT INTO questions (discussion_id, text, type) VALUES ($1, $2, $3) RETURNING id',
+      [created.body.id, 'Double tap', type]
+    );
+    const questionId = inserted.rows[0].id;
+    const socket = await connectSocket();
+    const vote = value => new Promise((resolve) => {
+      socket.emit('vote', created.body.slug, questionId, value, 'double-tapper', 'Tapper', undefined, resolve);
+    });
+    try {
+      // A first vote tapped twice.
+      assert.deepEqual(await Promise.all([vote(first), vote(first)]), [{ ok: true }, { ok: true }]);
+      assert.deepEqual(await storedVotes(questionId), [{ user_id: 'double-tapper', value: first }]);
+
+      // The reported case: change the vote, tapping the new option twice.
+      assert.deepEqual(await Promise.all([vote(second), vote(second)]), [{ ok: true }, { ok: true }]);
+      assert.deepEqual(await storedVotes(questionId), [{ user_id: 'double-tapper', value: second }]);
+
+      // A rejected vote is acknowledged as failed and changes nothing.
+      assert.deepEqual(await vote('Maybe so'), { ok: false });
+      assert.deepEqual(await storedVotes(questionId), [{ user_id: 'double-tapper', value: second }]);
+    } finally {
+      socket.disconnect();
+    }
+  });
+}
+
+test('clearing a vote only applies to single-choice polls in an unlocked discussion', async () => {
+  const created = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('clear-scope') });
+  const inserted = await pool.query(
+    `INSERT INTO questions (discussion_id, text, type) VALUES
+     ($1, 'Opinion', 'Agreement'), ($1, 'Estimate', 'Numerical'), ($1, 'Ideas', 'Brainstorm') RETURNING id`,
+    [created.body.id]
+  );
+  const [agreement, numerical, brainstorm] = inserted.rows.map(row => row.id);
+  await pool.query(
+    `INSERT INTO votes (question_id, user_id, value) VALUES
+     ($1, 'clearer', 'Agree'), ($1, 'bystander', 'Agree'), ($2, 'clearer', '7'), ($3, 'clearer', 'An idea')`,
+    [agreement, numerical, brainstorm]
+  );
+  const socket = await connectSocket();
+  const clear = (questionId, userId = 'clearer') => new Promise((resolve) => {
+    socket.emit('clearVote', created.body.slug, questionId, userId, resolve);
+  });
+  try {
+    assert.deepEqual(await clear(numerical), { ok: false });
+    assert.deepEqual(await clear(brainstorm), { ok: false });
+    assert.equal((await storedVotes(numerical)).length, 1);
+    assert.equal((await storedVotes(brainstorm)).length, 1);
+
+    await pool.query('UPDATE discussions SET locked = TRUE WHERE id = $1', [created.body.id]);
+    assert.deepEqual(await clear(agreement), { ok: false });
+    assert.equal((await storedVotes(agreement)).length, 2);
+
+    await pool.query('UPDATE discussions SET locked = FALSE WHERE id = $1', [created.body.id]);
+    assert.deepEqual(await clear(agreement), { ok: true });
+    // Only the caller's own vote goes; the socket is pinned to its first identity.
+    assert.deepEqual(await storedVotes(agreement), [{ user_id: 'bystander', value: 'Agree' }]);
+    assert.deepEqual(await clear(agreement, 'bystander'), { ok: true });
+    assert.deepEqual(await storedVotes(agreement), [{ user_id: 'bystander', value: 'Agree' }]);
+  } finally {
+    socket.disconnect();
   }
 });
 
