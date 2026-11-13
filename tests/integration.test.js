@@ -67,6 +67,15 @@ test('server startup creates schema and applies the pseudonym migration', async 
   assert.deepEqual(columns.rows.map((row) => row.column_name), ['short_code', 'pseudonym']);
 });
 
+test('initialization adds the vote lookup index to existing databases idempotently', async () => {
+  await pool.query('DROP INDEX IF EXISTS votes_question_id_idx');
+  await initializeDatabase(pool);
+  await initializeDatabase(pool);
+  const index = await pool.query("SELECT indexdef FROM pg_indexes WHERE tablename = 'votes' AND indexname = 'votes_question_id_idx'");
+  assert.equal(index.rows.length, 1);
+  assert.match(index.rows[0].indexdef, /USING btree \(question_id\)/);
+});
+
 test('initialization upgrades legacy interaction flags once and preserves later moderator settings', async () => {
   await stopServer();
   try {
@@ -296,9 +305,9 @@ for (const { type, value, expected, equivalentIds } of [
   { type: 'Open Ended', value: 'An answer', expected: 1 },
   { type: 'Agreement', value: 'Agree', expected: 1 },
   { type: 'Yes/No', value: 'Yes', expected: 1 },
-  { type: 'Brainstorm', value: 'An idea', expected: 10 },
+  { type: 'Brainstorm', value: 'An idea', expected: 1 },
 ]) {
-  test(`concurrent ${type} submissions${equivalentIds ? ' with equivalent IDs' : ''} store one response per poll and every brainstorm idea`, async () => {
+  test(`concurrent ${type} submissions${equivalentIds ? ' with equivalent IDs' : ''} store one response per poll and distinct brainstorm idea`, async () => {
     const created = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('concurrent-votes') });
     const question = await pool.query(
       'INSERT INTO questions (discussion_id, text, type) VALUES ($1, $2, $3) RETURNING id',
@@ -1094,6 +1103,46 @@ test("Socket.IO de-correlates one participant's multiple Brainstorm ideas", asyn
   } finally {
     author.disconnect();
     voter.disconnect();
+  }
+});
+
+test('a Brainstorm idea that repeats an existing one is rejected, ignoring case and whitespace', async () => {
+  const topic = uniqueTopic('brainstorm-duplicates');
+  const first = await connectSocket();
+  const second = await connectSocket();
+
+  try {
+    first.emit('joinDiscussion', topic);
+    second.emit('joinDiscussion', topic);
+    const question = await addBrainstormQuestion(first, topic, 'How can students explore careers?');
+    const other = await addBrainstormQuestion(first, topic, 'What else would help?');
+    const vote = (socket, questionId, value, userId) =>
+      emitWithAck(socket, 'vote', topic, questionId, value, userId, 'Name', 'custom');
+
+    assert.deepEqual(
+      await vote(first, question.id, 'Internships and job shadowing', 'user-one'), { ok: true, added: true });
+    // Another participant, and the original author, repeating it are both refused.
+    assert.deepEqual(
+      await vote(second, question.id, '  internships   and JOB\tshadowing ', 'user-two'),
+      { ok: false, added: false, reason: 'duplicate' });
+    assert.deepEqual(
+      await vote(first, question.id, 'Internships and job shadowing', 'user-one'),
+      { ok: false, added: false, reason: 'duplicate' });
+    // A different idea, and the same idea on another prompt, are still accepted.
+    assert.deepEqual(await vote(second, question.id, 'Internships', 'user-two'), { ok: true, added: true });
+    assert.deepEqual(
+      await vote(second, other.id, 'Internships and job shadowing', 'user-two'), { ok: true, added: true });
+
+    const stored = await pool.query(
+      'SELECT question_id, value FROM votes WHERE question_id = ANY($1) ORDER BY id', [[question.id, other.id]]);
+    assert.deepEqual(stored.rows, [
+      { question_id: question.id, value: 'Internships and job shadowing' },
+      { question_id: question.id, value: 'Internships' },
+      { question_id: other.id, value: 'Internships and job shadowing' },
+    ]);
+  } finally {
+    first.disconnect();
+    second.disconnect();
   }
 });
 

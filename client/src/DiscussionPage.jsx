@@ -697,7 +697,9 @@ const DiscussionPage = () => {
         }
     };
 
-    const handleVote = (questionId, value) => {
+    // onResult is optional. The server acks a stored vote with { added: true }
+    // and a repeated Brainstorm idea with { added: false, reason: 'duplicate' }.
+    const handleVote = (questionId, value, onResult) => {
         // Send the name mode too: in pseudonym mode the server persists our
         // reserved handle instead of this possibly-pre-reservation displayName,
         // closing the submit-before-reservation collision window (#57). We send the
@@ -706,10 +708,9 @@ const DiscussionPage = () => {
         // is the separate handleClearVote. While one is awaiting the server's
         // acknowledgment the question's controls are disabled and a second
         // submission is refused (#72).
-        const sent = sendVote(
-            questionId, value,
-            'vote', discussionSlug, questionId, value, userId, displayName, getEffectiveNameMode(identity)
-        );
+        const args = [discussionSlug, questionId, value, userId, displayName, getEffectiveNameMode(identity)];
+        if (typeof onResult === 'function') args.push(onResult);
+        const sent = sendVote(questionId, value, 'vote', ...args);
         if (!sent) return;
         setSliderValues(prev => ({ ...prev, [questionId]: undefined }));
     };

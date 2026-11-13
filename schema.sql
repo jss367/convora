@@ -36,6 +36,9 @@ CREATE TABLE IF NOT EXISTS votes (
   created_at  TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Restrict duplicate-idea checks to one question, including on existing databases.
+CREATE INDEX IF NOT EXISTS votes_question_id_idx ON votes(question_id);
+
 -- Immutable aggregates: snapshots survive later vote updates and question edits
 -- or deletions without retaining participant identities or individual answers.
 CREATE TABLE IF NOT EXISTS opinion_snapshots (

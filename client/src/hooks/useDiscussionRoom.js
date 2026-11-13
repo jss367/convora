@@ -86,10 +86,11 @@ export function usePendingVotes(socket) {
     // without emitting, when this question already has an answer in flight.
     const sendVote = useCallback((questionId, value, event, ...args) => {
         if (inFlight.current.has(questionId)) return false;
+        const onResult = typeof args[args.length - 1] === 'function' ? args.pop() : undefined;
         const entry = { sent: false };
         inFlight.current.set(questionId, entry);
         setPendingVotes(prev => ({ ...prev, [questionId]: value }));
-        socket.emit(event, ...args, () => {
+        socket.emit(event, ...args, result => {
             if (inFlight.current.get(questionId) !== entry) return;
             inFlight.current.delete(questionId);
             setPendingVotes(prev => {
@@ -97,6 +98,7 @@ export function usePendingVotes(socket) {
                 delete next[questionId];
                 return next;
             });
+            if (onResult) onResult(result);
         });
         return true;
     }, [socket]);

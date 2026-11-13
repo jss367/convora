@@ -88,3 +88,17 @@ test('leaving a discussion removes its pending-vote listeners', () => {
   assert.equal(socket.listeners('disconnect').length, 0);
   assert.equal(socket.listenersAnyOutgoing().length, 0);
 });
+
+test('a duplicate result clears pending and reaches the Brainstorm notice callback', () => {
+  const socket = disconnectedSocket();
+  const hook = mountPendingVotes(socket);
+  const result = { ok: false, added: false, reason: 'duplicate' };
+  let received;
+  hook.sendVote(7, 'Idea', 'vote', 'room', 7, 'Idea', 'user', 'Name', 'custom', value => { received = value; });
+  assert.equal(socket.sendBuffer[0].data.length, 7, 'only the wire arguments reach Socket.IO');
+  socket.onack({ id: socket.sendBuffer[0].id, data: [result] });
+  assert.equal(hook.pending()[7], undefined);
+  assert.equal(received, result);
+  assert.equal(hook.sendVote(7, 'Another idea', 'vote', 'room', 7, 'Another idea', 'user'), true);
+  hook.unmount();
+});

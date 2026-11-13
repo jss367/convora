@@ -1,13 +1,20 @@
 // Vote persistence is separate from transport handlers so every caller uses the
 // same transaction and concurrency rules. Pseudonyms are sanitized by callers.
+
+// SQL for the form in which two Brainstorm ideas count as the same idea:
+// whitespace runs collapsed to one space, ends trimmed, lowercased. Done in SQL
+// on both sides so the stored and submitted text are normalized identically.
+const NORMALIZED_IDEA = (expr) => `lower(btrim(regexp_replace(${expr}, '\\s+', ' ', 'g')))`;
+
 function createVoteStore(pool) {
   async function inTransaction(work) {
     const client = await pool.connect();
     let releaseError;
     try {
       await client.query('BEGIN');
-      await work(client);
+      const result = await work(client);
       await client.query('COMMIT');
+      return result;
     } catch (error) {
       try {
         await client.query('ROLLBACK');
@@ -44,8 +51,24 @@ function createVoteStore(pool) {
       const questionType = question.type;
 
       if (questionType === 'Brainstorm') {
-        // Each idea is an independent response, including simultaneous ideas
-        // submitted by the same participant.
+        // Each idea is an independent response, so one participant can add many.
+        // The same idea twice (from anyone) would split its ratings, so it is
+        // stored once: ideas match when equal ignoring case and whitespace.
+        // The check-then-insert is serialized per question, otherwise two
+        // simultaneous submissions would both see no match and both insert.
+        await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
+          `brainstorm_idea:${questionId}`,
+        ]);
+        const existing = await client.query(
+          `SELECT 1 FROM votes
+           WHERE question_id = $1
+             AND ${NORMALIZED_IDEA('value')} = ${NORMALIZED_IDEA('$2::text')}
+           LIMIT 1`,
+          [questionId, vote]
+        );
+        if (existing.rows.length > 0) {
+          return { added: false, reason: 'duplicate' };
+        }
         await client.query(
           'INSERT INTO votes (question_id, user_id, value, pseudonym) VALUES ($1, $2, $3, $4)',
           [questionId, userId, vote, pseudonym]
@@ -80,6 +103,7 @@ function createVoteStore(pool) {
           ]);
         }
       }
+      return { added: true };
     });
   }
 
