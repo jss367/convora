@@ -62,10 +62,11 @@ const DiscussionPage = () => {
     const socket = useDiscussionSocket();
     const [discussion, setDiscussion] = useState(null);
     const [questions, setQuestions] = useState([]);
-    const [newQuestion, setNewQuestion] = useState('');
-    const [questionType, setQuestionType] = useState(QuestionTypes.AGREEMENT);
-    const [minValue, setMinValue] = useState(0);
-    const [maxValue, setMaxValue] = useState(100);
+    const [questionDraft, setQuestionDraft] = useState({
+        text: '', type: QuestionTypes.AGREEMENT, minValue: 0, maxValue: 100,
+    });
+    const { text: newQuestion, type: questionType, minValue, maxValue } = questionDraft;
+    const updateQuestionDraft = (field, value) => setQuestionDraft(current => ({ ...current, [field]: value }));
     const [sliderValues, setSliderValues] = useState({});
     const [sortOption, setSortOption] = useState(SortOptions.MOST_RECENT);
     const [showUnansweredOnly, setShowUnansweredOnly] = useState(false);
@@ -677,6 +678,7 @@ const DiscussionPage = () => {
     const submitQuestion = (question, force) => {
         if (questionPendingRef.current) return;
         questionPendingRef.current = true;
+        const submittedDraft = questionDraft;
         try {
             setError(null);
             socket.timeout(10000).emit('addQuestion', discussionSlug, question, force, adminToken, (err, resp) => {
@@ -686,10 +688,17 @@ const DiscussionPage = () => {
                     return;
                 }
                 if (resp && resp.added) {
-                    setNewQuestion(current => current.trim() === question.text ? '' : current);
-                    setQuestionType(QuestionTypes.AGREEMENT);
-                    setMinValue(0);
-                    setMaxValue(100);
+                    // Reset the whole draft atomically only if it has not been
+                    // edited since submission. Also match the payload because
+                    // Post Anyway may be confirming an older similarity prompt.
+                    setQuestionDraft(current => {
+                        if (current !== submittedDraft
+                            || current.text.trim() !== question.text
+                            || current.type !== question.type
+                            || (question.type === QuestionTypes.NUMERICAL
+                                && (current.minValue !== question.minValue || current.maxValue !== question.maxValue))) return current;
+                        return { text: '', type: QuestionTypes.AGREEMENT, minValue: 0, maxValue: 100 };
+                    });
                 } else if (resp && resp.reason === 'moderator_only') {
                     setError('Only the moderator can add questions right now.');
                 }
@@ -1659,7 +1668,7 @@ const DiscussionPage = () => {
                 <input
                     type="text"
                     value={newQuestion}
-                    onChange={(e) => setNewQuestion(e.target.value)}
+                    onChange={(e) => updateQuestionDraft('text', e.target.value)}
                     // Holding Enter auto-repeats; submit once per key press.
                     onKeyDown={(e) => { if (e.key === 'Enter' && e.repeat) e.preventDefault(); }}
                     placeholder="Enter a new question or statement"
@@ -1669,7 +1678,7 @@ const DiscussionPage = () => {
                     <label className="block mb-2">Question Type:</label>
                     <select
                         value={questionType}
-                        onChange={(e) => setQuestionType(e.target.value)}
+                        onChange={(e) => updateQuestionDraft('type', e.target.value)}
                         className="w-full p-3 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary"
                     >
                         {Object.values(QuestionTypes).map(type => (
@@ -1687,7 +1696,7 @@ const DiscussionPage = () => {
                             <input
                                 type="number"
                                 value={minValue}
-                                onChange={(e) => setMinValue(parseInt(e.target.value))}
+                                onChange={(e) => updateQuestionDraft('minValue', parseInt(e.target.value))}
                                 className="w-full p-3 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary"
                             />
                         </div>
@@ -1696,7 +1705,7 @@ const DiscussionPage = () => {
                             <input
                                 type="number"
                                 value={maxValue}
-                                onChange={(e) => setMaxValue(parseInt(e.target.value))}
+                                onChange={(e) => updateQuestionDraft('maxValue', parseInt(e.target.value))}
                                 className="w-full p-3 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary"
                             />
                         </div>
