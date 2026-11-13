@@ -54,3 +54,20 @@ body {
     background-image: linear-gradient(to bottom, #f8fafc, #eef1f6);
     background-attachment: fixed;
 }
+
+/*
+ * A numerical question's slider before the participant has picked a value:
+ * hide the thumb and fade the track so no position reads as an answer.
+ * Clicking or dragging anywhere on the track still selects a value.
+ */
+input[type='range'].slider-unset {
+    opacity: 0.5;
+}
+
+input[type='range'].slider-unset::-webkit-slider-thumb {
+    opacity: 0;
+}
+
+input[type='range'].slider-unset::-moz-range-thumb {
+    opacity: 0;
+}

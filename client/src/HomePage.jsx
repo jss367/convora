@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import io from 'socket.io-client';
 
@@ -13,6 +13,9 @@ const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || undefined;
 const HomePage = () => {
     const [discussions, setDiscussions] = useState([]);
     const [newDiscussion, setNewDiscussion] = useState('');
+    // True while a create request is in flight, so a repeated Enter or a
+    // double click can't create the discussion twice.
+    const creatingRef = useRef(false);
     const navigate = useNavigate();
 
     useEffect(() => {
@@ -41,9 +44,13 @@ const HomePage = () => {
         };
     }, []);
 
-    const handleCreateDiscussion = async () => {
+    const handleCreateDiscussion = async (event) => {
+        // Submitted from the form (Enter or the Create button); stop the
+        // browser's native submit from reloading the page.
+        event?.preventDefault();
         const topic = newDiscussion.trim();
-        if (topic !== '') {
+        if (topic !== '' && !creatingRef.current) {
+            creatingRef.current = true;
             try {
                 const response = await fetch('/api/discussions', {
                     method: 'POST',
@@ -69,6 +76,8 @@ const HomePage = () => {
                 navigate(`/discussion/${discussion.slug}`);
             } catch (error) {
                 console.error('Error creating discussion:', error);
+            } finally {
+                creatingRef.current = false;
             }
         }
     };
@@ -79,7 +88,7 @@ const HomePage = () => {
 
             <div className="mb-8">
                 <h2 className="text-xl font-bold mb-4">Create a New Discussion</h2>
-                <div className="flex space-x-2">
+                <form onSubmit={handleCreateDiscussion} className="flex space-x-2">
                     <input
                         type="text"
                         value={newDiscussion}
@@ -87,8 +96,8 @@ const HomePage = () => {
                         placeholder="Enter discussion topic"
                         className="flex-grow p-2 border rounded"
                     />
-                    <button onClick={handleCreateDiscussion} className="px-4 py-2 bg-primary text-white rounded hover:bg-opacity-90 transition duration-300">Create</button>
-                </div>
+                    <button type="submit" className="px-4 py-2 bg-primary text-white rounded hover:bg-opacity-90 transition duration-300">Create</button>
+                </form>
             </div>
 
             <h2 className="text-2xl font-bold mb-4">Existing Discussions</h2>
