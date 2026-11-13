@@ -159,7 +159,7 @@ const DEFAULT_THEME = 'indigo';
 async function getDiscussionState(topic) {
   const slug = slugifyTopic(topic);
   const result = await pool.query(
-    `SELECT locked, moderator_only_questions, theme, reaction_keys,
+    `SELECT locked, moderator_only_questions, theme, reaction_keys, results_visibility,
             admin_token IS NOT NULL AS has_moderator,
             reactions_enabled, reactions_visible, comments_enabled
        FROM discussions WHERE slug = $1`,
@@ -170,6 +170,7 @@ async function getDiscussionState(topic) {
       locked: false, moderatorOnly: false, hasModerator: false, theme: DEFAULT_THEME,
       reactionsEnabled: false, reactionsVisible: true, commentsEnabled: false,
       reactionKeys: [...DEFAULT_REACTION_KEYS],
+      resultsVisibility: DEFAULT_RESULTS_VISIBILITY,
     };
   }
   const row = result.rows[0];
@@ -182,11 +183,129 @@ async function getDiscussionState(topic) {
     reactionsVisible: row.reactions_visible === true,
     commentsEnabled: row.comments_enabled === true,
     reactionKeys: resolveReactionKeys(row.reaction_keys),
+    resultsVisibility: resolveResultsVisibility(row.results_visibility),
   };
 }
 
 async function emitDiscussionState(topic) {
   io.to(topic).emit('discussionState', await getDiscussionState(topic));
+}
+
+// When participants may see the results of Agreement, Yes/No and Numerical
+// questions (the tallied types, OPINION_TYPES). 'after_vote' is the default:
+// seeing the room's answer first pulls people toward it, so a participant gets a
+// question's results only once they have answered it. 'always' shows results to
+// everyone. Moderators see results in both modes. Open Ended and Brainstorm
+// questions are not affected: their responses are the discussion itself, not a
+// tally, and they keep their own reaction/comment toggles.
+const RESULTS_VISIBILITY_MODES = ['after_vote', 'always'];
+const DEFAULT_RESULTS_VISIBILITY = 'after_vote';
+
+function resolveResultsVisibility(value) {
+  return RESULTS_VISIBILITY_MODES.includes(value) ? value : DEFAULT_RESULTS_VISIBILITY;
+}
+
+// Who may see every result in a discussion: everyone when results are always
+// shown, otherwise only holders of a current moderator token (the creator's or a
+// promoted moderator's). Tokens are read fresh on each call, so a revoked
+// moderator loses the full view at the next payload.
+async function getResultsAccess(topic) {
+  const result = await pool.query(
+    `SELECT d.results_visibility, d.admin_token,
+            ARRAY(SELECT m.token FROM discussion_moderators m WHERE m.discussion_id = d.id) AS moderator_tokens
+       FROM discussions d WHERE d.slug = $1 ORDER BY d.id DESC LIMIT 1`,
+    [slugifyTopic(topic)]
+  );
+  const row = result.rows[0];
+  const tokens = new Set(row ? [row.admin_token, ...row.moderator_tokens].filter(Boolean) : []);
+  return {
+    alwaysShow: resolveResultsVisibility(row?.results_visibility) === 'always',
+    isModerator: token => typeof token === 'string' && tokens.has(token),
+  };
+}
+
+// One viewer's copy of the questions: tallied questions this participant has not
+// answered lose their votes, and with them every count, percentage, average and
+// individual value, and are marked resultsHidden so the client can say why.
+// `respondents` comes from the same getQuestions call as `questions`, so the
+// decision and the data describe the same moment. Returns `questions` itself
+// when nothing needs hiding.
+function hideUnansweredResults(questions, respondents, userId) {
+  let hidden = false;
+  const view = questions.map(question => {
+    const answeredBy = respondents.get(question.id);
+    if (!answeredBy || (userId && answeredBy.has(userId))) return question;
+    hidden = true;
+    return { ...question, votes: [], resultsHidden: true };
+  });
+  return hidden ? view : questions;
+}
+
+// The questions as one REST caller may see them. `token` is a moderator token
+// and `userId` the participant's id, both optional; a caller that supplies
+// neither is treated as a participant who has answered nothing.
+async function getQuestionsForViewer(topic, { userId = null, token = null, includeUserIds = false } = {}) {
+  const respondents = new Map();
+  const questions = await getQuestions(topic, { includeUserIds, respondents });
+  // Read access after the questions: if the mode or a moderator grant changes
+  // in between, the stricter of the two states wins or a rebroadcast follows.
+  const access = await getResultsAccess(topic);
+  if (access.alwaysShow || access.isModerator(token)) return questions;
+  return hideUnansweredResults(questions, respondents, userId);
+}
+
+// REST callers identify themselves with the same secrets the socket uses, sent
+// as headers so they stay out of URLs and request logs.
+function restViewer(req) {
+  return {
+    userId: req.get('x-convora-user') || null,
+    token: req.get('x-convora-moderator') || null,
+  };
+}
+
+// Send the questions to a discussion's room, or to one socket. When results are
+// always shown everyone gets the same payload in one room broadcast. Otherwise
+// each socket gets its own view: moderators (sockets that proved a token through
+// checkModerator) the full payload, everyone else the payload with the results
+// of questions they have not answered removed. Views are built once per
+// participant and shared by their sockets, from a single questions query.
+async function emitQuestions(topic, onlySocket = null) {
+  const slug = slugifyTopic(topic);
+  const respondents = new Map();
+  const questions = await getQuestions(slug, { respondents });
+  const access = await getResultsAccess(slug);
+  if (access.alwaysShow) {
+    (onlySocket || io.to(slug)).emit('questions', questions);
+    return;
+  }
+  const targets = onlySocket
+    ? [onlySocket]
+    : [...(io.sockets.adapter.rooms.get(slug) || [])].map(id => io.sockets.sockets.get(id)).filter(Boolean);
+  const views = new Map();
+  for (const target of targets) {
+    const moderator = target.data.moderator;
+    if (moderator && moderator.slug === slug && access.isModerator(moderator.token)) {
+      target.emit('questions', questions);
+      continue;
+    }
+    const userId = target.data.userId || null;
+    if (!views.has(userId)) views.set(userId, hideUnansweredResults(questions, respondents, userId));
+    target.emit('questions', views.get(userId));
+  }
+}
+
+// A socket's view can change without any vote: it identifies itself after
+// joining, or gains or loses moderator access. Resend its questions then, unless
+// results are always shown and the payload it already has is complete.
+async function resendQuestionsIfPersonalized(socket) {
+  const slug = socket.data.topic;
+  if (!slug) return;
+  try {
+    if ((await getResultsAccess(slug)).alwaysShow) return;
+    await emitQuestions(slug, socket);
+  } catch (error) {
+    logError('Error resending questions:', error);
+  }
 }
 
 // Resolve the authoritative userId for a socket connection.
@@ -234,8 +353,7 @@ io.on('connection', (socket) => {
 
     try {
       socket.emit('discussion', await getDiscussionBySlug(discussionSlug));
-      const questions = await getQuestions(discussionSlug);
-      socket.emit('questions', questions);
+      await emitQuestions(discussionSlug, socket);
       socket.emit('discussionState', await getDiscussionState(discussionSlug));
     } catch (error) {
       logError('Error getting questions:', error);
@@ -261,6 +379,9 @@ io.on('connection', (socket) => {
     // sockets instead of inflating the count until the next join/leave.
     if (wasAnonymous && socket.data.userId && socket.data.topic) {
       emitPresence(socket.data.topic);
+      // The questions sent on join were built before we knew who this is, so
+      // they hid the results of questions this participant has already answered.
+      resendQuestionsIfPersonalized(socket);
     }
   });
 
@@ -332,9 +453,8 @@ io.on('connection', (socket) => {
       }
 
       await addQuestion(discussionSlug, normalizedQuestion);
-      const updatedQuestions = await getQuestions(discussionSlug);
       io.to(discussionSlug).emit('discussion', await getDiscussionBySlug(discussionSlug));
-      io.to(discussionSlug).emit('questions', updatedQuestions);
+      await emitQuestions(discussionSlug);
       reply({ added: true });
     } catch (error) {
       logError('Error adding question:', error);
@@ -422,8 +542,7 @@ io.on('connection', (socket) => {
         socket.emit('error', { message: 'That idea has already been added.' });
         return;
       }
-      const questions = await getQuestions(discussionSlug);
-      io.to(discussionSlug).emit('questions', questions);
+      await emitQuestions(discussionSlug);
       reply(true, target.type === 'Brainstorm' ? { added: true } : {});
     } catch (error) {
       logError('Error handling vote:', error);
@@ -456,7 +575,7 @@ io.on('connection', (socket) => {
         return;
       }
       await clearVote(questionId, userId);
-      io.to(discussionSlug).emit('questions', await getQuestions(discussionSlug));
+      await emitQuestions(discussionSlug);
       reply(true);
     } catch (error) {
       logError('Error clearing vote:', error);
@@ -474,6 +593,10 @@ io.on('connection', (socket) => {
         if (typeof cb === 'function') cb({ success: true, token });
         io.to(discussionSlug).emit('discussion', await getDiscussionBySlug(discussionSlug));
         await emitDiscussionState(discussionSlug);
+        // This socket now holds the moderator token, so it gets the moderator's
+        // view of the questions (see checkModerator).
+        socket.data.moderator = { slug: discussionSlug, token };
+        if (socket.data.topic === discussionSlug) await resendQuestionsIfPersonalized(socket);
       } else if (typeof cb === 'function') {
         cb({ success: false, error: 'already_claimed' });
       }
@@ -564,6 +687,8 @@ io.on('connection', (socket) => {
       await revokeModerator(discussionId, target.userId);
       revokeModeratorToken(discussionSlug, target.userId);
       await emitDiscussionState(discussionSlug);
+      // The revoked token no longer grants the full results view.
+      await emitQuestions(discussionSlug);
       if (typeof cb === 'function') {
         cb({ success: true, participants: await listParticipants(discussionSlug), canDemote: true });
       }
@@ -588,7 +713,19 @@ io.on('connection', (socket) => {
       // creator who hasn't opened the participant panel still won't have their
       // creator token clobbered by a pushed moderatorGranted token.
       const isCreator = discussionId ? !!(await verifyCreator(slug, token)) : false;
+      // Remember the proven token so this socket receives the moderator's view
+      // of the questions (results are never hidden from moderators). The token
+      // is checked again whenever questions are sent, so revoking it ends that.
+      const wasModerator = socket.data.moderator?.slug === slug;
+      if (discussionId) {
+        socket.data.moderator = { slug, token };
+      } else if (wasModerator) {
+        socket.data.moderator = null;
+      }
       cb({ ok: true, isModerator: !!discussionId, isCreator });
+      if ((discussionId || wasModerator) && socket.data.topic === slug) {
+        await resendQuestionsIfPersonalized(socket);
+      }
     } catch (error) {
       logError('Error checking moderator status:', error);
       cb({ ok: false });
@@ -614,7 +751,7 @@ io.on('connection', (socket) => {
         [questionId, discussionId]
       );
       await pool.query('DELETE FROM questions WHERE id = $1 AND discussion_id = $2', [questionId, discussionId]);
-      io.to(discussionSlug).emit('questions', await getQuestions(discussionSlug));
+      await emitQuestions(discussionSlug);
     } catch (error) {
       logError('Error deleting question:', error);
       socket.emit('error', { message: 'Failed to delete question' });
@@ -675,6 +812,30 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Moderator-only: choose when participants see the results of tallied
+  // questions (see RESULTS_VISIBILITY_MODES). The mode rides discussionState, and
+  // the questions are sent again because what each participant may see changed.
+  socket.on('setResultsVisibility', async (topic, mode, token) => {
+    const discussionSlug = slugifyTopic(topic);
+    try {
+      const discussionId = await verifyAdmin(discussionSlug, token);
+      if (!discussionId) {
+        socket.emit('error', { message: 'Not authorized to moderate this discussion.' });
+        return;
+      }
+      if (!RESULTS_VISIBILITY_MODES.includes(mode)) {
+        socket.emit('error', { message: 'Unknown results setting.' });
+        return;
+      }
+      await pool.query('UPDATE discussions SET results_visibility = $1 WHERE id = $2', [mode, discussionId]);
+      await emitDiscussionState(discussionSlug);
+      await emitQuestions(discussionSlug);
+    } catch (error) {
+      logError('Error setting results visibility:', error);
+      socket.emit('error', { message: 'Failed to update discussion' });
+    }
+  });
+
   // Moderator-only: rename the discussion (change its display title). Only the
   // `topic` column is touched — the slug is the stable identifier every
   // participant's URL and socket room is keyed on, so we deliberately leave it
@@ -726,7 +887,7 @@ io.on('connection', (socket) => {
         return;
       }
       await pool.query('UPDATE questions SET pinned = $1 WHERE id = $2 AND discussion_id = $3', [!!pinned, questionId, discussionId]);
-      io.to(discussionSlug).emit('questions', await getQuestions(discussionSlug));
+      await emitQuestions(discussionSlug);
     } catch (error) {
       logError('Error setting pin state:', error);
       socket.emit('error', { message: 'Failed to update question' });
@@ -794,7 +955,7 @@ io.on('connection', (socket) => {
         reply({ updated: false, reason: 'has_responses' });
         return;
       }
-      io.to(discussionSlug).emit('questions', await getQuestions(discussionSlug));
+      await emitQuestions(discussionSlug);
       reply({ updated: true });
     } catch (error) {
       logError('Error editing question:', error);
@@ -809,8 +970,7 @@ io.on('connection', (socket) => {
     if (!userId) return;
     try {
       await toggleResponseVote(discussionSlug, responseId, userId);
-      const questions = await getQuestions(discussionSlug);
-      io.to(discussionSlug).emit('questions', questions);
+      await emitQuestions(discussionSlug);
     } catch (error) {
       logError('Error toggling response vote:', error);
       socket.emit('error', { message: 'Failed to upvote response' });
@@ -834,7 +994,7 @@ io.on('connection', (socket) => {
       // self-upvote guard on toggleResponseVote, so they can't inflate it.
       if (ctx.ownerId === userId) return;
       await setResponseRating(responseId, userId, axis, value);
-      io.to(discussionSlug).emit('questions', await getQuestions(discussionSlug));
+      await emitQuestions(discussionSlug);
     } catch (error) {
       logError('Error setting response rating:', error);
       socket.emit('error', { message: 'Failed to rate response' });
@@ -853,7 +1013,7 @@ io.on('connection', (socket) => {
       // No self-reactions on your own idea, same rationale as ratings.
       if (ctx.ownerId === userId) return;
       await toggleResponseReaction(responseId, userId, reaction);
-      io.to(discussionSlug).emit('questions', await getQuestions(discussionSlug));
+      await emitQuestions(discussionSlug);
     } catch (error) {
       logError('Error toggling response reaction:', error);
       socket.emit('error', { message: 'Failed to react to response' });
@@ -896,7 +1056,7 @@ io.on('connection', (socket) => {
         'INSERT INTO response_comments (response_id, user_id, pseudonym, body) VALUES ($1, $2, $3, $4)',
         [responseId, userId, handle, text.slice(0, 2000)]
       );
-      io.to(discussionSlug).emit('questions', await getQuestions(discussionSlug));
+      await emitQuestions(discussionSlug);
       reply({ added: true });
     } catch (error) {
       logError('Error adding response comment:', error);
@@ -920,7 +1080,7 @@ io.on('connection', (socket) => {
            AND d.slug = $3`,
         [commentId, userId, discussionSlug]
       );
-      io.to(discussionSlug).emit('questions', await getQuestions(discussionSlug));
+      await emitQuestions(discussionSlug);
     } catch (error) {
       logError('Error deleting response comment:', error);
       socket.emit('error', { message: 'Failed to delete comment' });
@@ -946,7 +1106,7 @@ io.on('connection', (socket) => {
            AND q.discussion_id = $2`,
         [commentId, discussionId]
       );
-      io.to(discussionSlug).emit('questions', await getQuestions(discussionSlug));
+      await emitQuestions(discussionSlug);
     } catch (error) {
       logError('Error deleting comment (moderator):', error);
       socket.emit('error', { message: 'Failed to delete comment' });
@@ -986,7 +1146,7 @@ io.on('connection', (socket) => {
       // hiding reactions/comments changes what attachBrainstormInteractions
       // includes for everyone).
       await emitDiscussionState(discussionSlug);
-      io.to(discussionSlug).emit('questions', await getQuestions(discussionSlug));
+      await emitQuestions(discussionSlug);
     } catch (error) {
       logError('Error setting discussion flags:', error);
       socket.emit('error', { message: 'Failed to update discussion' });
@@ -1038,8 +1198,7 @@ io.on('connection', (socket) => {
     if (!userId) return;
     try {
       await deleteVote(voteId, userId);
-      const questions = await getQuestions(discussionSlug);
-      io.to(discussionSlug).emit('questions', questions);
+      await emitQuestions(discussionSlug);
     } catch (error) {
       logError('Error deleting vote:', error);
       socket.emit('error', { message: 'Failed to delete vote' });
@@ -1077,7 +1236,7 @@ io.on('connection', (socket) => {
            )`,
         [voteId, discussionId]
       );
-      io.to(discussionSlug).emit('questions', await getQuestions(discussionSlug));
+      await emitQuestions(discussionSlug);
     } catch (error) {
       logError('Error deleting response (moderator):', error);
       socket.emit('error', { message: 'Failed to delete response' });
@@ -1165,7 +1324,7 @@ io.on('connection', (socket) => {
            )`,
         [pseudonym, userId, discussionSlug]
       );
-      io.to(discussionSlug).emit('questions', await getQuestions(discussionSlug));
+      await emitQuestions(discussionSlug);
     } catch (error) {
       logError('Error updating display name:', error);
       socket.emit('error', { message: 'Failed to update display name' });
@@ -1264,7 +1423,10 @@ async function getOrCreateDiscussionForSlug(db, slug) {
   return result.rows[0];
 }
 
-async function getQuestions(topic, { includeUserIds = false } = {}) {
+// `respondents`, when given, is filled with question id -> Set of the user ids
+// that answered it, for the tallied question types only, so a caller can decide
+// whose results to hide from the same rows it is about to send.
+async function getQuestions(topic, { includeUserIds = false, respondents = null } = {}) {
   const slug = slugifyTopic(topic);
   const query = `
     SELECT 
@@ -1299,6 +1461,13 @@ async function getQuestions(topic, { includeUserIds = false } = {}) {
   `;
 
   const result = await pool.query(query, [slug]);
+  if (respondents) {
+    for (const row of result.rows) {
+      if (!OPINION_TYPES.includes(row.type)) continue;
+      const votes = Array.isArray(row.votes) ? row.votes : [];
+      respondents.set(row.id, new Set(votes.map(vote => vote.userId).filter(Boolean)));
+    }
+  }
   const questions = result.rows.map(row => ({
     ...row,
     minValue: row.min_value,
@@ -1306,6 +1475,9 @@ async function getQuestions(topic, { includeUserIds = false } = {}) {
     reactionsEnabled: row.reactions_enabled === true,
     reactionsVisible: row.reactions_visible === true,
     commentsEnabled: row.comments_enabled === true,
+    // Always present, so a client that merges successive payloads sees the flag
+    // clear once the results arrive. Set by hideUnansweredResults.
+    resultsHidden: false,
     options: parseOptions(row.options),
     // Replace raw stable user ids on the wire with per-response ownership
     // tokens so a socket observer can't correlate a participant's responses —
@@ -2393,7 +2565,7 @@ app.get('/api/discussions', async (req, res) => {
   }
 });
 
-async function getDiscussionSummary(topic) {
+async function getDiscussionSummary(topic, viewer = {}) {
   const discussion = await getDiscussionBySlug(topic);
   if (!discussion) {
     return null;
@@ -2403,9 +2575,27 @@ async function getDiscussionSummary(topic) {
   // count distinct participants (anonymous/duplicate display names must not
   // collapse). buildFacilitatorDashboard re-keys to participant-N before any
   // of this reaches a client, so the raw ids never leave the server.
-  const questions = await getQuestions(topic, { includeUserIds: true });
+  // Results the viewer may not see yet are removed here, before anything is
+  // aggregated, so no count or ranking in the summary can be derived from them.
+  const questions = await getQuestionsForViewer(topic, { ...viewer, includeUserIds: true });
 
   return buildSummary(discussion, questions);
+}
+
+function redactSnapshot(snapshot, hiddenIds) {
+  const questions = snapshot.data?.questions || [];
+  if (!questions.some(q => hiddenIds.has(q.id))) return snapshot;
+  return {
+    ...snapshot,
+    data: {
+      ...snapshot.data,
+      // With one question hidden, the participant total would bound its count.
+      participantCount: null,
+      questions: questions.map(q => (
+        hiddenIds.has(q.id) ? { id: q.id, text: q.text, type: q.type, resultsHidden: true } : q
+      )),
+    },
+  };
 }
 
 app.get('/api/discussions/:topic/snapshots', async (req, res) => {
@@ -2417,7 +2607,12 @@ app.get('/api/discussions/:topic/snapshots', async (req, res) => {
        FROM opinion_snapshots WHERE discussion_id = $1 ORDER BY id`,
       [discussion.id]
     );
-    res.json({ snapshots: result.rows });
+    // A snapshot holds the same tallies as the live question, so a participant
+    // who has not answered a question does not get its saved results either.
+    // Questions deleted since the snapshot can no longer be answered and stay.
+    const questions = await getQuestionsForViewer(discussion.slug, restViewer(req));
+    const hiddenIds = new Set(questions.filter(q => q.resultsHidden).map(q => q.id));
+    res.json({ snapshots: result.rows.map(snapshot => redactSnapshot(snapshot, hiddenIds)) });
   } catch (err) {
     logError('Error loading opinion snapshots:', err);
     res.status(500).json({ error: 'Could not load opinion snapshots.' });
@@ -2487,7 +2682,7 @@ app.post('/api/discussions/:topic/snapshots', async (req, res) => {
 
 app.get('/api/discussions/:topic/summary', async (req, res) => {
   try {
-    const summary = await getDiscussionSummary(req.params.topic);
+    const summary = await getDiscussionSummary(req.params.topic, restViewer(req));
 
     if (!summary) {
       return res.status(404).json({ error: 'Discussion not found' });
@@ -2513,7 +2708,9 @@ app.get('/api/discussions/:topic/clusters', async (req, res) => {
     // Opt into raw user ids: clustering groups participants by stable id, and
     // this runs server-side only — the response carries aggregate cluster data
     // (sizes, per-statement means), never individual ids.
-    const questions = await getQuestions(req.params.topic, { includeUserIds: true });
+    // Statements the viewer may not see results for arrive with no votes, so
+    // the groups are computed only from statements this viewer has answered.
+    const questions = await getQuestionsForViewer(req.params.topic, { ...restViewer(req), includeUserIds: true });
     const analysis = analyzeClusters(questions);
 
     res.json({
@@ -2523,6 +2720,7 @@ app.get('/api/discussions/:topic/clusters', async (req, res) => {
         createdAt: discussion.created_at,
       },
       ...analysis,
+      hiddenStatementCount: questions.filter(q => q.resultsHidden && q.type === 'Agreement').length,
     });
   } catch (err) {
     logError('Request failed:', err);
@@ -2532,7 +2730,7 @@ app.get('/api/discussions/:topic/clusters', async (req, res) => {
 
 app.get('/api/discussions/:topic/export.json', async (req, res) => {
   try {
-    const summary = await getDiscussionSummary(req.params.topic);
+    const summary = await getDiscussionSummary(req.params.topic, restViewer(req));
 
     if (!summary) {
       return res.status(404).json({ error: 'Discussion not found' });
@@ -2549,7 +2747,7 @@ app.get('/api/discussions/:topic/export.json', async (req, res) => {
 
 app.get('/api/discussions/:topic/report.html', async (req, res) => {
   try {
-    const summary = await getDiscussionSummary(req.params.topic);
+    const summary = await getDiscussionSummary(req.params.topic, restViewer(req));
 
     if (!summary) {
       return res.status(404).json({ error: 'Discussion not found' });
@@ -2564,6 +2762,10 @@ app.get('/api/discussions/:topic/report.html', async (req, res) => {
   }
 });
 
+// Stands in for the responses of a question whose results the person exporting
+// may not see yet, so the row is not mistaken for a question with no responses.
+const RESULTS_HIDDEN_NOTE = '(results hidden until you vote)';
+
 app.get('/api/discussions/:topic/export.csv', async (req, res) => {
   try {
     const discussion = await getDiscussionBySlug(req.params.topic);
@@ -2571,7 +2773,7 @@ app.get('/api/discussions/:topic/export.csv', async (req, res) => {
       return res.status(404).json({ error: 'Discussion not found' });
     }
 
-    const questions = await getQuestions(req.params.topic);
+    const questions = await getQuestionsForViewer(req.params.topic, restViewer(req));
     const headers = [
       'discussion_topic',
       'question_id',
@@ -2594,7 +2796,7 @@ app.get('/api/discussions/:topic/export.csv', async (req, res) => {
           question.created_at,
           '',
           '',
-          '',
+          question.resultsHidden ? RESULTS_HIDDEN_NOTE : '',
           '',
         ]];
       }
@@ -2642,7 +2844,7 @@ app.post('/api/duplicate-discussion', async (req, res) => {
     // preserves whether reactions/comments were enabled (and reactions
     // revealed) rather than silently resetting them to the defaults.
     const originalDiscussionResult = await client.query(
-      'SELECT id, reactions_enabled, reactions_visible, comments_enabled, theme FROM discussions WHERE slug = $1',
+      'SELECT id, reactions_enabled, reactions_visible, comments_enabled, theme, results_visibility FROM discussions WHERE slug = $1',
       [slugifyTopic(originalTopic)]
     );
 
@@ -2676,15 +2878,16 @@ app.post('/api/duplicate-discussion', async (req, res) => {
     for (let suffix = 1; suffix <= 1000; suffix += 1) {
       const newSlug = suffixSlug(baseNewSlug, suffix);
       const newDiscussionResult = await client.query(
-        `INSERT INTO discussions (topic, slug, admin_token, reactions_enabled, reactions_visible, comments_enabled, theme)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
+        `INSERT INTO discussions (topic, slug, admin_token, reactions_enabled, reactions_visible, comments_enabled, theme, results_visibility)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
          ON CONFLICT (slug) DO NOTHING
          RETURNING id, topic, slug`,
         [displayNewTopic, newSlug, newAdminToken,
           originalDiscussion.reactions_enabled,
           originalDiscussion.reactions_visible,
           originalDiscussion.comments_enabled,
-          originalDiscussion.theme]
+          originalDiscussion.theme,
+          originalDiscussion.results_visibility]
       );
 
       if (newDiscussionResult.rows.length > 0) {
@@ -2754,7 +2957,9 @@ app.get('/s/:shortCode', async (req, res) => {
 
 // Catch-all route
 app.get(/.*/, (req, res) => {
-  res.sendFile(path.join(__dirname, 'dist', 'index.html'));
+  // Pass the directory as `root`: with a single absolute path, send rejects any
+  // dot-directory in it, which breaks checkouts under paths like `.worktrees/`.
+  res.sendFile('index.html', { root: path.join(__dirname, 'dist') });
 });
 
 // Express's default error handler prints raw errors, including parser input and

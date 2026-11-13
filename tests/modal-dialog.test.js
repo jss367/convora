@@ -122,8 +122,8 @@ test('background focus is redirected into the top modal until it closes', () => 
 });
 
 
-for (const nested of [false, true]) {
-  test(`successful duplication focuses destination content with reused route${nested ? ' and a stacked prompt' : ''}`, async () => {
+for (const [nested, withToken] of [[false, false], [true, false], [false, true], [true, true]]) {
+  test(`successful duplication focuses destination content with reused route${nested ? ' and a stacked prompt' : ''}${withToken ? ' and moderator prompt state' : ''}`, async () => {
     const env = setup();
     const destination = { isConnected: true, focus() { env.document.activeElement = this; } };
     const destinationMore = { isConnected: true, focus() { env.document.activeElement = this; } };
@@ -137,9 +137,12 @@ for (const nested of [false, true]) {
     const handler = vm.runInNewContext(`${source.slice(start, end)}\nhandleDuplicateDiscussion`, {
       newTopicName: 'Destination', discussionSlug: 'original', console,
       duplicateReturnFocusRef, actionsMenuButtonRef, discussionContentRef: { current: destination },
-      fetch: async () => ({ ok: true, json: async () => ({ newSlug: 'destination' }) }),
-      navigate: path => {
+      fetch: async () => ({ ok: true, json: async () => ({ newSlug: 'destination', adminToken: withToken ? 'new-token' : null }) }),
+      localStorage: { setItem(key, token) { assert.equal(key, 'convora_admin_destination'); assert.equal(token, 'new-token'); } },
+      moderatorLinkPromptState: slug => ({ moderatorLinkPrompt: slug }),
+      navigate: (path, options) => {
         assert.equal(path, '/discussion/destination');
+        assert.equal(options?.state?.moderatorLinkPrompt, withToken ? 'destination' : undefined);
         // React Router reuses DiscussionPage; its More ref now targets the
         // destination control when dialog cleanup runs.
         actionsMenuButtonRef.current = destinationMore;

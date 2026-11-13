@@ -188,6 +188,16 @@ test('successful duplication focuses destination content when the route reuses D
   await rooms.trackSlug(result.newSlug);
   await expect(page).toHaveURL(new RegExp(`/discussion/${result.newSlug}$`));
   await expect(dialog).toHaveCount(0);
-  await expect(page.getByRole('region', { name: `Discussion: ${result.newSlug}`, exact: true })).toBeFocused();
+  const destination = page.getByRole('region', { name: `Discussion: ${result.newSlug}`, exact: true });
+  // Main's one-time moderator-link panel deliberately takes focus within the
+  // destination when duplication grants a new credential.
+  if (result.adminToken) {
+    const prompt = destination.getByRole('region', { name: 'Save your moderator link', exact: true });
+    await expect(prompt).toBeVisible();
+    await expect.poll(() => prompt.evaluate(el => el.contains(document.activeElement))).toBe(true);
+  } else {
+    await expect(destination).toBeFocused();
+  }
+  await expect(more).not.toBeFocused();
   expect(await page.evaluate(() => window.duplicateFocusMarker)).toBe('same-page');
 });
