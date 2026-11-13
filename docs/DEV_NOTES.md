@@ -25,6 +25,26 @@ shares canonical slug and display-title rules between migrations and live reques
 `logging.js` keeps raw database errors and their potentially sensitive details out
 of server logs.
 
+### Results visibility
+
+`discussions.results_visibility` is `after_vote` (the default) or `always`. In
+`after_vote` mode the server removes the votes of Agreement, Yes/No and Numerical
+questions a viewer has not answered and marks them `resultsHidden`
+(`hideUnansweredResults` in `server.js`), so the `questions` payload differs per
+participant. `emitQuestions` therefore replaces the room broadcast: it runs one
+questions query, builds one view per participant in the room, and sends each
+socket its own. A socket is a participant once it has sent `identify`, and a
+moderator once `checkModerator` or `claimModerator` has accepted its token; the
+token is checked again on every send. In `always` mode it is a single room
+broadcast as before. Any new code that changes votes or questions must call
+`emitQuestions` and never emit `questions` to the room directly.
+
+The REST endpoints that return results (`summary`, `clusters`, `snapshots`,
+`export.csv`, `export.json`, `report.html`) apply the same rule through
+`getQuestionsForViewer`. The client identifies the viewer with the
+`X-Convora-User` and `X-Convora-Moderator` headers (`client/src/viewer.js`); a
+request without them sees only what a participant who has answered nothing sees.
+
 ## Running the Application Locally
 
 ### Option A: Docker Postgres

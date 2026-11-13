@@ -1,10 +1,46 @@
 import PropTypes from 'prop-types';
 import React from 'react';
+import { RESULTS_HIDDEN_HINT } from '../viewer';
 import { AGREEMENT_SCALE, VoteOptions, YesNoOptions } from './config';
+
+// Stands in for the results of a question the server is withholding until this
+// participant votes. Same rows as the real results (summary line, bar, legend),
+// with no numbers, so the page does not shift when the results arrive.
+const HiddenOpinionResults = ({ segments }) => (
+    <div className="mb-4" data-testid="results-hidden">
+        <div className="flex items-center justify-between mb-2">
+            <span className="text-sm text-gray-600">{RESULTS_HIDDEN_HINT}</span>
+        </div>
+        <div className="flex w-full h-4 rounded-full overflow-hidden bg-gray-200" />
+        <div className="flex flex-wrap gap-x-4 gap-y-1 mt-2">
+            {segments.map(seg => (
+                <span key={seg.key} className="flex items-center text-xs text-gray-600">
+                    <span className="inline-block w-2.5 h-2.5 rounded-full mr-1 bg-gray-300" />
+                    {seg.label}
+                </span>
+            ))}
+        </div>
+    </div>
+);
+
+HiddenOpinionResults.propTypes = {
+    segments: PropTypes.arrayOf(PropTypes.shape({
+        key: PropTypes.string.isRequired,
+        label: PropTypes.string.isRequired,
+    })).isRequired,
+};
+
+const YES_NO_SEGMENTS = [
+    { key: YesNoOptions.NO, label: 'No' },
+    { key: YesNoOptions.YES, label: 'Yes' },
+];
 
 // Stacked divergence bar + summary for an Agreement question. Shows at a glance
 // how opinion splits, and labels the statement as consensus or divisive.
 const AgreementResults = ({ question }) => {
+    if (question.resultsHidden) {
+        return <HiddenOpinionResults segments={AGREEMENT_SCALE} />;
+    }
     const votes = question.votes || [];
     const total = votes.length;
 
@@ -70,12 +106,16 @@ const AgreementResults = ({ question }) => {
 AgreementResults.propTypes = {
     question: PropTypes.shape({
         votes: PropTypes.array,
+        resultsHidden: PropTypes.bool,
     }).isRequired,
 };
 
 // Stacked divergence bar + summary for a Yes/No question — the binary sibling of
 // AgreementResults. Yes is green, No is red, mirroring the agreement scale.
 const YesNoResults = ({ question }) => {
+    if (question.resultsHidden) {
+        return <HiddenOpinionResults segments={YES_NO_SEGMENTS} />;
+    }
     const votes = question.votes || [];
     const total = votes.length;
 
@@ -138,6 +178,7 @@ const YesNoResults = ({ question }) => {
 YesNoResults.propTypes = {
     question: PropTypes.shape({
         votes: PropTypes.array,
+        resultsHidden: PropTypes.bool,
     }).isRequired,
 };
 
