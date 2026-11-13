@@ -285,9 +285,53 @@ test('HTTP API creates and fetches discussions', async () => {
   assert.match(createResponse.body.slug, /^http-/);
   assert.match(createResponse.body.adminToken, /^[a-f0-9]{32}$/);
 
-  const fetchResponse = await jsonRequest('GET', `/api/discussions/${createResponse.body.id}`);
+  const fetchResponse = await jsonRequest('GET', `/api/discussions/resolve/${createResponse.body.slug}`);
   assert.equal(fetchResponse.status, 200);
   assert.equal(fetchResponse.body.topic, topic);
+});
+
+test('discussions are unlisted: the listing endpoint returns only slugs the caller already knows', async () => {
+  const mine = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('unlisted-mine') });
+  const theirs = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('Unlisted Theirs') });
+
+  // An anonymous visitor who knows no slugs learns nothing.
+  for (const query of ['', '?slugs=', '?slugs=,', '?admin=anything', '?slugs[]=x', '?slugs=%25', '?slugs=*']) {
+    const anonymous = await jsonRequest('GET', `/api/discussions${query}`);
+    assert.equal(anonymous.status, 200);
+    assert.deepEqual(anonymous.body, [], `GET /api/discussions${query} leaked discussions`);
+  }
+
+  // Knowing one slug reveals that discussion and no other.
+  const known = await jsonRequest('GET', `/api/discussions?slugs=${mine.body.slug},no-such-discussion`);
+  assert.equal(known.status, 200);
+  assert.deepEqual(known.body.map(row => row.slug), [mine.body.slug]);
+  assert.equal(known.body[0].topic, mine.body.topic);
+  assert.deepEqual(Object.keys(known.body[0]).sort(), ['created_at', 'slug', 'topic']);
+  assert.equal(JSON.stringify(known.body).includes(theirs.body.slug), false);
+
+  // Only exact slugs match; titles and partial slugs are not a search.
+  assert.notEqual(theirs.body.topic, theirs.body.slug);
+  const byTitle = await jsonRequest('GET', `/api/discussions?slugs=${encodeURIComponent(theirs.body.topic)}`);
+  assert.deepEqual(byTitle.body.filter(row => row.slug === theirs.body.slug), []);
+  const byPrefix = await jsonRequest('GET', '/api/discussions?slugs=unlisted');
+  assert.deepEqual(byPrefix.body, []);
+
+  // Sequential ids must not be an alternative way to enumerate discussions.
+  const byId = await fetch(`${baseUrl}/api/discussions/${theirs.body.id}`);
+  assert.equal((await byId.text()).includes(theirs.body.slug), false);
+
+  // Creating a discussion is not announced to unrelated connected clients.
+  const bystander = await connectSocket();
+  try {
+    let announced = false;
+    bystander.onAny(() => { announced = true; });
+    const quiet = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('unlisted-quiet') });
+    assert.equal(quiet.status, 200);
+    await new Promise(resolve => setTimeout(resolve, 200));
+    assert.equal(announced, false);
+  } finally {
+    bystander.disconnect();
+  }
 });
 
 for (const { type, value, expected, equivalentIds } of [

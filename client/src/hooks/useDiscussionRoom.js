@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import io from 'socket.io-client';
+import { rememberDiscussion } from '../knownDiscussions';
 
 // Same-origin by default; split-origin deployments can provide the socket URL.
 const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || undefined;
@@ -30,7 +31,12 @@ export function useDiscussionRoom(socket, handlers) {
         };
         const listeners = Object.entries(events).map(([event, callback]) => {
             const listener = payload => {
-                if (current.current.discussionSlug === discussionSlug) current.current[callback](payload);
+                if (current.current.discussionSlug !== discussionSlug) return;
+                // Discussions are unlisted, so the home page can only show the
+                // ones this browser has opened. The payload is null when the
+                // discussion does not exist; rememberDiscussion ignores that.
+                if (event === 'discussion' && payload?.slug === discussionSlug) rememberDiscussion(payload);
+                current.current[callback](payload);
             };
             socket.on(event, listener);
             return [event, listener];
