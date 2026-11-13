@@ -1,43 +1,39 @@
 import React, { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import io from 'socket.io-client';
-
-// In production the client is served by the same server it talks to, so we
-// default to a same-origin connection. Set VITE_SOCKET_URL only when the
-// client runs on a different origin than the API (e.g. `vite` dev server).
-// Use import.meta.env (Vite's mechanism) rather than process.env: `process` is
-// not defined in the browser, so an unreplaced process.env.* reference throws
-// at module load and blanks the page.
-const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || undefined;
+import { getKnownDiscussions, reconcileKnownDiscussions, rememberDiscussion } from './knownDiscussions';
 
 const HomePage = () => {
-    const [discussions, setDiscussions] = useState([]);
+    // Discussions are unlisted, so this is only what this browser created or
+    // opened (see knownDiscussions.js), never a server-wide list.
+    const [discussions, setDiscussions] = useState(getKnownDiscussions);
     const [newDiscussion, setNewDiscussion] = useState('');
     const navigate = useNavigate();
 
     useEffect(() => {
-        const fetchDiscussions = async () => {
+        const slugs = getKnownDiscussions().map(discussion => discussion.slug);
+        if (slugs.length === 0) return undefined;
+
+        let cancelled = false;
+        // Refresh titles and drop remembered discussions that no longer exist.
+        // If the request fails, keep showing what the browser remembers.
+        const refreshDiscussions = async () => {
             try {
-                const response = await fetch('/api/discussions');
+                const response = await fetch(`/api/discussions?slugs=${slugs.join(',')}`);
                 if (!response.ok) {
                     throw new Error('Failed to fetch discussions');
                 }
-                const data = await response.json();
-                setDiscussions(data);
+                const found = await response.json();
+                if (!cancelled && Array.isArray(found)) {
+                    setDiscussions(reconcileKnownDiscussions(slugs, found));
+                }
             } catch (error) {
                 console.error('Error fetching discussions:', error);
             }
         };
 
-        fetchDiscussions();
-
-        const socket = io(SOCKET_URL);
-        socket.on('newDiscussion', (newDiscussion) => {
-            setDiscussions(prevDiscussions => [newDiscussion, ...prevDiscussions]);
-        });
-
+        refreshDiscussions();
         return () => {
-            socket.disconnect();
+            cancelled = true;
         };
     }, []);
 
@@ -66,12 +62,17 @@ const HomePage = () => {
                         console.warn('Failed to store admin token:', e);
                     }
                 }
+                rememberDiscussion(discussion);
                 navigate(`/discussion/${discussion.slug}`);
             } catch (error) {
                 console.error('Error creating discussion:', error);
             }
         }
     };
+
+    // Entries seeded from a stored moderator token have no title until the
+    // server confirms them.
+    const listedDiscussions = discussions.filter(discussion => discussion.topic);
 
     return (
         <div className="max-w-4xl mx-auto mt-10">
@@ -91,19 +92,28 @@ const HomePage = () => {
                 </div>
             </div>
 
-            <h2 className="text-2xl font-bold mb-4">Existing Discussions</h2>
-            <div className="grid gap-6">
-                {discussions.map(discussion => (
-                    <Link
-                        key={discussion.id}
-                        to={`/discussion/${discussion.slug}`}
-                        className="bg-white shadow-lg rounded-lg p-6 hover:shadow-xl transition duration-300"
-                    >
-                        <h2 className="text-xl font-semibold mb-2">{discussion.topic}</h2>
-                        <p className="text-gray-600">Created: {new Date(discussion.created_at).toLocaleString()}</p>
-                    </Link>
-                ))}
-            </div>
+            <h2 className="text-2xl font-bold mb-4">Your Discussions</h2>
+            {listedDiscussions.length === 0 ? (
+                <p className="text-gray-600">
+                    Discussions you create or open in this browser will appear here.
+                    Discussions are unlisted: only people with the link can find them.
+                </p>
+            ) : (
+                <div className="grid gap-6">
+                    {listedDiscussions.map(discussion => (
+                        <Link
+                            key={discussion.slug}
+                            to={`/discussion/${discussion.slug}`}
+                            className="bg-white shadow-lg rounded-lg p-6 hover:shadow-xl transition duration-300"
+                        >
+                            <h2 className="text-xl font-semibold mb-2">{discussion.topic}</h2>
+                            {discussion.created_at && (
+                                <p className="text-gray-600">Created: {new Date(discussion.created_at).toLocaleString()}</p>
+                            )}
+                        </Link>
+                    ))}
+                </div>
+            )}
         </div>
     );
 };

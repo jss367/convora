@@ -7,6 +7,18 @@ You can create a discussion, which generates its own URL. For example, if the ap
 
 From there, users can submit questions and people can vote on how much they agree with them. For example, someone could say, "The biggest risk of AI is through AI weapons" and each person can vote that they strongly agree, agree, are unsure, disagree, or strongly disagree. The app would show the aggregates. That way you could find which statement most people disagree with.
 
+## Discussions are unlisted
+
+There is no public list of discussions. A discussion is reachable only through
+its link or short link, so share the link with the people you want to take part.
+The home page shows **Your Discussions**: the ones this browser created or
+opened, remembered in the browser's local storage. Clearing site data or using
+another browser or device empties that list; the discussions themselves are
+unaffected and still open from their links.
+
+Unlisted is not private: links are derived from the discussion title, and anyone
+who has or guesses a link can read and take part.
+
 ## Compare opinions before and after discussion
 
 Open **Opinion Snapshots** in a discussion. A moderator can save named snapshots
