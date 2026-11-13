@@ -91,6 +91,51 @@ test.describe('on a phone', () => {
       await pool.end();
     }
   });
+
+  test('the composer starts collapsed again after duplication and history navigation', async ({ page, request }) => {
+    const pool = new Pool({ connectionString });
+    const original = await createDiscussion(request, pool, ['A statement to copy']);
+    let copied;
+    try {
+      await page.goto(`/discussion/${original.slug}?admin=${original.adminToken}`);
+      const input = page.getByPlaceholder('Enter a new question or statement');
+      const expand = page.getByRole('button', { name: '+ Add a statement', exact: true });
+      await expect(page.getByRole('heading', { name: 'A statement to copy', exact: true })).toBeVisible();
+      await expand.click();
+      await expect(input).toBeFocused();
+
+      await page.getByRole('button', { name: 'More ▾', exact: true }).click();
+      await page.getByRole('menuitem', { name: 'Duplicate Discussion', exact: true }).click();
+      await page.getByPlaceholder('Enter new topic name').fill(`Copied phone room ${Date.now()}`);
+      const response = page.waitForResponse(result => result.url().endsWith('/api/duplicate-discussion') && result.request().method() === 'POST');
+      await page.getByRole('button', { name: 'Duplicate', exact: true }).click();
+      const result = await (await response).json();
+      const stored = await pool.query('SELECT id, slug FROM discussions WHERE slug = $1', [result.newSlug]);
+      copied = stored.rows[0];
+      await expect(page).toHaveURL(new RegExp(`/discussion/${result.newSlug}$`));
+      await expect(page.getByRole('heading', { name: 'A statement to copy', exact: true })).toBeVisible();
+      await expect(input).toBeHidden();
+      await expand.click();
+      await expect(input).toBeFocused();
+
+      await page.goBack();
+      await expect(page).toHaveURL(new RegExp(`/discussion/${original.slug}\\?admin=`));
+      await expect(page.getByRole('heading', { name: 'A statement to copy', exact: true })).toBeVisible();
+      await expect(input).toBeHidden();
+      await expand.click();
+      await expect(input).toBeFocused();
+
+      await page.goForward();
+      await expect(page).toHaveURL(new RegExp(`/discussion/${result.newSlug}$`));
+      await expect(page.getByRole('heading', { name: 'A statement to copy', exact: true })).toBeVisible();
+      await expect(input).toBeHidden();
+      await expect(expand).toBeVisible();
+    } finally {
+      if (copied) await removeDiscussion(pool, copied);
+      await removeDiscussion(pool, original);
+      await pool.end();
+    }
+  });
 });
 
 test('on desktop the composer is always shown', async ({ page, request }) => {

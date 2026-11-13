@@ -647,6 +647,10 @@ const DiscussionPage = () => {
     useEffect(() => {
         setEditingTitle(false);
         setTitleDraft('');
+        // Composer expansion and loading belong to this room too. Preserve an
+        // open composer during live updates, but start fresh after navigation.
+        setComposerOpen(false);
+        setQuestionsLoaded(false);
     }, [discussionSlug]);
 
     const handleAddQuestion = (event) => {
