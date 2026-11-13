@@ -29,7 +29,7 @@ test('an open-ended edit survives another participant voting and can be saved', 
 
     const participant = await other.newPage();
     await participant.goto(page.url());
-    await participant.getByRole('button', { name: 'Vote', exact: true }).first().click();
+    await participant.getByRole('button', { name: 'Vote Strongly Agree on "Should we proceed?"', exact: true }).click();
     // Wait for the live update before checking the draft; this cannot pass just
     // because the second participant's vote has not reached the first browser.
     await expect(page.getByText('Strongly Agree: 1', { exact: true }).first()).toBeVisible();
