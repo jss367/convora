@@ -8,6 +8,7 @@ import { useModeratorAccess } from './hooks/useModeratorAccess';
 import { slugifyTopic } from './slugs';
 import OpinionSnapshots from './OpinionSnapshots';
 import ModeratorLinkPanel, { ModeratorLinkUnsavedMark, moderatorLinkPromptState, useModeratorLinkPrompt } from './ModeratorLinkPanel';
+import { downloadForViewer } from './viewer';
 import OpenEndedQuestion from './questions/OpenEndedQuestion';
 import QuestionEditor from './questions/QuestionEditor';
 import { AgreementResults, YesNoResults } from './questions/OpinionResults';
@@ -905,7 +906,7 @@ const DiscussionPage = () => {
                                 {Object.values(VoteOptions).map((option) => (
                                     <div key={option} className="flex items-center justify-between bg-gray-100 p-3 rounded-md">
                                         <span className="font-medium">
-                                            {option}: {question.votes ? question.votes.filter(v => v.value === option).length : 0}
+                                            {option}{question.resultsHidden ? '' : `: ${question.votes ? question.votes.filter(v => v.value === option).length : 0}`}
                                         </span>
                                         {renderOptionVoteButton(option)}
                                     </div>
@@ -923,7 +924,7 @@ const DiscussionPage = () => {
                                 {Object.values(YesNoOptions).map((option) => (
                                     <div key={option} className="flex items-center justify-between bg-gray-100 p-3 rounded-md">
                                         <span className="font-medium">
-                                            {option}: {question.votes ? question.votes.filter(v => v.value === option).length : 0}
+                                            {option}{question.resultsHidden ? '' : `: ${question.votes ? question.votes.filter(v => v.value === option).length : 0}`}
                                         </span>
                                         {renderOptionVoteButton(option)}
                                     </div>
@@ -1240,7 +1241,7 @@ const DiscussionPage = () => {
                                 <a
                                     role="menuitem"
                                     href={`/api/discussions/${encodeURIComponent(discussionSlug)}/export.csv`}
-                                    onClick={() => setShowActionsMenu(false)}
+                                    onClick={(e) => { setShowActionsMenu(false); downloadForViewer(e, discussionSlug); }}
                                     className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
                                 >
                                     Export CSV
@@ -1248,7 +1249,7 @@ const DiscussionPage = () => {
                                 <a
                                     role="menuitem"
                                     href={`/api/discussions/${encodeURIComponent(discussionSlug)}/export.json`}
-                                    onClick={() => setShowActionsMenu(false)}
+                                    onClick={(e) => { setShowActionsMenu(false); downloadForViewer(e, discussionSlug); }}
                                     className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
                                 >
                                     Export JSON
@@ -1259,7 +1260,7 @@ const DiscussionPage = () => {
                 </div>
             </div>
 
-            {showSnapshots && <OpinionSnapshots key={discussionSlug} discussionSlug={discussionSlug} adminToken={adminToken} />}
+            {showSnapshots && <OpinionSnapshots key={discussionSlug} discussionSlug={discussionSlug} adminToken={adminToken} userId={userId} />}
 
             {/* Duplicate Modal */}
             {showDuplicateModal && (
@@ -1435,6 +1436,18 @@ const DiscussionPage = () => {
                         >
                             {moderatorOnly ? 'Open questions to everyone' : 'Only I can add questions'}
                         </button>
+                        <label className="flex items-center gap-1.5 font-medium text-indigo-800">
+                            Results
+                            <select
+                                value={discussionState.resultsVisibility === 'always' ? 'always' : 'after_vote'}
+                                onChange={(e) => socket.emit('setResultsVisibility', discussionSlug, e.target.value, adminToken)}
+                                title="When participants see the results of agreement, yes/no and numerical questions. Moderators always see them."
+                                className="px-2 py-1 rounded bg-white border border-indigo-300 text-indigo-700 font-normal"
+                            >
+                                <option value="after_vote">Show results after you vote</option>
+                                <option value="always">Always show results</option>
+                            </select>
+                        </label>
                         <button
                             ref={moderatorLink.toolbarButtonRef}
                             onClick={handleCopyAdminLink}

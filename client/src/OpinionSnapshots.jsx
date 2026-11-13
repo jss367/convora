@@ -3,6 +3,11 @@ import React, { useEffect, useState } from 'react';
 
 const formatNumber = value => value == null ? '—' : Number(value.toFixed(1)).toLocaleString();
 const formatDate = value => new Date(value).toLocaleString();
+// Kept in step with RESULTS_HIDDEN_HINT in viewer.js. This file imports nothing
+// local so the Node test suite can load it on its own.
+const RESULTS_HIDDEN_HINT = 'Results appear after you vote';
+// Header values must be plain visible ASCII or fetch() throws.
+const isHeaderSafe = value => typeof value === 'string' && /^[\x21-\x7e]+$/.test(value);
 const OPINION_OPTIONS = {
     Agreement: ['Strongly Disagree', 'Disagree', 'Unsure', 'Agree', 'Strongly Agree'],
     'Yes/No': ['No', 'Yes'],
@@ -36,6 +41,19 @@ DistributionCell.propTypes = { count: PropTypes.number, total: PropTypes.number,
 
 export function QuestionComparison({ before, after, comparing, beforeName, afterName }) {
     const question = after || before;
+    // The server withholds a snapshot's results for a question this participant
+    // has not answered yet, exactly as it does for the live question.
+    if (before?.resultsHidden || after?.resultsHidden) {
+        return (
+            <article className="border border-gray-200 rounded-lg p-4">
+                <div className="flex flex-wrap justify-between gap-2 mb-2">
+                    <h3 className="font-semibold text-gray-800 break-words">{question.text}</h3>
+                    <span className="text-xs text-gray-500">{question.type}</span>
+                </div>
+                <p className="text-sm text-gray-600">{RESULTS_HIDDEN_HINT}. Answer this question, then choose Refresh.</p>
+            </article>
+        );
+    }
     const changed = before && after && (before.text !== after.text || before.type !== after.type
         || before.minValue !== after.minValue || before.maxValue !== after.maxValue);
     const beforeRows = distributionRows(before);
@@ -99,7 +117,7 @@ QuestionComparison.propTypes = {
     beforeName: PropTypes.string.isRequired, afterName: PropTypes.string.isRequired,
 };
 
-export default function OpinionSnapshots({ discussionSlug, adminToken }) {
+export default function OpinionSnapshots({ discussionSlug, adminToken, userId }) {
     const [snapshots, setSnapshots] = useState([]);
     const [beforeId, setBeforeId] = useState('');
     const [afterId, setAfterId] = useState('');
@@ -115,7 +133,12 @@ export default function OpinionSnapshots({ discussionSlug, adminToken }) {
         const controller = new AbortController();
         setLoading(true);
         setError('');
-        fetch(endpoint, { signal: controller.signal }).then(async response => {
+        // Tells the server whose view this is, so it can withhold the results of
+        // questions this participant has not answered (see viewer.js).
+        const headers = {};
+        if (isHeaderSafe(userId)) headers['X-Convora-User'] = userId;
+        if (isHeaderSafe(adminToken)) headers['X-Convora-Moderator'] = adminToken;
+        fetch(endpoint, { signal: controller.signal, headers }).then(async response => {
             if (!response.ok) throw new Error('Could not load opinion snapshots.');
             const { snapshots: loaded } = await response.json();
             if (controller.signal.aborted) return;
@@ -128,7 +151,7 @@ export default function OpinionSnapshots({ discussionSlug, adminToken }) {
             if (!controller.signal.aborted) setLoading(false);
         });
         return () => controller.abort();
-    }, [endpoint, refresh]);
+    }, [endpoint, userId, adminToken, refresh]);
 
     const saveSnapshot = async event => {
         event.preventDefault();
@@ -199,7 +222,7 @@ export default function OpinionSnapshots({ discussionSlug, adminToken }) {
                         ))}
                     </div>
                     <p className="text-sm text-gray-600 mb-4">
-                        Participants with opinion responses: {before?.data.participantCount ?? '—'}{after && ` → ${after.data.participantCount}`}.
+                        Participants with opinion responses: {before?.data.participantCount ?? '—'}{after && ` → ${after.data.participantCount ?? '—'}`}.
                         {' '}These are group-level comparisons; participants may differ between snapshots.
                     </p>
                     {snapshots.length === 1 && <p className="text-sm text-gray-500 mb-4">Save a second snapshot after the discussion to see what changed.</p>}
@@ -213,4 +236,4 @@ export default function OpinionSnapshots({ discussionSlug, adminToken }) {
         </section>
     );
 }
-OpinionSnapshots.propTypes = { discussionSlug: PropTypes.string.isRequired, adminToken: PropTypes.string };
+OpinionSnapshots.propTypes = { discussionSlug: PropTypes.string.isRequired, adminToken: PropTypes.string, userId: PropTypes.string };
