@@ -174,8 +174,11 @@ test('a lost connection shows a reconnecting banner and a vote tapped while offl
   await page.route(/\/socket\.io\//, route => (down ? route.abort() : route.continue()));
   await page.goto(`/discussion/${room.slug}`);
   const banner = page.getByRole('status').filter({ hasText: 'Reconnecting' });
-  await page.getByRole('button', { name: 'Vote', exact: true }).first().click();
+  const voteYes = page.getByRole('button', { name: 'Vote Yes on "Offline vote question"', exact: true });
+  const voteNo = page.getByRole('button', { name: 'Vote No on "Offline vote question"', exact: true });
+  await voteYes.click();
   await expect(page.getByTitle('Yes: 1', { exact: true })).toBeVisible();
+  await expect(voteYes).toHaveAttribute('aria-pressed', 'true');
   await expect(banner).toBeHidden();
 
   await expect.poll(() => connections.length).toBe(1);
@@ -186,16 +189,24 @@ test('a lost connection shows a reconnecting banner and a vote tapped while offl
 
   // Tap No while offline. The button reports the pending vote and every vote
   // button is disabled, so a second tap cannot register (#72).
-  await page.getByRole('button', { name: 'Vote', exact: true }).click();
-  const saving = page.getByRole('button', { name: 'Saving…', exact: true });
-  await expect(saving).toBeDisabled();
-  await expect(page.getByRole('button', { name: 'Undo Vote', exact: true })).toBeDisabled();
-  await saving.click({ force: true });
+  await voteNo.click();
+  await expect(voteNo).toHaveText('Saving…');
+  await expect(voteNo).toBeDisabled();
+  await expect(voteNo).toHaveAttribute('aria-busy', 'true');
+  await expect(page.getByRole('status').filter({ hasText: 'Saving your vote on "Offline vote question"' })).toHaveCount(1);
+  await expect(voteYes).toHaveText('Undo Vote');
+  await expect(voteYes).toBeDisabled();
+  await voteNo.click({ force: true });
 
   down = false;
   await expect(banner).toBeHidden({ timeout: 20000 });
   await expect(page.getByTitle('No: 1', { exact: true })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Undo Vote', exact: true })).toBeEnabled();
+  await expect(voteNo).toHaveText('Undo Vote');
+  await expect(voteNo).toBeEnabled();
+  await expect(voteNo).toHaveAttribute('aria-pressed', 'true');
+  await expect(voteNo).not.toHaveAttribute('aria-busy');
+  await expect(voteYes).toHaveAttribute('aria-pressed', 'false');
+  await expect(page.getByRole('status').filter({ hasText: 'Saving your vote' })).toHaveCount(0);
   const stored = await rooms.pool.query(
     'SELECT value FROM votes WHERE question_id IN (SELECT id FROM questions WHERE discussion_id = $1)', [room.id]
   );

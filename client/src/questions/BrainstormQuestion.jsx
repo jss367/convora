@@ -76,12 +76,21 @@ const BrainstormIdea = ({
                                         type="button"
                                         onClick={() => onSetRating(vote.id, 'agreement', seg.key)}
                                         disabled={ratingDisabled}
-                                        title={seg.label}
-                                        className={`px-2 py-0.5 text-xs rounded border ${myRating.agreement === seg.key
+                                        aria-label={`${seg.label}: "${vote.value}"`}
+                                        aria-pressed={myRating.agreement === seg.key}
+                                        className={`group relative px-2 py-0.5 text-xs rounded border ${myRating.agreement === seg.key
                                             ? 'bg-primary text-white border-primary'
                                             : 'bg-white text-gray-600 border-gray-300 hover:border-primary'} ${ratingDisabled ? 'opacity-50 cursor-not-allowed' : ''}`}
                                     >
                                         {AGREEMENT_SHORT[seg.key]}
+                                        {/* Full label on hover and keyboard focus; a title
+                                            alone never shows for keyboard users. */}
+                                        <span
+                                            aria-hidden="true"
+                                            className="pointer-events-none absolute bottom-full left-1/2 z-10 mb-1 hidden -translate-x-1/2 whitespace-nowrap rounded bg-gray-800 px-2 py-0.5 text-xs font-normal text-white group-hover:block group-focus-visible:block"
+                                        >
+                                            {seg.label}
+                                        </span>
                                     </button>
                                 ))}
                             </div>
