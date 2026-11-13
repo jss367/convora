@@ -46,6 +46,8 @@ test('clampNumericalValue keeps typed and slider values inside the question rang
   assert.equal(clampNumericalValue(5, 10, 20), 10);
   assert.equal(clampNumericalValue(-30, -20, -10), -20);
   assert.equal(clampNumericalValue(7.9, 0, 10), 7);
+  assert.equal(clampNumericalValue('1e2', 0, 100), 100);
+  assert.equal(clampNumericalValue('1e', 0, 100), null);
   // A real zero is a value, not "unset".
   assert.equal(clampNumericalValue(0, 0, 100), 0);
 });

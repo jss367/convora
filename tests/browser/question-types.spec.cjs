@@ -41,6 +41,9 @@ test('question editing, numerical and binary voting, and brainstorm comments sti
     await expect(numberBox).toHaveValue('');
     await expect(slider).toHaveClass(/slider-unset/);
     await expect(page.getByText('Move the slider or type a number', { exact: true })).toBeVisible();
+    await numberBox.fill('1e2');
+    await expect(numberBox).toHaveValue('1e2');
+    await expect(slider).toHaveValue('100');
     // Typing drives the slider, and out-of-range input is clamped to the max.
     await numberBox.fill('250');
     await expect(slider).toHaveValue('100');
@@ -56,6 +59,7 @@ test('question editing, numerical and binary voting, and brainstorm comments sti
     await expect(slider).not.toHaveClass(/slider-unset/);
     await numberBox.fill('50');
     await expect(slider).toHaveValue('50');
+
     await expect(submit).toBeEnabled();
     await submit.click();
     await expect(page.getByText('50.0', { exact: true })).toBeVisible();
@@ -63,6 +67,10 @@ test('question editing, numerical and binary voting, and brainstorm comments sti
     await expect(page.getByRole('button', { name: 'Update Vote', exact: true })).toBeDisabled();
     await expect(numberBox).toHaveValue('50');
     await expect(slider).toHaveValue('50');
+    await numberBox.fill('51');
+    await expect(page.getByRole('button', { name: 'Update Vote', exact: true })).toBeEnabled();
+    await numberBox.fill('50');
+    await expect(page.getByRole('button', { name: 'Update Vote', exact: true })).toBeDisabled();
 
     // Enter submits the new-question form, exactly once, and an empty question
     // is still rejected.

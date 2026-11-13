@@ -93,6 +93,7 @@ const DiscussionPage = () => {
         reactionKeys: ALL_REACTION_KEYS,
     });
     const [similarPrompt, setSimilarPrompt] = useState(null);
+    const questionPendingRef = useRef(false);
     const [adminLinkCopied, setAdminLinkCopied] = useState(false);
     // Id of the question a moderator is currently editing inline (null when none).
     const [editingQuestionId, setEditingQuestionId] = useState(null);
@@ -674,11 +675,18 @@ const DiscussionPage = () => {
     // that the question was actually added, so a near-duplicate bounce (or an
     // error) leaves the user's draft intact for them to edit or re-post.
     const submitQuestion = (question, force) => {
+        if (questionPendingRef.current) return;
+        questionPendingRef.current = true;
         try {
             setError(null);
-            socket.emit('addQuestion', discussionSlug, question, force, adminToken, (resp) => {
+            socket.timeout(10000).emit('addQuestion', discussionSlug, question, force, adminToken, (err, resp) => {
+                questionPendingRef.current = false;
+                if (err) {
+                    setError('Could not confirm the question was added. Check the discussion before trying again.');
+                    return;
+                }
                 if (resp && resp.added) {
-                    setNewQuestion('');
+                    setNewQuestion(current => current.trim() === question.text ? '' : current);
                     setQuestionType(QuestionTypes.AGREEMENT);
                     setMinValue(0);
                     setMaxValue(100);
@@ -687,6 +695,7 @@ const DiscussionPage = () => {
                 }
             });
         } catch (error) {
+            questionPendingRef.current = false;
             console.error('Error emitting addQuestion event:', error);
             setError('Failed to add question. Please try again.');
         }
@@ -901,7 +910,8 @@ const DiscussionPage = () => {
                 // when nothing is selected.
                 const sliderValue = clampNumericalValue(inputValue, minValue, maxValue);
                 const isUnset = sliderValue === null;
-                const canSubmit = draftValue !== undefined && !isUnset;
+                const canSubmit = draftValue !== undefined && !isUnset
+                    && (!userVote || sliderValue !== Number(userVote.value));
 
                 return (
                     <div className="mt-4">
@@ -937,7 +947,7 @@ const DiscussionPage = () => {
                                         // entry isn't clamped mid-keystroke; the
                                         // slider and Submit use the clamped value,
                                         // and blur snaps the box to it.
-                                        onChange={(e) => handleSliderChange(question.id, e.target.value === '' ? '' : parseInt(e.target.value))}
+                                        onChange={(e) => handleSliderChange(question.id, e.target.value)}
                                         onBlur={() => { if (draftValue !== undefined && !isUnset && draftValue !== sliderValue) handleSliderChange(question.id, sliderValue); }}
                                     />
                                 </div>

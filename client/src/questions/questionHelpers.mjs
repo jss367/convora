@@ -26,7 +26,7 @@ export function clampNumericalValue(raw, min, max) {
     if (raw === null || raw === undefined || raw === '') {
         return null;
     }
-    const parsed = typeof raw === 'number' ? Math.trunc(raw) : parseInt(raw, 10);
+    const parsed = Math.trunc(Number(raw));
     if (!Number.isFinite(parsed)) {
         return null;
     }
