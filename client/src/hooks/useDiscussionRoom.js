@@ -53,9 +53,13 @@ export function usePendingVotes(socket) {
     const inFlight = useRef(new Map());
 
     useEffect(() => {
-        // Buffered emits are flushed on connect.
-        const markSent = () => {
-            for (const entry of inFlight.current.values()) entry.sent = true;
+        // connected can still be true after a sleeping tab's heartbeat expires;
+        // Socket.IO buffers that emit until reconnect. Track actual sends so a
+        // disconnect never unlocks controls for an answer still in the buffer.
+        const markSent = (event, topic, questionId) => {
+            if (event !== 'vote' && event !== 'clearVote') return;
+            const entry = inFlight.current.get(questionId);
+            if (entry) entry.sent = true;
         };
         // An emit that had already left when the connection dropped is never
         // acknowledged or resent. Stop waiting; rejoining the room on reconnect
@@ -70,10 +74,10 @@ export function usePendingVotes(socket) {
                 return next;
             });
         };
-        socket.on('connect', markSent);
+        socket.onAnyOutgoing(markSent);
         socket.on('disconnect', dropSent);
         return () => {
-            socket.off('connect', markSent);
+            socket.offAnyOutgoing(markSent);
             socket.off('disconnect', dropSent);
         };
     }, [socket]);
@@ -82,7 +86,7 @@ export function usePendingVotes(socket) {
     // without emitting, when this question already has an answer in flight.
     const sendVote = useCallback((questionId, value, event, ...args) => {
         if (inFlight.current.has(questionId)) return false;
-        const entry = { sent: socket.connected };
+        const entry = { sent: false };
         inFlight.current.set(questionId, entry);
         setPendingVotes(prev => ({ ...prev, [questionId]: value }));
         socket.emit(event, ...args, () => {
