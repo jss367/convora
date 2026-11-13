@@ -120,9 +120,11 @@ test('question editing, numerical and binary voting, and brainstorm comments sti
     await expect(questionInput).toHaveValue('');
     const added = await pool.query("SELECT count(*)::int AS n FROM questions WHERE discussion_id = $1 AND text = 'Ready to begin?'", [discussion.id]);
     expect(added.rows[0].n).toBe(1);
-    await page.getByRole('button', { name: 'Vote', exact: true }).first().click();
+    const voteYes = page.getByRole('button', { name: 'Vote Yes on "Ready to begin?"', exact: true });
+    await voteYes.click();
     await expect(page.getByTitle('Yes: 1', { exact: true })).toBeVisible();
-    await page.getByRole('button', { name: 'Undo Vote', exact: true }).click();
+    await expect(voteYes).toHaveText('Undo Vote');
+    await voteYes.click();
     await expect(page.getByText('No votes yet — be the first to weigh in.', { exact: true })).toBeVisible();
   } finally {
     await pool.query('DELETE FROM votes WHERE question_id IN (SELECT id FROM questions WHERE discussion_id = $1)', [discussion.id]);

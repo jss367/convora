@@ -5,6 +5,7 @@ import { getEffectiveNameMode, NameModes, MAX_CUSTOM_NAME_LENGTH } from './ident
 import { useDiscussionSocket, useDiscussionRoom, useConnectionLost, usePendingVotes } from './hooks/useDiscussionRoom';
 import { useParticipantIdentity } from './hooks/useParticipantIdentity';
 import { useModeratorAccess } from './hooks/useModeratorAccess';
+import { useModalDialog } from './hooks/useModalDialog';
 import { slugifyTopic } from './slugs';
 import OpinionSnapshots from './OpinionSnapshots';
 import OpenEndedQuestion from './questions/OpenEndedQuestion';
@@ -96,6 +97,14 @@ const DiscussionPage = () => {
         reactionKeys: ALL_REACTION_KEYS,
     });
     const [similarPrompt, setSimilarPrompt] = useState(null);
+    // Modal panels: Escape closes, focus is kept inside while open and handed
+    // back on close. Duplicate is opened from the More menu, whose item is gone
+    // by then, so its focus returns to the More button.
+    const shareButtonRef = useRef(null);
+    const actionsMenuButtonRef = useRef(null);
+    const shareDialogRef = useModalDialog(showShareModal, () => setShowShareModal(false), shareButtonRef);
+    const duplicateDialogRef = useModalDialog(showDuplicateModal, () => setShowDuplicateModal(false), actionsMenuButtonRef);
+    const similarDialogRef = useModalDialog(Boolean(similarPrompt), () => setSimilarPrompt(null));
     const questionPendingRef = useRef(false);
     const [adminLinkCopied, setAdminLinkCopied] = useState(false);
     // Id of the question a moderator is currently editing inline (null when none).
@@ -867,10 +876,18 @@ const DiscussionPage = () => {
         const renderOptionVoteButton = (option) => {
             const isMine = Boolean(userVote && userVote.value === option);
             const saving = votePending && (pendingVote === option || (pendingVote === null && isMine));
+            // The name says which option and question this button is for, and
+            // stays the same whether or not it is selected: aria-pressed carries
+            // the selection, so the visible "Vote" / "Undo Vote" text is not the
+            // only cue. The status text announces a save in progress.
             return (
+                <>
                 <button
                     onClick={() => (isMine ? handleClearVote(question.id) : handleVote(question.id, option))}
                     disabled={votePending}
+                    aria-label={`Vote ${option} on "${question.text}"`}
+                    aria-pressed={isMine}
+                    aria-busy={saving || undefined}
                     className={`px-4 py-2 rounded-md transition duration-300 disabled:opacity-60 disabled:cursor-not-allowed ${isMine
                         ? 'bg-primary text-white hover:bg-opacity-90'
                         : 'bg-secondary text-white hover:bg-opacity-90'
@@ -878,6 +895,10 @@ const DiscussionPage = () => {
                 >
                     {saving ? 'Saving…' : isMine ? 'Undo Vote' : 'Vote'}
                 </button>
+                <span role="status" className="sr-only">
+                    {saving ? `Saving your vote on "${question.text}"…` : ''}
+                </span>
+                </>
             );
         };
 
@@ -1167,6 +1188,8 @@ const DiscussionPage = () => {
                 for during a session. */}
             <div className="mb-4 flex flex-wrap items-center gap-3">
                 <button
+                    ref={shareButtonRef}
+                    aria-haspopup="dialog"
                     onClick={() => setShowShareModal(true)}
                     className="bg-primary text-white py-2 px-4 rounded hover:bg-opacity-90 transition duration-300"
                 >
@@ -1198,6 +1221,7 @@ const DiscussionPage = () => {
                 <div className="relative">
                     <button
                         type="button"
+                        ref={actionsMenuButtonRef}
                         onClick={() => setShowActionsMenu((open) => !open)}
                         aria-haspopup="true"
                         aria-expanded={showActionsMenu}
@@ -1255,10 +1279,18 @@ const DiscussionPage = () => {
             {/* Duplicate Modal */}
             {showDuplicateModal && (
                 <div className="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full flex items-center justify-center">
-                    <div className="bg-white p-5 rounded-lg shadow-xl">
-                        <h2 className="text-xl font-bold mb-4">Duplicate Discussion</h2>
+                    <div
+                        ref={duplicateDialogRef}
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="duplicate-dialog-title"
+                        tabIndex={-1}
+                        className="bg-white p-5 rounded-lg shadow-xl"
+                    >
+                        <h2 id="duplicate-dialog-title" className="text-xl font-bold mb-4">Duplicate Discussion</h2>
                         <input
                             type="text"
+                            aria-label="New topic name"
                             value={newTopicName}
                             onChange={(e) => setNewTopicName(e.target.value)}
                             placeholder="Enter new topic name"
@@ -1288,8 +1320,16 @@ const DiscussionPage = () => {
                     className="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full flex items-center justify-center"
                     onClick={() => setShowShareModal(false)}
                 >
-                    <div className="bg-white p-6 rounded-lg shadow-xl text-center max-w-[95vw] max-h-[95vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
-                        <h2 className="text-2xl font-bold mb-4">Share this discussion</h2>
+                    <div
+                        ref={shareDialogRef}
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="share-dialog-title"
+                        tabIndex={-1}
+                        className="bg-white p-6 rounded-lg shadow-xl text-center max-w-[95vw] max-h-[95vh] overflow-y-auto"
+                        onClick={(e) => e.stopPropagation()}
+                    >
+                        <h2 id="share-dialog-title" className="text-2xl font-bold mb-4">Share this discussion</h2>
                         <div className="flex justify-center mb-4">
                             <QRCodeSVG
                                 value={shareUrl}
@@ -1309,6 +1349,7 @@ const DiscussionPage = () => {
                                 className="flex-1 min-w-0 p-2 border rounded text-sm bg-gray-50"
                             />
                             <button
+                                data-autofocus
                                 onClick={handleCopyLink}
                                 className="shrink-0 px-4 py-2 bg-primary text-white rounded hover:bg-opacity-90 whitespace-nowrap"
                             >
@@ -1649,8 +1690,16 @@ const DiscussionPage = () => {
                     className="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full flex items-center justify-center"
                     onClick={() => setSimilarPrompt(null)}
                 >
-                    <div className="bg-white p-6 rounded-lg shadow-xl max-w-md" onClick={(e) => e.stopPropagation()}>
-                        <h2 className="text-xl font-bold mb-3">A similar statement already exists</h2>
+                    <div
+                        ref={similarDialogRef}
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="similar-dialog-title"
+                        tabIndex={-1}
+                        className="bg-white p-6 rounded-lg shadow-xl max-w-md"
+                        onClick={(e) => e.stopPropagation()}
+                    >
+                        <h2 id="similar-dialog-title" className="text-xl font-bold mb-3">A similar statement already exists</h2>
                         <p className="text-sm text-gray-600 mb-2">Someone already posted:</p>
                         <blockquote className="border-l-4 border-primary pl-3 italic text-gray-800 mb-4">
                             {similarPrompt.candidate}
