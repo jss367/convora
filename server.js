@@ -48,7 +48,7 @@ const pool = new Pool({
   ssl: isProduction ? { rejectUnauthorized: false } : false,
 });
 
-const { addVote } = createVoteStore(pool);
+const { addVote, clearVote } = createVoteStore(pool);
 
 function sanitizeFilename(value) {
   return String(value || 'discussion')
@@ -343,13 +343,22 @@ io.on('connection', (socket) => {
     }
   });
 
+  // "Set my vote to this value": repeating the same vote leaves it set. Undo is
+  // the separate clearVote event below. The optional ack tells the sender when
+  // the vote has been handled so its pending state can clear.
   socket.on('vote', async (topic, questionId, vote, claimedUserId, pseudonym, mode, ack) => {
+    if (typeof mode === 'function' && ack === undefined) {
+      ack = mode;
+      mode = undefined;
+    }
+    const reply = (ok, details = {}) => { if (typeof ack === 'function') ack({ ok, ...details }); };
     const discussionSlug = slugifyTopic(topic);
     // Attribute the vote to the socket's pinned identity, not to whatever id the
     // message carries, so a client can't cast votes as another participant.
     const userId = bindSocketUser(socket, claimedUserId);
     if (!userId) {
       socket.emit('error', { message: 'Failed to handle vote' });
+      reply(false);
       return;
     }
     try {
@@ -359,10 +368,12 @@ io.on('connection', (socket) => {
       const target = await getQuestionForTopic(discussionSlug, questionId);
       if (!target) {
         socket.emit('error', { message: 'Invalid question for this discussion.' });
+        reply(false);
         return;
       }
       if (target.locked) {
         socket.emit('error', { message: 'Voting is closed for this discussion.' });
+        reply(false);
         return;
       }
       // Single-choice opinion types only accept their known options. Without
@@ -371,10 +382,12 @@ io.on('connection', (socket) => {
       // analysis (which scores votes by their agreement label).
       if (target.type === 'Agreement' && !AGREEMENT_OPTIONS.includes(vote)) {
         socket.emit('error', { message: 'Invalid vote.' });
+        reply(false);
         return;
       }
       if (target.type === 'Yes/No' && !YES_NO_OPTIONS.includes(vote)) {
         socket.emit('error', { message: 'Invalid vote.' });
+        reply(false);
         return;
       }
       // Numerical votes must be a finite number within the question's configured
@@ -394,6 +407,7 @@ io.on('connection', (socket) => {
         const { minValue, maxValue } = getQuestionRange({ min_value: target.minValue, max_value: target.maxValue });
         if (!Number.isFinite(num) || num < minValue || num > maxValue) {
           socket.emit('error', { message: 'Invalid vote.' });
+          reply(false);
           return;
         }
       }
@@ -404,16 +418,50 @@ io.on('connection', (socket) => {
       if (result.reason === 'duplicate') {
         // An identical Brainstorm idea is already listed. Tell the submitter
         // (via the optional ack) so they can vote on that one instead.
-        if (typeof ack === 'function') ack({ added: false, reason: 'duplicate' });
+        reply(false, { added: false, reason: 'duplicate' });
         socket.emit('error', { message: 'That idea has already been added.' });
         return;
       }
       const questions = await getQuestions(discussionSlug);
       io.to(discussionSlug).emit('questions', questions);
-      if (typeof ack === 'function') ack({ added: true });
+      reply(true, target.type === 'Brainstorm' ? { added: true } : {});
     } catch (error) {
       logError('Error handling vote:', error);
       socket.emit('error', { message: 'Failed to handle vote' });
+      reply(false);
+    }
+  });
+
+  // Explicit undo for single-choice polls. Clearing an already-absent vote is a
+  // no-op, so a retried or duplicated emit is harmless.
+  socket.on('clearVote', async (topic, questionId, claimedUserId, ack) => {
+    const reply = (ok) => { if (typeof ack === 'function') ack({ ok }); };
+    const discussionSlug = slugifyTopic(topic);
+    const userId = bindSocketUser(socket, claimedUserId);
+    if (!userId) {
+      socket.emit('error', { message: 'Failed to handle vote' });
+      reply(false);
+      return;
+    }
+    try {
+      const target = await getQuestionForTopic(discussionSlug, questionId);
+      if (!target || !['Agreement', 'Yes/No'].includes(target.type)) {
+        socket.emit('error', { message: 'Invalid question for this discussion.' });
+        reply(false);
+        return;
+      }
+      if (target.locked) {
+        socket.emit('error', { message: 'Voting is closed for this discussion.' });
+        reply(false);
+        return;
+      }
+      await clearVote(questionId, userId);
+      io.to(discussionSlug).emit('questions', await getQuestions(discussionSlug));
+      reply(true);
+    } catch (error) {
+      logError('Error clearing vote:', error);
+      socket.emit('error', { message: 'Failed to handle vote' });
+      reply(false);
     }
   });
 

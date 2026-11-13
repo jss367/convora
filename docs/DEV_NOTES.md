@@ -8,7 +8,10 @@ The frontend is React and the backend is Node.js.
 
 `votes.js` owns transactional response writes, including serialization of
 simultaneous poll submissions from the same participant. Brainstorm ideas
-remain separate responses. `question-data.js` owns question validation and stored
+remain separate responses. On the wire a `vote` event means "set my answer to
+this value" and is safe to repeat; removing an Agreement or Yes/No vote is the
+separate `clearVote` event. Both acknowledge with `{ ok }`, which the client uses
+to show a saving state until the answer is handled. `question-data.js` owns question validation and stored
 value parsing, and `reports.js` builds discussion summaries and printable reports
 without database or HTTP access. `client/src/questions/` contains the question
 editor, answer components, result charts, and their shared display configuration;

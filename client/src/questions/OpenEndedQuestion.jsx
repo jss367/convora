@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import PropTypes from 'prop-types';
 
-const OpenEndedQuestion = ({ question, userVote, handleVote, ownedVoteIds, upvotedVoteIds, handleResponseVote, locked, isAdmin, onModeratorDeleteVote }) => {
+const OpenEndedQuestion = ({ question, userVote, handleVote, pending, ownedVoteIds, upvotedVoteIds, handleResponseVote, locked, isAdmin, onModeratorDeleteVote }) => {
     const savedResponse = userVote?.value ?? '';
     const [response, setResponse] = useState(savedResponse);
     const previousSaved = useRef({ questionId: question.id, value: savedResponse });
@@ -49,16 +49,16 @@ const OpenEndedQuestion = ({ question, userVote, handleVote, ownedVoteIds, upvot
                     <button
                         onClick={() => {
                             const trimmed = response.trim();
-                            if (trimmed === '') {
+                            if (trimmed === '' || pending) {
                                 return;
                             }
                             submitted.current = { draft: response, value: trimmed };
                             handleVote(question.id, trimmed);
                         }}
-                        disabled={response.trim() === ''}
+                        disabled={response.trim() === '' || pending}
                         className="px-4 py-2 bg-primary text-white rounded hover:bg-opacity-90 transition duration-300 mb-4 disabled:opacity-50"
                     >
-                        {userVote ? 'Update Response' : 'Submit Response'}
+                        {pending ? 'Saving…' : userVote ? 'Update Response' : 'Submit Response'}
                     </button>
                 </>
             )}
@@ -133,6 +133,7 @@ OpenEndedQuestion.propTypes = {
         value: PropTypes.string
     }),
     handleVote: PropTypes.func.isRequired,
+    pending: PropTypes.bool,
     ownedVoteIds: PropTypes.instanceOf(Set).isRequired,
     upvotedVoteIds: PropTypes.instanceOf(Set).isRequired,
     handleResponseVote: PropTypes.func.isRequired,

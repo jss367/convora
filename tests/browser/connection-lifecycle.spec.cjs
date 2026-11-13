@@ -159,3 +159,45 @@ test('a moderator grant and revocation update controls and stored access live', 
     await participantContext.close();
   }
 });
+
+test('a lost connection shows a reconnecting banner and a vote tapped while offline is saved, not undone', async ({ page, rooms }) => {
+  const room = await rooms.create('Offline vote', 'Yes/No');
+  let down = false;
+  const connections = [];
+  await page.routeWebSocket(/\/socket\.io\//, route => {
+    if (down) {
+      route.close({ code: 1012, reason: 'Offline test' });
+      return;
+    }
+    connections.push({ route, upstream: route.connectToServer() });
+  });
+  await page.route(/\/socket\.io\//, route => (down ? route.abort() : route.continue()));
+  await page.goto(`/discussion/${room.slug}`);
+  const banner = page.getByRole('status').filter({ hasText: 'Reconnecting' });
+  await page.getByRole('button', { name: 'Vote', exact: true }).first().click();
+  await expect(page.getByTitle('Yes: 1', { exact: true })).toBeVisible();
+  await expect(banner).toBeHidden();
+
+  await expect.poll(() => connections.length).toBe(1);
+  down = true;
+  await connections[0].upstream.close({ code: 1012, reason: 'Offline test' });
+  await connections[0].route.close({ code: 1012, reason: 'Offline test' });
+  await expect(banner).toBeVisible();
+
+  // Tap No while offline. The button reports the pending vote and every vote
+  // button is disabled, so a second tap cannot register (#72).
+  await page.getByRole('button', { name: 'Vote', exact: true }).click();
+  const saving = page.getByRole('button', { name: 'Saving…', exact: true });
+  await expect(saving).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Undo Vote', exact: true })).toBeDisabled();
+  await saving.click({ force: true });
+
+  down = false;
+  await expect(banner).toBeHidden({ timeout: 20000 });
+  await expect(page.getByTitle('No: 1', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Undo Vote', exact: true })).toBeEnabled();
+  const stored = await rooms.pool.query(
+    'SELECT value FROM votes WHERE question_id IN (SELECT id FROM questions WHERE discussion_id = $1)', [room.id]
+  );
+  expect(stored.rows).toEqual([{ value: 'No' }]);
+});
