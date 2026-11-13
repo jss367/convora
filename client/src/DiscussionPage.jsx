@@ -12,6 +12,7 @@ import QuestionEditor from './questions/QuestionEditor';
 import { AgreementResults, YesNoResults } from './questions/OpinionResults';
 import BrainstormQuestion from './questions/BrainstormQuestion';
 import NumericalResults from './questions/NumericalResults';
+import { clampNumericalValue, sortQuestionsMostRecent } from './questions/questionHelpers.mjs';
 import {
     QuestionTypes, QuestionTypeDescriptions, VoteOptions, YesNoOptions,
     EPISTEMIC_REACTIONS, ALL_REACTION_KEYS,
@@ -63,10 +64,11 @@ const DiscussionPage = () => {
     const [pendingVotes, sendVote] = usePendingVotes(socket);
     const [discussion, setDiscussion] = useState(null);
     const [questions, setQuestions] = useState([]);
-    const [newQuestion, setNewQuestion] = useState('');
-    const [questionType, setQuestionType] = useState(QuestionTypes.AGREEMENT);
-    const [minValue, setMinValue] = useState(0);
-    const [maxValue, setMaxValue] = useState(100);
+    const [questionDraft, setQuestionDraft] = useState({
+        text: '', type: QuestionTypes.AGREEMENT, minValue: 0, maxValue: 100,
+    });
+    const { text: newQuestion, type: questionType, minValue, maxValue } = questionDraft;
+    const updateQuestionDraft = (field, value) => setQuestionDraft(current => ({ ...current, [field]: value }));
     const [sliderValues, setSliderValues] = useState({});
     const [sortOption, setSortOption] = useState(SortOptions.MOST_RECENT);
     const [showUnansweredOnly, setShowUnansweredOnly] = useState(false);
@@ -94,6 +96,7 @@ const DiscussionPage = () => {
         reactionKeys: ALL_REACTION_KEYS,
     });
     const [similarPrompt, setSimilarPrompt] = useState(null);
+    const questionPendingRef = useRef(false);
     const [adminLinkCopied, setAdminLinkCopied] = useState(false);
     // Id of the question a moderator is currently editing inline (null when none).
     const [editingQuestionId, setEditingQuestionId] = useState(null);
@@ -637,7 +640,10 @@ const DiscussionPage = () => {
         setTitleDraft('');
     }, [discussionSlug]);
 
-    const handleAddQuestion = () => {
+    const handleAddQuestion = (event) => {
+        // Submitted from the form (Enter or the Add Question button); stop the
+        // browser's native submit from reloading the page.
+        event?.preventDefault();
         // Check if question text is empty
         if (newQuestion.trim() === '') {
             console.error('Failed to add question: Question text is empty.');
@@ -672,19 +678,35 @@ const DiscussionPage = () => {
     // that the question was actually added, so a near-duplicate bounce (or an
     // error) leaves the user's draft intact for them to edit or re-post.
     const submitQuestion = (question, force) => {
+        if (questionPendingRef.current) return;
+        questionPendingRef.current = true;
+        const submittedDraft = questionDraft;
         try {
             setError(null);
-            socket.emit('addQuestion', discussionSlug, question, force, adminToken, (resp) => {
+            socket.timeout(10000).emit('addQuestion', discussionSlug, question, force, adminToken, (err, resp) => {
+                questionPendingRef.current = false;
+                if (err) {
+                    setError('Could not confirm the question was added. Check the discussion before trying again.');
+                    return;
+                }
                 if (resp && resp.added) {
-                    setNewQuestion('');
-                    setQuestionType(QuestionTypes.AGREEMENT);
-                    setMinValue(0);
-                    setMaxValue(100);
+                    // Reset the whole draft atomically only if it has not been
+                    // edited since submission. Also match the payload because
+                    // Post Anyway may be confirming an older similarity prompt.
+                    setQuestionDraft(current => {
+                        if (current !== submittedDraft
+                            || current.text.trim() !== question.text
+                            || current.type !== question.type
+                            || (question.type === QuestionTypes.NUMERICAL
+                                && (current.minValue !== question.minValue || current.maxValue !== question.maxValue))) return current;
+                        return { text: '', type: QuestionTypes.AGREEMENT, minValue: 0, maxValue: 100 };
+                    });
                 } else if (resp && resp.reason === 'moderator_only') {
                     setError('Only the moderator can add questions right now.');
                 }
             });
         } catch (error) {
+            questionPendingRef.current = false;
             console.error('Error emitting addQuestion event:', error);
             setError('Failed to add question. Please try again.');
         }
@@ -790,7 +812,7 @@ const DiscussionPage = () => {
     const sortQuestions = (questions) => {
         switch (sortOption) {
             case SortOptions.MOST_RECENT:
-                return [...questions].sort((a, b) => getQuestionSortTime(b) - getQuestionSortTime(a));
+                return sortQuestionsMostRecent(questions);
             case SortOptions.MOST_AGREEMENT:
                 return [...questions].sort((a, b) => getAgreementCount(b) - getAgreementCount(a));
             case SortOptions.MOST_DISAGREEMENT:
@@ -824,14 +846,6 @@ const DiscussionPage = () => {
         const agreementCount = getAgreementCount(question);
         const disagreementCount = getDisagreementCount(question);
         return Math.min(agreementCount, disagreementCount);
-    };
-
-    const getQuestionSortTime = (question) => {
-        if (question.timestamp) {
-            return question.timestamp;
-        }
-        const createdAt = Date.parse(question.created_at);
-        return Number.isNaN(createdAt) ? 0 : createdAt;
     };
 
     const filterQuestions = (questions) => {
@@ -912,36 +926,72 @@ const DiscussionPage = () => {
             case QuestionTypes.NUMERICAL: {
                 const minValue = parseInt(question.minValue || question.min_value) || 0;
                 const maxValue = parseInt(question.maxValue || question.max_value) || 100;
-                const defaultValue = Math.floor((minValue + maxValue) / 2);
 
-                const sliderValue = sliderValues[question.id] !== undefined
-                    ? sliderValues[question.id]
-                    : (userVote
-                        ? parseInt(userVote.value)
-                        : defaultValue);
+                // sliderValues[id] is undefined until the participant touches the
+                // slider or the number box ('' while the box is cleared). Until
+                // then we show their saved answer if they have one, and otherwise
+                // nothing at all: no midpoint default to anchor on or to submit
+                // by accident.
+                const draftValue = sliderValues[question.id];
+                const inputValue = draftValue !== undefined
+                    ? draftValue
+                    : (userVote ? parseInt(userVote.value) : '');
+                // What Submit would send: the draft clamped into range, or null
+                // when nothing is selected.
+                const sliderValue = clampNumericalValue(inputValue, minValue, maxValue);
+                const isUnset = sliderValue === null;
+                const canSubmit = draftValue !== undefined && !isUnset
+                    && (!userVote || sliderValue !== Number(userVote.value));
 
                 return (
                     <div className="mt-4">
                         <NumericalResults question={question} minValue={minValue} maxValue={maxValue} />
                         {!locked && (
                             <>
-                                <input
-                                    type="range"
-                                    min={minValue}
-                                    max={maxValue}
-                                    value={sliderValue}
-                                    className="w-full"
-                                    onChange={(e) => handleSliderChange(question.id, parseInt(e.target.value))}
-                                />
+                                <div className="flex items-center gap-3">
+                                    <input
+                                        type="range"
+                                        min={minValue}
+                                        max={maxValue}
+                                        value={isUnset ? minValue : sliderValue}
+                                        aria-label={`Your answer to: ${question.text}`}
+                                        aria-valuetext={isUnset ? 'No value selected' : String(sliderValue)}
+                                        className={`flex-grow min-w-0 ${isUnset ? 'slider-unset' : ''}`}
+                                        onChange={(e) => handleSliderChange(question.id, parseInt(e.target.value))}
+                                        // A click that lands exactly on the resting
+                                        // position fires no change event, so pick the
+                                        // value up here too.
+                                        onClick={(e) => { if (isUnset) handleSliderChange(question.id, parseInt(e.target.value)); }}
+                                    />
+                                    <input
+                                        // A number input sanitizes a lone minus
+                                        // to '', losing it on a controlled render.
+                                        // Text preserves intermediate signed input.
+                                        type="text"
+                                        inputMode="decimal"
+                                        value={inputValue}
+                                        placeholder="–"
+                                        aria-label={`Type your answer to: ${question.text}`}
+                                        className="w-24 p-2 border border-gray-300 rounded-md text-center focus:outline-none focus:ring-2 focus:ring-primary"
+                                        // Keep what is typed as-is so multi-digit
+                                        // entry isn't clamped mid-keystroke; the
+                                        // slider and Submit use the clamped value,
+                                        // and blur snaps the box to it.
+                                        onChange={(e) => handleSliderChange(question.id, e.target.value)}
+                                        onBlur={() => { if (draftValue !== undefined && !isUnset && draftValue !== sliderValue) handleSliderChange(question.id, sliderValue); }}
+                                    />
+                                </div>
                                 <div className="flex justify-between mt-2">
                                     <span>{minValue}</span>
-                                    <span>{sliderValue}</span>
+                                    <span className={isUnset ? 'text-sm text-gray-500' : ''}>
+                                        {isUnset ? 'Move the slider or type a number' : sliderValue}
+                                    </span>
                                     <span>{maxValue}</span>
                                 </div>
                                 <button
                                     onClick={() => handleVote(question.id, sliderValue)}
-                                    disabled={votePending}
-                                    className={`mt-4 px-4 py-2 rounded-md transition duration-300 disabled:opacity-60 disabled:cursor-not-allowed ${userVote ? 'bg-primary text-white hover:bg-opacity-90' : 'bg-secondary text-white hover:bg-opacity-90'}`}
+                                    disabled={votePending || !canSubmit}
+                                    className={`mt-4 px-4 py-2 rounded-md transition duration-300 disabled:opacity-50 disabled:cursor-not-allowed ${userVote ? 'bg-primary text-white hover:bg-opacity-90' : 'bg-secondary text-white hover:bg-opacity-90'}`}
                                 >
                                     {votePending ? 'Saving…' : userVote ? 'Update Vote' : 'Submit'}
                                 </button>
@@ -1636,11 +1686,13 @@ const DiscussionPage = () => {
             )}
 
             {!locked && (!moderatorOnly || isAdmin) && (
-            <div className="bg-white shadow-lg rounded-lg p-6 mb-8">
+            <form onSubmit={handleAddQuestion} className="bg-white shadow-lg rounded-lg p-6 mb-8">
                 <input
                     type="text"
                     value={newQuestion}
-                    onChange={(e) => setNewQuestion(e.target.value)}
+                    onChange={(e) => updateQuestionDraft('text', e.target.value)}
+                    // Holding Enter auto-repeats; submit once per key press.
+                    onKeyDown={(e) => { if (e.key === 'Enter' && e.repeat) e.preventDefault(); }}
                     placeholder="Enter a new question or statement"
                     className="w-full p-3 border border-gray-300 rounded-md mb-4 focus:outline-none focus:ring-2 focus:ring-primary"
                 />
@@ -1648,7 +1700,7 @@ const DiscussionPage = () => {
                     <label className="block mb-2">Question Type:</label>
                     <select
                         value={questionType}
-                        onChange={(e) => setQuestionType(e.target.value)}
+                        onChange={(e) => updateQuestionDraft('type', e.target.value)}
                         className="w-full p-3 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary"
                     >
                         {Object.values(QuestionTypes).map(type => (
@@ -1666,7 +1718,7 @@ const DiscussionPage = () => {
                             <input
                                 type="number"
                                 value={minValue}
-                                onChange={(e) => setMinValue(parseInt(e.target.value))}
+                                onChange={(e) => updateQuestionDraft('minValue', parseInt(e.target.value))}
                                 className="w-full p-3 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary"
                             />
                         </div>
@@ -1675,19 +1727,19 @@ const DiscussionPage = () => {
                             <input
                                 type="number"
                                 value={maxValue}
-                                onChange={(e) => setMaxValue(parseInt(e.target.value))}
+                                onChange={(e) => updateQuestionDraft('maxValue', parseInt(e.target.value))}
                                 className="w-full p-3 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary"
                             />
                         </div>
                     </div>
                 )}
                 <button
-                    onClick={handleAddQuestion}
+                    type="submit"
                     className="w-full bg-primary text-white py-3 rounded-md hover:bg-opacity-90 transition duration-300"
                 >
                     Add Question
                 </button>
-            </div>
+            </form>
             )}
             {error && <div className="text-red-500 mb-4">{error}</div>}
             {connectionLost && (
