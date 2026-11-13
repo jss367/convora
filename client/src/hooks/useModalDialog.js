@@ -35,7 +35,7 @@ export function useModalDialog(open, onClose, returnFocusRef) {
             .filter((el) => el.getClientRects().length > 0);
 
         const focusInitial = () => (panel.querySelector('[data-autofocus]') || focusable()[0] || panel).focus();
-        const dialog = { panel, focusInitial };
+        const dialog = { panel, focusInitial, returnTarget: () => (returnFocusRef && returnFocusRef.current) || previouslyFocused };
         activeDialogs.push(dialog);
         focusInitial();
 
@@ -69,14 +69,28 @@ export function useModalDialog(open, onClose, returnFocusRef) {
                 first.focus();
             }
         };
+        const onFocusIn = (event) => {
+            if (activeDialogs[activeDialogs.length - 1] === dialog && !panel.contains(event.target)) {
+                focusInitial();
+            }
+        };
         document.addEventListener('keydown', onKeyDown);
+        document.addEventListener('focusin', onFocusIn);
 
         return () => {
             document.removeEventListener('keydown', onKeyDown);
+            document.removeEventListener('focusin', onFocusIn);
+            // A lower panel may close while an asynchronous prompt stays open.
+            // Preserve its opener for any panel whose return target it owns.
+            for (const other of activeDialogs) {
+                if (other !== dialog && panel.contains(other.returnTarget())) {
+                    other.returnTarget = dialog.returnTarget;
+                }
+            }
             const wasTop = activeDialogs[activeDialogs.length - 1] === dialog;
             activeDialogs.splice(activeDialogs.indexOf(dialog), 1);
             if (!wasTop) return;
-            const target = (returnFocusRef && returnFocusRef.current) || previouslyFocused;
+            const target = dialog.returnTarget();
             const remaining = activeDialogs[activeDialogs.length - 1];
             if (target && target.isConnected && typeof target.focus === 'function'
                 && (!remaining || remaining.panel.contains(target))) {

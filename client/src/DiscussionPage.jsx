@@ -1278,7 +1278,7 @@ const DiscussionPage = () => {
 
             {/* Duplicate Modal */}
             {showDuplicateModal && (
-                <div className="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full flex items-center justify-center">
+                <div className="fixed inset-0 z-50 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full flex items-center justify-center">
                     <div
                         ref={duplicateDialogRef}
                         role="dialog"
@@ -1317,7 +1317,7 @@ const DiscussionPage = () => {
             {/* Share Modal */}
             {showShareModal && (
                 <div
-                    className="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full flex items-center justify-center"
+                    className="fixed inset-0 z-50 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full flex items-center justify-center"
                     onClick={() => setShowShareModal(false)}
                 >
                     <div
@@ -1687,7 +1687,7 @@ const DiscussionPage = () => {
             {/* Near-duplicate prompt */}
             {similarPrompt && (
                 <div
-                    className="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full flex items-center justify-center"
+                    className="fixed inset-0 z-50 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full flex items-center justify-center"
                     onClick={() => setSimilarPrompt(null)}
                 >
                     <div

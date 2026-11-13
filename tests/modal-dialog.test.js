@@ -6,11 +6,11 @@ const vm = require('node:vm');
 // Run the actual hook's effects against a small DOM boundary. No browser,
 // database, server, or network connection is created by these tests.
 function setup() {
-  const listeners = new Set();
+  const listeners = new Map([['keydown', new Set()], ['focusin', new Set()]]);
   const document = {
     activeElement: null,
-    addEventListener: (type, callback) => { assert.equal(type, 'keydown'); listeners.add(callback); },
-    removeEventListener: (type, callback) => { assert.equal(type, 'keydown'); listeners.delete(callback); },
+    addEventListener: (type, callback) => { listeners.get(type).add(callback); },
+    removeEventListener: (type, callback) => { listeners.get(type).delete(callback); },
   };
   let effects;
   const source = readFileSync(require.resolve('../client/src/hooks/useModalDialog.js'), 'utf8')
@@ -19,7 +19,7 @@ function setup() {
   vm.createContext(context);
   vm.runInContext(`${source}\nthis.mount = useModalDialog;`, context);
   function element() {
-    return { isConnected: true, focus() { document.activeElement = this; } };
+    return { isConnected: true, focus() { document.activeElement = this; for (const listener of [...listeners.get('focusin')]) listener({ target: this }); } };
   }
   const trigger = element();
   trigger.focus();
@@ -34,14 +34,14 @@ function setup() {
     for (const item of items) item.getClientRects = () => [1];
     ref.current = panel;
     const cleanups = effects.map(effect => effect());
-    return { panel, items, unmount: () => cleanups.forEach(cleanup => cleanup?.()) };
+    return { panel, items, unmount: () => { cleanups.forEach(cleanup => cleanup?.()); for (const el of [panel, ...items]) el.isConnected = false; } };
   }
   function key(key, options = {}) {
     const event = { key, shiftKey: false, isComposing: false, preventDefault() { this.defaultPrevented = true; }, ...options };
-    for (const listener of [...listeners]) listener(event);
+    for (const listener of [...listeners.get('keydown')]) listener(event);
     return event;
   }
-  return { document, listeners, trigger, mount, key };
+  return { document, listeners: { get size() { return [...listeners.values()].reduce((n, set) => n + set.size, 0); } }, trigger, mount, key };
 }
 
 test('modal wraps Tab in both directions and restores focus across repeated opens', () => {
@@ -89,6 +89,7 @@ test('closing a lower modal cannot steal focus from the upper modal', () => {
   share.unmount();
   assert.equal(env.document.activeElement, similar.items[0]);
   similar.unmount();
+  assert.equal(env.document.activeElement, env.trigger, 'the final dialog restores the lower dialog opener');
   assert.equal(env.listeners.size, 0);
 });
 
@@ -101,5 +102,21 @@ test('empty modal contains focus and disconnected return targets are ignored', (
   env.trigger.isConnected = false;
   modal.unmount();
   assert.equal(env.document.activeElement, modal.panel);
+  assert.equal(env.listeners.size, 0);
+});
+
+
+test('background focus is redirected into the top modal until it closes', () => {
+  const env = setup();
+  const share = env.mount(() => {}, { current: env.trigger });
+  env.trigger.focus();
+  assert.equal(env.document.activeElement, share.items[0]);
+  const similar = env.mount(() => {});
+  share.items[1].focus();
+  assert.equal(env.document.activeElement, similar.items[0]);
+  similar.unmount();
+  assert.equal(env.document.activeElement, share.items[0]);
+  share.unmount();
+  assert.equal(env.document.activeElement, env.trigger);
   assert.equal(env.listeners.size, 0);
 });

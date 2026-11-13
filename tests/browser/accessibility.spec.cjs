@@ -134,3 +134,36 @@ test('the similar-statement prompt is a modal dialog that closes on Escape', asy
   await expect(dialog).toHaveCount(0);
   await expect(input).toBeFocused();
 });
+
+
+test('Share and Duplicate stay above the floating QR and contain background focus', async ({ page, rooms }) => {
+  const room = await rooms.create('Modal above QR');
+  await page.goto(`/discussion/${room.slug}?admin=${encodeURIComponent(room.adminToken)}`);
+  await page.getByRole('button', { name: 'Show join QR', exact: true }).click();
+  const resize = page.getByRole('slider', { name: 'Resize join QR code', exact: true });
+  await expect(resize).toBeVisible();
+  for (const name of ['Share this discussion', 'Duplicate Discussion']) {
+    if (name === 'Share this discussion') {
+      await page.getByRole('button', { name: 'Share', exact: true }).click();
+    } else {
+      await page.getByRole('button', { name: 'More ▾', exact: true }).click();
+      await page.getByRole('menuitem', { name: 'Duplicate Discussion', exact: true }).click();
+    }
+    const dialog = page.getByRole('dialog', { name, exact: true });
+    await expect(dialog).toBeVisible();
+    // At a point on the background QR slider, hit-testing must reach the modal
+    // overlay or its panel instead of the background resize control.
+    expect(await resize.evaluate(el => {
+      const rect = el.getBoundingClientRect();
+      const hit = document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2);
+      return document.querySelector('[role="dialog"]').parentElement.contains(hit);
+    })).toBe(true);
+    await resize.focus();
+    expect(await dialog.evaluate(el => el.contains(document.activeElement))).toBe(true);
+    await page.keyboard.press('Escape');
+    await expect(dialog).toHaveCount(0);
+  }
+  // Focus confinement is removed when the last modal closes.
+  await resize.focus();
+  await expect(resize).toBeFocused();
+});
