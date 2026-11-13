@@ -14,6 +14,7 @@ const { io } = require('socket.io-client');
 const { createVoteStore } = require('../votes');
 const { initializeDatabase } = require('../database');
 const { assertSafeTestDatabase } = require('../scripts/test-database');
+const { cleanupDiscussions } = require('./helpers/cleanup-discussions.cjs');
 
 const rootDir = path.resolve(__dirname, '..');
 const databaseUrl = process.env.DATABASE_URL || 'postgresql://convora:convora@127.0.0.1:54330/convora_test';
@@ -35,7 +36,7 @@ test.before(async () => {
 });
 
 test.beforeEach(async () => {
-  await pool.query('TRUNCATE TABLE votes, questions, discussions RESTART IDENTITY CASCADE');
+  await cleanupDiscussions(pool);
 });
 
 test.after(async () => {
@@ -289,7 +290,7 @@ test('HTTP API creates and fetches discussions', async () => {
 
   assert.equal(createResponse.status, 200);
   assert.equal(createResponse.body.success, true);
-  assert.equal(createResponse.body.id, 1);
+  assert.ok(Number.isInteger(createResponse.body.id) && createResponse.body.id > 0);
   assert.equal(createResponse.body.topic, topic);
   assert.match(createResponse.body.slug, /^http-/);
   assert.match(createResponse.body.adminToken, /^[a-f0-9]{32}$/);
