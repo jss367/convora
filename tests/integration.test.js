@@ -67,6 +67,15 @@ test('server startup creates schema and applies the pseudonym migration', async 
   assert.deepEqual(columns.rows.map((row) => row.column_name), ['short_code', 'pseudonym']);
 });
 
+test('initialization adds the vote lookup index to existing databases idempotently', async () => {
+  await pool.query('DROP INDEX IF EXISTS votes_question_id_idx');
+  await initializeDatabase(pool);
+  await initializeDatabase(pool);
+  const index = await pool.query("SELECT indexdef FROM pg_indexes WHERE tablename = 'votes' AND indexname = 'votes_question_id_idx'");
+  assert.equal(index.rows.length, 1);
+  assert.match(index.rows[0].indexdef, /USING btree \(question_id\)/);
+});
+
 test('initialization upgrades legacy interaction flags once and preserves later moderator settings', async () => {
   await stopServer();
   try {
