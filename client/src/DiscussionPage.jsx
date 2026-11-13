@@ -7,6 +7,7 @@ import { useParticipantIdentity } from './hooks/useParticipantIdentity';
 import { useModeratorAccess } from './hooks/useModeratorAccess';
 import { slugifyTopic } from './slugs';
 import OpinionSnapshots from './OpinionSnapshots';
+import ModeratorLinkPanel, { ModeratorLinkUnsavedMark, moderatorLinkPromptState, useModeratorLinkPrompt } from './ModeratorLinkPanel';
 import OpenEndedQuestion from './questions/OpenEndedQuestion';
 import QuestionEditor from './questions/QuestionEditor';
 import { AgreementResults, YesNoResults } from './questions/OpinionResults';
@@ -98,6 +99,7 @@ const DiscussionPage = () => {
     const [similarPrompt, setSimilarPrompt] = useState(null);
     const questionPendingRef = useRef(false);
     const [adminLinkCopied, setAdminLinkCopied] = useState(false);
+    const moderatorLink = useModeratorLinkPrompt(discussionSlug);
     // Id of the question a moderator is currently editing inline (null when none).
     const [editingQuestionId, setEditingQuestionId] = useState(null);
     // Experimental "opinion groups" view, hidden behind a ?clusters=1 flag so it
@@ -387,9 +389,11 @@ const DiscussionPage = () => {
             await navigator.clipboard.writeText(adminUrl);
             setAdminLinkCopied(true);
             setTimeout(() => setAdminLinkCopied(false), 2000);
+            moderatorLink.markSaved();
         } catch (err) {
             console.error('Failed to copy admin link:', err);
-            setError('Could not copy the moderator link.');
+            // Show the link in a field so it can be copied by hand.
+            moderatorLink.showManual();
         }
     };
 
@@ -562,7 +566,7 @@ const DiscussionPage = () => {
                         console.warn('Failed to store admin token:', e);
                     }
                 }
-                navigate(`/discussion/${result.newSlug}`);
+                navigate(`/discussion/${result.newSlug}`, result.adminToken ? { state: moderatorLinkPromptState(result.newSlug) } : undefined);
             } else {
                 const errorData = await response.json();
                 setError(`Failed to duplicate discussion: ${errorData.error}`);
@@ -1399,6 +1403,7 @@ const DiscussionPage = () => {
 
             {/* Moderator bar */}
             <div className="mb-6">
+                {isAdmin && <ModeratorLinkPanel prompt={moderatorLink} adminUrl={adminUrl} onCopy={handleCopyAdminLink} />}
                 {isAdmin ? (
                     <div className="flex flex-wrap items-center gap-3 bg-indigo-50 border border-indigo-100 rounded-md p-3 text-sm">
                         <span className="font-semibold text-indigo-800">You&apos;re the moderator</span>
@@ -1426,11 +1431,13 @@ const DiscussionPage = () => {
                             {moderatorOnly ? 'Open questions to everyone' : 'Only I can add questions'}
                         </button>
                         <button
+                            ref={moderatorLink.toolbarButtonRef}
                             onClick={handleCopyAdminLink}
                             className="px-3 py-1 rounded bg-white border border-indigo-300 text-indigo-700 hover:bg-indigo-100"
                             title="Anyone with this link becomes a moderator"
                         >
                             {adminLinkCopied ? 'Link copied!' : 'Copy moderator link'}
+                            {!moderatorLink.saved && <ModeratorLinkUnsavedMark />}
                         </button>
                         <button
                             onClick={handleToggleParticipants}

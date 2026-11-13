@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { getKnownDiscussions, reconcileKnownDiscussions, rememberDiscussion } from './knownDiscussions';
+import { moderatorLinkPromptState } from './ModeratorLinkPanel';
 
 const HomePage = () => {
     // Discussions are unlisted, so this is only what this browser created or
@@ -70,7 +71,9 @@ const HomePage = () => {
                     }
                 }
                 rememberDiscussion(discussion);
-                navigate(`/discussion/${discussion.slug}`);
+                // Only the creator gets a token back; prompt them to save the link.
+                navigate(`/discussion/${discussion.slug}`, discussion?.adminToken
+                    ? { state: moderatorLinkPromptState(discussion.slug) } : undefined);
             } catch (error) {
                 console.error('Error creating discussion:', error);
             } finally {
