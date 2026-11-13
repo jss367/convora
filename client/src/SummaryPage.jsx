@@ -2,6 +2,7 @@ import PropTypes from 'prop-types';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { slugifyTopic } from './slugs';
+import { RESULTS_HIDDEN_HINT, downloadForViewer, viewerHeaders } from './viewer';
 
 const AGREEMENT_OPTIONS = [
     'Strongly Disagree',
@@ -35,7 +36,7 @@ function formatDate(value) {
     return new Date(value).toLocaleString();
 }
 
-const ExportMenu = ({ encodedTopic }) => {
+const ExportMenu = ({ encodedTopic, discussionSlug }) => {
     const [open, setOpen] = useState(false);
     const menuRef = useRef(null);
 
@@ -101,7 +102,7 @@ const ExportMenu = ({ encodedTopic }) => {
                             key={item.href}
                             href={item.href}
                             role="menuitem"
-                            onClick={() => setOpen(false)}
+                            onClick={(event) => { setOpen(false); downloadForViewer(event, discussionSlug); }}
                             className="block px-4 py-3 hover:bg-gray-50 transition"
                         >
                             <span className="block text-sm font-semibold text-gray-800">{item.title}</span>
@@ -116,6 +117,7 @@ const ExportMenu = ({ encodedTopic }) => {
 
 ExportMenu.propTypes = {
     encodedTopic: PropTypes.string.isRequired,
+    discussionSlug: PropTypes.string.isRequired,
 };
 
 const SummaryPage = () => {
@@ -169,7 +171,7 @@ const SummaryPage = () => {
         setError(null);
 
         try {
-            const response = await fetch(`/api/discussions/${encodedTopic}/summary`);
+            const response = await fetch(`/api/discussions/${encodedTopic}/summary`, { headers: viewerHeaders(discussionSlug) });
             if (!response.ok) {
                 throw new Error('Failed to load summary');
             }
@@ -215,8 +217,15 @@ const SummaryPage = () => {
             </div>
 
             <div className="flex flex-wrap items-start gap-3 mb-8">
-                <ExportMenu encodedTopic={encodedTopic} />
+                <ExportMenu encodedTopic={encodedTopic} discussionSlug={discussionSlug} />
             </div>
+
+            {summary.counts.hiddenResults > 0 && (
+                <p className="text-sm text-gray-600 mb-6" data-testid="results-hidden">
+                    {RESULTS_HIDDEN_HINT}: {summary.counts.hiddenResults}{' '}
+                    {summary.counts.hiddenResults === 1 ? 'question you have not answered is' : 'questions you have not answered are'} left out of the numbers below.
+                </p>
+            )}
 
             <section className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
                 <CountCard label="Questions" value={summary.counts.questions} />
@@ -585,22 +594,26 @@ const QuestionSummary = ({ question }) => (
         <div className="flex flex-wrap items-start justify-between gap-3 mb-3">
             <div>
                 <h3 className="text-lg font-semibold text-gray-900">{question.text}</h3>
-                <p className="text-sm text-gray-500">{question.type} - {question.responseCount} {question.responseCount === 1 ? 'response' : 'responses'}</p>
+                <p className="text-sm text-gray-500">
+                    {question.resultsHidden
+                        ? `${question.type} - ${RESULTS_HIDDEN_HINT}`
+                        : `${question.type} - ${question.responseCount} ${question.responseCount === 1 ? 'response' : 'responses'}`}
+                </p>
             </div>
             {question.label && (
                 <span className="px-2 py-1 text-xs font-semibold rounded-full bg-gray-100 text-gray-700">{question.label}</span>
             )}
         </div>
 
-        {question.type === 'Agreement' && (
+        {question.type === 'Agreement' && !question.resultsHidden && (
             <AgreementBar optionCounts={question.optionCounts} total={question.responseCount} />
         )}
 
-        {question.type === 'Yes/No' && (
+        {question.type === 'Yes/No' && !question.resultsHidden && (
             <YesNoBar optionCounts={question.optionCounts} total={question.responseCount} />
         )}
 
-        {question.type === 'Numerical' && (
+        {question.type === 'Numerical' && !question.resultsHidden && (
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm text-gray-700">
                 <span>Average: <strong>{formatNumber(question.average)}</strong></span>
                 <span>Low: <strong>{formatNumber(question.minResponse, 0)}</strong></span>
@@ -627,7 +640,8 @@ QuestionSummary.propTypes = {
         id: PropTypes.oneOfType([PropTypes.string, PropTypes.number]).isRequired,
         text: PropTypes.string.isRequired,
         type: PropTypes.string.isRequired,
-        responseCount: PropTypes.number.isRequired,
+        responseCount: PropTypes.number,
+        resultsHidden: PropTypes.bool,
         label: PropTypes.string,
         optionCounts: PropTypes.objectOf(PropTypes.number),
         average: PropTypes.number,

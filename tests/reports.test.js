@@ -17,6 +17,7 @@ test('discussion reports summarize all question types without exposing stable id
   assert.deepEqual(summary.counts, {
     questions: 5, responses: 8, participants: 2,
     byType: { Agreement: 1, 'Yes/No': 1, Numerical: 1, 'Open Ended': 1, Brainstorm: 1 },
+    hiddenResults: 0,
   });
   const [agreement, binary, numerical, written, brainstorm] = summary.questions;
   assert.equal(agreement.label, 'Divisive');
@@ -33,7 +34,7 @@ test('discussion reports summarize all question types without exposing stable id
 
 test('empty discussions produce a usable report without invalid statistics', () => {
   const summary = buildSummary(discussion, []);
-  assert.deepEqual(summary.counts, { questions: 0, responses: 0, participants: 0, byType: {} });
+  assert.deepEqual(summary.counts, { questions: 0, responses: 0, participants: 0, byType: {}, hiddenResults: 0 });
   assert.deepEqual(summary.topConsensus, []);
   assert.deepEqual(summary.topDivisive, []);
   const html = renderReportHtml(summary);
@@ -50,4 +51,27 @@ test('printable reports escape discussion titles and question content', () => {
   assert.doesNotMatch(html, /<script>|<img /);
   assert.match(html, /&lt;script&gt;alert\(&quot;title&quot;\)&lt;\/script&gt;/);
   assert.match(html, /&lt;img src=x onerror=&quot;alert\(1\)&quot;&gt; &amp; details/);
+});
+
+test('questions with hidden results are listed but contribute to no count, ranking, or signal', () => {
+  const summary = buildSummary(discussion, [
+    { id: 1, text: 'Proceed?', type: 'Agreement', votes: [vote(1, 'secret-a', 'Agree'), vote(2, 'secret-b', 'Disagree')] },
+    { id: 2, text: 'Ready?', type: 'Yes/No', votes: [], resultsHidden: true },
+    { id: 3, text: 'Likelihood', type: 'Numerical', min_value: 0, max_value: 100, votes: [], resultsHidden: true },
+  ]);
+  assert.deepEqual(summary.counts, {
+    questions: 3, responses: 2, participants: 2,
+    byType: { Agreement: 1, 'Yes/No': 1, Numerical: 1 },
+    hiddenResults: 2,
+  });
+  assert.deepEqual(summary.questions.slice(1), [
+    { id: 2, text: 'Ready?', type: 'Yes/No', createdAt: undefined, resultsHidden: true },
+    { id: 3, text: 'Likelihood', type: 'Numerical', createdAt: undefined, resultsHidden: true },
+  ]);
+  // A hidden question must not be reported as a prompt nobody answered.
+  assert.deepEqual(summary.facilitatorDashboard.unansweredPrompts, []);
+  const html = renderReportHtml(summary);
+  assert.match(html, /Results for 2 questions are hidden until you vote/);
+  assert.equal(html.match(/Hidden until you vote/g).length, 2);
+  assert.doesNotMatch(html, /NaN|Infinity|undefined/);
 });
