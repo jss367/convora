@@ -17,6 +17,8 @@ test('an open-ended edit survives another participant voting and can be saved', 
        ($1, 'Explain your answer', 'Open Ended'), ($1, 'Should we proceed?', 'Agreement')`,
       [discussion.id]
     );
+    // The first browser never votes; it watches the tally to know the live update arrived.
+    await pool.query("UPDATE discussions SET results_visibility = 'always' WHERE id = $1", [discussion.id]);
     const route = `/discussion/${discussion.slug}`;
     await page.goto(route);
     const answer = page.getByPlaceholder('Enter your response here');

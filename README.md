@@ -19,6 +19,24 @@ unaffected and still open from their links.
 Unlisted is not private: links are derived from the discussion title, and anyone
 who has or guesses a link can read and take part.
 
+## Results appear after you vote
+
+For Agreement, Yes/No and Numerical questions, a participant sees the tallies,
+percentages and histogram only for questions they have answered. Seeing the
+room's answer first pulls people toward it, and it would spoil the "before"
+half of an opinion snapshot. Undoing a vote hides that question's results again.
+
+A moderator can change this in the moderator bar, under **Results**:
+
+- **Show results after you vote** is the default, for new and existing discussions.
+- **Always show results** shows every result to everyone.
+
+Moderators always see results. The setting also applies to the summary, opinion
+groups, opinion snapshots and exports: each leaves out the results of questions
+the person viewing has not answered and says how many were left out. Open Ended
+and Brainstorm questions are not affected. Their responses are the discussion
+itself, not a tally, and Brainstorm reactions keep their own moderator toggles.
+
 ## Compare opinions before and after discussion
 
 Open **Opinion Snapshots** in a discussion. A moderator can save named snapshots

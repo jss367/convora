@@ -206,6 +206,19 @@ function buildSummary(discussion, questions) {
   let totalResponses = 0;
 
   const questionSummaries = questions.map((question) => {
+    // Results this viewer may not see yet (see hideUnansweredResults in
+    // server.js). The question is listed, but it contributes to no count,
+    // ranking or dashboard signal, where it would read as having no responses.
+    if (question.resultsHidden) {
+      typeCounts[question.type] = (typeCounts[question.type] || 0) + 1;
+      return {
+        id: question.id,
+        text: question.text,
+        type: question.type,
+        createdAt: question.created_at,
+        resultsHidden: true,
+      };
+    }
     const votes = question.votes || [];
     votes.forEach((vote) => {
       const participantKey = vote.userId || vote.pseudonym || `anonymous-${vote.id}`;
@@ -338,7 +351,10 @@ function buildSummary(discussion, questions) {
   const topDivisive = [...opinionSummaries]
     .sort((a, b) => b.divisiveScore - a.divisiveScore || b.responseCount - a.responseCount)
     .slice(0, 5);
-  const facilitatorDashboard = buildFacilitatorDashboard(questionSummaries, [...participantMap.values()]);
+  const facilitatorDashboard = buildFacilitatorDashboard(
+    questionSummaries.filter(summary => !summary.resultsHidden),
+    [...participantMap.values()]
+  );
 
   return {
     discussion: {
@@ -352,6 +368,7 @@ function buildSummary(discussion, questions) {
       responses: totalResponses,
       participants: participantIds.size,
       byType: typeCounts,
+      hiddenResults: questionSummaries.filter(summary => summary.resultsHidden).length,
     },
     topConsensus,
     topDivisive,
@@ -372,6 +389,15 @@ function renderReportHtml(summary) {
   };
 
   const questionRows = summary.questions.map(question => {
+    if (question.resultsHidden) {
+      return `
+      <tr>
+        <td>${escapeHtml(question.text)}</td>
+        <td>${escapeHtml(question.type)}</td>
+        <td>-</td>
+        <td class="muted">Hidden until you vote</td>
+      </tr>`;
+    }
     const label = question.label ? `<span class="pill">${escapeHtml(question.label)}</span>` : '';
     const metric = question.type === 'Agreement'
       ? `${question.agreeCount || 0} agree / ${question.disagreeCount || 0} disagree / ${question.unsureCount || 0} unsure`
@@ -430,6 +456,7 @@ function renderReportHtml(summary) {
 
     <section>
       <h2>Snapshot</h2>
+      ${summary.counts.hiddenResults ? `<p class="muted">Results for ${summary.counts.hiddenResults} ${summary.counts.hiddenResults === 1 ? 'question is' : 'questions are'} hidden until you vote and are left out of this report.</p>` : ''}
       <div class="grid">
         <div class="metric">Questions<strong>${summary.counts.questions}</strong></div>
         <div class="metric">Responses<strong>${summary.counts.responses}</strong></div>

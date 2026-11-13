@@ -1,8 +1,24 @@
 import PropTypes from 'prop-types';
 import React from 'react';
+import { RESULTS_HIDDEN_HINT } from '../viewer';
 
 // Summary stats + histogram for a Numerical question.
 const NumericalResults = ({ question, minValue, maxValue }) => {
+    // The server withholds the responses until this participant answers. Keep
+    // the rows of the real results (summary line, chart, axis) so the page does
+    // not shift when they arrive.
+    if (question.resultsHidden) {
+        return (
+            <div className="mb-2" data-testid="results-hidden">
+                <div className="text-sm text-gray-600 mb-2">{RESULTS_HIDDEN_HINT}</div>
+                <div className="ml-7 h-16 rounded bg-gray-100" />
+                <div className="ml-7 flex justify-between text-[10px] text-gray-400 mt-1">
+                    <span>{minValue}</span>
+                    <span>{maxValue}</span>
+                </div>
+            </div>
+        );
+    }
     const values = (question.votes || [])
         .map(v => parseInt(v.value))
         .filter(n => !Number.isNaN(n));
@@ -79,6 +95,7 @@ const NumericalResults = ({ question, minValue, maxValue }) => {
 NumericalResults.propTypes = {
     question: PropTypes.shape({
         votes: PropTypes.array,
+        resultsHidden: PropTypes.bool,
     }).isRequired,
     minValue: PropTypes.number.isRequired,
     maxValue: PropTypes.number.isRequired,

@@ -105,6 +105,11 @@ test.describe('on a phone', () => {
       await expect(input).toBeFocused();
 
       await page.getByRole('button', { name: 'More ▾', exact: true }).click();
+      const menu = page.getByRole('menu');
+      await expect(menu).toBeVisible();
+      const menuBox = await menu.boundingBox();
+      expect(menuBox.x).toBeGreaterThanOrEqual(0);
+      expect(menuBox.x + menuBox.width).toBeLessThanOrEqual(PHONE.width);
       await page.getByRole('menuitem', { name: 'Duplicate Discussion', exact: true }).click();
       await page.getByPlaceholder('Enter new topic name').fill(`Copied phone room ${Date.now()}`);
       const response = page.waitForResponse(result => result.url().endsWith('/api/duplicate-discussion') && result.request().method() === 'POST');
@@ -119,7 +124,7 @@ test.describe('on a phone', () => {
       await expect(input).toBeFocused();
 
       await page.goBack();
-      await expect(page).toHaveURL(new RegExp(`/discussion/${original.slug}\\?admin=`));
+      await expect(page).toHaveURL(url => url.pathname === `/discussion/${original.slug}`);
       await expect(page.getByRole('heading', { name: 'A statement to copy', exact: true })).toBeVisible();
       await expect(input).toBeHidden();
       await expand.click();

@@ -8,6 +8,8 @@ import { useParticipantIdentity } from './hooks/useParticipantIdentity';
 import { useModeratorAccess } from './hooks/useModeratorAccess';
 import { slugifyTopic } from './slugs';
 import OpinionSnapshots from './OpinionSnapshots';
+import ModeratorLinkPanel, { ModeratorLinkUnsavedMark, moderatorLinkPromptState, useModeratorLinkPrompt } from './ModeratorLinkPanel';
+import { downloadForViewer } from './viewer';
 import OpenEndedQuestion from './questions/OpenEndedQuestion';
 import QuestionEditor from './questions/QuestionEditor';
 import { AgreementResults, YesNoResults } from './questions/OpinionResults';
@@ -141,6 +143,8 @@ const DiscussionPage = () => {
         onRevoked: closeParticipants,
     });
 
+    const moderatorLink = useModeratorLinkPrompt(discussionSlug, adminToken);
+    useEffect(() => { setAdminLinkCopied(false); }, [discussionSlug, adminToken]);
     const isAdmin = !!adminToken;
     const { locked, moderatorOnly } = discussionState;
     const theme = THEME_KEYS.includes(discussionState.theme) ? discussionState.theme : DEFAULT_THEME;
@@ -393,11 +397,17 @@ const DiscussionPage = () => {
     const handleCopyAdminLink = async () => {
         try {
             await navigator.clipboard.writeText(adminUrl);
+            if (!moderatorLink.isCurrent()) return;
             setAdminLinkCopied(true);
-            setTimeout(() => setAdminLinkCopied(false), 2000);
+            setTimeout(() => {
+                if (moderatorLink.isCurrent()) setAdminLinkCopied(false);
+            }, 2000);
+            moderatorLink.markSaved();
         } catch (err) {
+            if (!moderatorLink.isCurrent()) return;
             console.error('Failed to copy admin link:', err);
-            setError('Could not copy the moderator link.');
+            // Show the link in a field so it can be copied by hand.
+            moderatorLink.showManual();
         }
     };
 
@@ -570,7 +580,7 @@ const DiscussionPage = () => {
                         console.warn('Failed to store admin token:', e);
                     }
                 }
-                navigate(`/discussion/${result.newSlug}`);
+                navigate(`/discussion/${result.newSlug}`, result.adminToken ? { state: moderatorLinkPromptState(result.newSlug) } : undefined);
             } else {
                 const errorData = await response.json();
                 setError(`Failed to duplicate discussion: ${errorData.error}`);
@@ -909,7 +919,7 @@ const DiscussionPage = () => {
                                 {Object.values(VoteOptions).map((option) => (
                                     <div key={option} className="flex items-center justify-between bg-gray-100 p-3 rounded-md">
                                         <span className="font-medium">
-                                            {option}: {question.votes ? question.votes.filter(v => v.value === option).length : 0}
+                                            {option}{question.resultsHidden ? '' : `: ${question.votes ? question.votes.filter(v => v.value === option).length : 0}`}
                                         </span>
                                         {renderOptionVoteButton(option)}
                                     </div>
@@ -927,7 +937,7 @@ const DiscussionPage = () => {
                                 {Object.values(YesNoOptions).map((option) => (
                                     <div key={option} className="flex items-center justify-between bg-gray-100 p-3 rounded-md">
                                         <span className="font-medium">
-                                            {option}: {question.votes ? question.votes.filter(v => v.value === option).length : 0}
+                                            {option}{question.resultsHidden ? '' : `: ${question.votes ? question.votes.filter(v => v.value === option).length : 0}`}
                                         </span>
                                         {renderOptionVoteButton(option)}
                                     </div>
@@ -1239,7 +1249,7 @@ const DiscussionPage = () => {
                             />
                             <div
                                 role="menu"
-                                className="absolute left-0 mt-1 z-20 w-52 bg-white border border-gray-200 rounded shadow-lg py-1"
+                                className="absolute right-0 sm:left-0 sm:right-auto mt-1 z-20 w-52 bg-white border border-gray-200 rounded shadow-lg py-1"
                             >
                                 <button
                                     type="button"
@@ -1255,7 +1265,7 @@ const DiscussionPage = () => {
                                 <a
                                     role="menuitem"
                                     href={`/api/discussions/${encodeURIComponent(discussionSlug)}/export.csv`}
-                                    onClick={() => setShowActionsMenu(false)}
+                                    onClick={(e) => { setShowActionsMenu(false); downloadForViewer(e, discussionSlug); }}
                                     className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
                                 >
                                     Export CSV
@@ -1263,7 +1273,7 @@ const DiscussionPage = () => {
                                 <a
                                     role="menuitem"
                                     href={`/api/discussions/${encodeURIComponent(discussionSlug)}/export.json`}
-                                    onClick={() => setShowActionsMenu(false)}
+                                    onClick={(e) => { setShowActionsMenu(false); downloadForViewer(e, discussionSlug); }}
                                     className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
                                 >
                                     Export JSON
@@ -1274,7 +1284,7 @@ const DiscussionPage = () => {
                 </div>
             </div>
 
-            {showSnapshots && <OpinionSnapshots key={discussionSlug} discussionSlug={discussionSlug} adminToken={adminToken} />}
+            {showSnapshots && <OpinionSnapshots key={discussionSlug} discussionSlug={discussionSlug} adminToken={adminToken} userId={userId} />}
 
             {/* Duplicate Modal */}
             {showDuplicateModal && (
@@ -1423,6 +1433,7 @@ const DiscussionPage = () => {
 
             {/* Moderator bar */}
             <div className="mb-6">
+                {isAdmin && <ModeratorLinkPanel prompt={moderatorLink} adminUrl={adminUrl} onCopy={handleCopyAdminLink} />}
                 {isAdmin ? (
                     <div className="flex flex-wrap items-center gap-3 bg-indigo-50 border border-indigo-100 rounded-md p-3 text-sm">
                         <span className="font-semibold text-indigo-800">You&apos;re the moderator</span>
@@ -1449,12 +1460,26 @@ const DiscussionPage = () => {
                         >
                             {moderatorOnly ? 'Open questions to everyone' : 'Only I can add questions'}
                         </button>
+                        <label className="flex items-center gap-1.5 font-medium text-indigo-800">
+                            Results
+                            <select
+                                value={discussionState.resultsVisibility === 'always' ? 'always' : 'after_vote'}
+                                onChange={(e) => socket.emit('setResultsVisibility', discussionSlug, e.target.value, adminToken)}
+                                title="When participants see the results of agreement, yes/no and numerical questions. Moderators always see them."
+                                className="px-2 py-1 rounded bg-white border border-indigo-300 text-indigo-700 font-normal"
+                            >
+                                <option value="after_vote">Show results after you vote</option>
+                                <option value="always">Always show results</option>
+                            </select>
+                        </label>
                         <button
+                            ref={moderatorLink.toolbarButtonRef}
                             onClick={handleCopyAdminLink}
                             className="px-3 py-1 rounded bg-white border border-indigo-300 text-indigo-700 hover:bg-indigo-100"
                             title="Anyone with this link becomes a moderator"
                         >
                             {adminLinkCopied ? 'Link copied!' : 'Copy moderator link'}
+                            {!moderatorLink.saved && <ModeratorLinkUnsavedMark />}
                         </button>
                         <button
                             onClick={handleToggleParticipants}

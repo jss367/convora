@@ -1,7 +1,9 @@
 import PropTypes from 'prop-types';
 import React, { useCallback, useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
+import { slugifyTopic } from './slugs';
 import { leaning, stanceBuckets } from './stance.mjs';
+import { RESULTS_HIDDEN_HINT, viewerHeaders } from './viewer';
 
 // A compact five-bucket bar for one statement within a group. Strong votes get
 // their own buckets so the tally matches the stance label above it; buckets
@@ -149,7 +151,7 @@ const ClusterPage = () => {
         setLoading(true);
         setError(null);
         try {
-            const response = await fetch(`/api/discussions/${encodedTopic}/clusters`);
+            const response = await fetch(`/api/discussions/${encodedTopic}/clusters`, { headers: viewerHeaders(slugifyTopic(topic)) });
             if (!response.ok) {
                 throw new Error('Failed to load clusters');
             }
@@ -160,7 +162,7 @@ const ClusterPage = () => {
         } finally {
             setLoading(false);
         }
-    }, [encodedTopic]);
+    }, [encodedTopic, topic]);
 
     useEffect(() => {
         load();
@@ -183,6 +185,13 @@ const ClusterPage = () => {
 
             {loading && <p className="text-gray-600">Finding opinion groups…</p>}
             {error && <p className="text-red-600">{error}</p>}
+
+            {!loading && !error && data?.hiddenStatementCount > 0 && (
+                <p className="text-sm text-gray-600 mb-4" data-testid="results-hidden">
+                    {RESULTS_HIDDEN_HINT}: {data.hiddenStatementCount} agreement{' '}
+                    {data.hiddenStatementCount === 1 ? 'statement you have not answered is' : 'statements you have not answered are'} left out.
+                </p>
+            )}
 
             {!loading && !error && data && !data.eligible && (
                 <div className="bg-white shadow rounded-lg p-6 text-gray-600">
