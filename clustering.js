@@ -227,13 +227,18 @@ function silhouette(matrix, assignments, k) {
 }
 
 // Per-statement breakdown for a set of participant indices, counting only
-// people who actually voted on that statement.
+// people who actually voted on that statement. `agree` and `disagree` are
+// totals that include the strong votes; `stronglyAgree` and `stronglyDisagree`
+// count just the strong ones, so the UI can show all five answers next to a
+// label derived from the mean.
 function statementStats(memberIdxs, j, matrix, voted) {
   let sum = 0;
   let voters = 0;
   let agree = 0;
   let disagree = 0;
   let unsure = 0;
+  let stronglyAgree = 0;
+  let stronglyDisagree = 0;
   for (const i of memberIdxs) {
     if (!voted[i][j]) {
       continue;
@@ -243,8 +248,14 @@ function statementStats(memberIdxs, j, matrix, voted) {
     sum += s;
     if (s > 0) {
       agree += 1;
+      if (s >= 2) {
+        stronglyAgree += 1;
+      }
     } else if (s < 0) {
       disagree += 1;
+      if (s <= -2) {
+        stronglyDisagree += 1;
+      }
     } else {
       unsure += 1;
     }
@@ -255,6 +266,8 @@ function statementStats(memberIdxs, j, matrix, voted) {
     agree,
     disagree,
     unsure,
+    stronglyAgree,
+    stronglyDisagree,
     noVote: memberIdxs.length - voters,
   };
 }
@@ -277,6 +290,8 @@ function buildClusterReport(statements, participants, matrix, voted, assignments
         agree: inStats.agree,
         disagree: inStats.disagree,
         unsure: inStats.unsure,
+        stronglyAgree: inStats.stronglyAgree,
+        stronglyDisagree: inStats.stronglyDisagree,
         noVote: inStats.noVote,
         voters: inStats.voters,
         restVoters: restStats.voters,

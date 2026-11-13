@@ -1,20 +1,14 @@
 import PropTypes from 'prop-types';
 import React, { useCallback, useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
+import { leaning, stanceBuckets } from './stance.mjs';
 
-// Map a mean agreement score (-2..2) to a human-readable leaning. Always
-// returns a text label so the view stays readable without relying on color.
-function leaning(mean) {
-    if (mean >= 1.2) return { label: 'Strongly agrees', tone: 'text-green-700', dot: 'bg-green-600' };
-    if (mean >= 0.3) return { label: 'Agrees', tone: 'text-green-600', dot: 'bg-green-400' };
-    if (mean > -0.3) return { label: 'Mixed / unsure', tone: 'text-gray-600', dot: 'bg-gray-400' };
-    if (mean > -1.2) return { label: 'Disagrees', tone: 'text-red-600', dot: 'bg-red-400' };
-    return { label: 'Strongly disagrees', tone: 'text-red-700', dot: 'bg-red-600' };
-}
-
-// A compact agree/unsure/disagree bar for one statement within a group.
-const StanceBar = ({ agree, unsure, disagree }) => {
-    const total = agree + unsure + disagree;
+// A compact five-bucket bar for one statement within a group. Strong votes get
+// their own buckets so the tally matches the stance label above it; buckets
+// nobody picked are left out.
+const StanceBar = ({ stats }) => {
+    const buckets = stanceBuckets(stats);
+    const total = buckets.reduce((sum, bucket) => sum + bucket.count, 0);
     if (total === 0) {
         return null;
     }
@@ -22,23 +16,32 @@ const StanceBar = ({ agree, unsure, disagree }) => {
     return (
         <div className="mt-2">
             <div className="flex w-full h-2.5 rounded-full overflow-hidden bg-gray-200">
-                {disagree > 0 && <div className="bg-red-500" style={{ width: pct(disagree) }} title={`Disagree: ${disagree}`} />}
-                {unsure > 0 && <div className="bg-gray-400" style={{ width: pct(unsure) }} title={`Unsure: ${unsure}`} />}
-                {agree > 0 && <div className="bg-green-500" style={{ width: pct(agree) }} title={`Agree: ${agree}`} />}
+                {buckets.map(bucket => (
+                    <div
+                        key={bucket.key}
+                        className={bucket.bar}
+                        style={{ width: pct(bucket.count) }}
+                        title={`${bucket.label}: ${bucket.count}`}
+                    />
+                ))}
             </div>
-            <div className="flex gap-x-3 mt-1 text-xs text-gray-500">
-                <span>Disagree: {disagree}</span>
-                <span>Unsure: {unsure}</span>
-                <span>Agree: {agree}</span>
+            <div className="flex flex-wrap gap-x-3 mt-1 text-xs text-gray-500">
+                {buckets.map(bucket => (
+                    <span key={bucket.key}>{bucket.label}: {bucket.count}</span>
+                ))}
             </div>
         </div>
     );
 };
 
 StanceBar.propTypes = {
-    agree: PropTypes.number.isRequired,
-    unsure: PropTypes.number.isRequired,
-    disagree: PropTypes.number.isRequired,
+    stats: PropTypes.shape({
+        agree: PropTypes.number.isRequired,
+        unsure: PropTypes.number.isRequired,
+        disagree: PropTypes.number.isRequired,
+        stronglyAgree: PropTypes.number,
+        stronglyDisagree: PropTypes.number,
+    }).isRequired,
 };
 
 const GroupCard = ({ cluster }) => (
@@ -64,7 +67,7 @@ const GroupCard = ({ cluster }) => (
                                 {lean.label}
                                 <span className="font-normal text-gray-400"> · {st.voters} voted</span>
                             </div>
-                            <StanceBar agree={st.agree} unsure={st.unsure} disagree={st.disagree} />
+                            <StanceBar stats={st} />
                         </li>
                     );
                 })}
@@ -84,6 +87,8 @@ GroupCard.propTypes = {
             agree: PropTypes.number.isRequired,
             unsure: PropTypes.number.isRequired,
             disagree: PropTypes.number.isRequired,
+            stronglyAgree: PropTypes.number,
+            stronglyDisagree: PropTypes.number,
             voters: PropTypes.number.isRequired,
         })).isRequired,
     }).isRequired,
@@ -173,7 +178,7 @@ const ClusterPage = () => {
                         Experimental
                     </span>
                 </div>
-                <p className="text-gray-600">{topic}</p>
+                {data?.discussion?.topic && <p className="text-gray-600">{data.discussion.topic}</p>}
             </div>
 
             {loading && <p className="text-gray-600">Finding opinion groups…</p>}

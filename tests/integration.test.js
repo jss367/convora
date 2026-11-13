@@ -1932,8 +1932,11 @@ test('Brainstorm agreement votes accumulate into a distribution', async () => {
 
     const agreeUpdate = waitForQuestions(
       mod,
-      (qs) => qs[0] && qs[0].votes[0] && (qs[0].votes[0].agreementCounts || {})['Strongly Agree'] === 1,
-      'agreement counted'
+      (qs) => {
+        const counts = qs[0]?.votes[0]?.agreementCounts || {};
+        return counts['Strongly Agree'] === 1 && counts.Disagree === 1;
+      },
+      'both agreement votes counted'
     );
     raterA.emit('setResponseRating', topic, responseId, 'agreement', 'Strongly Agree', 'user-a');
     raterB.emit('setResponseRating', topic, responseId, 'agreement', 'Disagree', 'user-b');
