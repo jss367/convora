@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { flushSync } from 'react-dom';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { QRCodeSVG } from 'qrcode.react';
 import { getEffectiveNameMode, NameModes, MAX_CUSTOM_NAME_LENGTH } from './identity';
@@ -75,6 +76,13 @@ const DiscussionPage = () => {
     const [sliderValues, setSliderValues] = useState({});
     const [sortOption, setSortOption] = useState(SortOptions.MOST_RECENT);
     const [showUnansweredOnly, setShowUnansweredOnly] = useState(false);
+    // On a phone the Add Question composer starts collapsed behind a button so
+    // the first question is visible without scrolling. questionsLoaded tells an
+    // empty discussion (composer stays open: adding is the main task) apart
+    // from one whose questions have not arrived yet.
+    const [composerOpen, setComposerOpen] = useState(false);
+    const [questionsLoaded, setQuestionsLoaded] = useState(false);
+    const questionInputRef = useRef(null);
     const [editingIdentity, setEditingIdentity] = useState(false);
     const [error, setError] = useState(null);
     const [newTopicName, setNewTopicName] = useState('');
@@ -603,6 +611,7 @@ const DiscussionPage = () => {
     };
 
     const handleQuestionsUpdate = useCallback((updatedQuestions) => {
+        setQuestionsLoaded(true);
         setQuestions(prevQuestions => {
             // The server always emits a full snapshot of the discussion's
             // questions, so we rebuild the list from the incoming set. Building
@@ -664,6 +673,10 @@ const DiscussionPage = () => {
     useEffect(() => {
         setEditingTitle(false);
         setTitleDraft('');
+        // Composer expansion and loading belong to this room too. Preserve an
+        // open composer during live updates, but start fresh after navigation.
+        setComposerOpen(false);
+        setQuestionsLoaded(false);
     }, [discussionSlug]);
 
     const handleAddQuestion = (event) => {
@@ -1075,13 +1088,16 @@ const DiscussionPage = () => {
         (a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0)
     );
 
+    // Only takes effect on narrow screens: the classes it drives are overridden from `sm` up.
+    const composerCollapsed = !composerOpen && !(questionsLoaded && questions.length === 0);
+
     return (
         <div
             ref={discussionContentRef}
             role="region"
             aria-label={`Discussion: ${topic}`}
             tabIndex={-1}
-            className="max-w-4xl mx-auto mt-10 px-4"
+            className="max-w-4xl mx-auto mt-10 sm:px-4"
         >
             {isAdmin && editingTitle ? (
                 <div className="mb-2 flex flex-col items-center gap-2">
@@ -1115,7 +1131,9 @@ const DiscussionPage = () => {
                     </div>
                 </div>
             ) : (
-                <h1 className="text-4xl font-bold mb-2 text-center text-gray-800">Discussion: {discussionTitle}</h1>
+                // Phones drop the "Discussion:" prefix visually; it stays in the
+                // heading's accessible name.
+                <h1 className="text-2xl sm:text-4xl font-bold mb-2 text-center text-gray-800"><span className="sr-only sm:not-sr-only">Discussion: </span>{discussionTitle}</h1>
             )}
 
             {/* Participant identity + live presence */}
@@ -1137,7 +1155,7 @@ const DiscussionPage = () => {
                 </div>
 
                 {editingIdentity && identity && (
-                    <div className="mt-3 inline-block text-left bg-gray-50 border border-gray-200 rounded-lg p-4 space-y-2">
+                    <div className="mt-3 inline-block max-w-full text-left bg-gray-50 border border-gray-200 rounded-lg p-4 space-y-2">
                         <p className="text-xs text-gray-500 mb-1">How would you like to appear?</p>
 
                         <label className="flex items-center gap-2 cursor-pointer">
@@ -1179,14 +1197,18 @@ const DiscussionPage = () => {
                                 checked={identity.mode === NameModes.CUSTOM}
                                 onChange={() => handleSelectNameMode(NameModes.CUSTOM)}
                             />
-                            <span>Enter your own name:</span>
+                            <span className="whitespace-nowrap">Enter your own name:</span>
                             <input
                                 type="text"
                                 value={identity.customName}
                                 maxLength={MAX_CUSTOM_NAME_LENGTH}
                                 placeholder="Your name"
                                 onChange={(e) => handleCustomNameChange(e.target.value)}
-                                className="border border-gray-300 rounded px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+                                // The name saves as it is typed, so Enter just closes the picker.
+                                onKeyDown={(e) => {
+                                    if (e.key === 'Enter' && !e.nativeEvent.isComposing) setEditingIdentity(false);
+                                }}
+                                className="min-w-0 flex-1 border border-gray-300 rounded px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
                             />
                         </label>
 
@@ -1209,34 +1231,36 @@ const DiscussionPage = () => {
                 actions (duplicate, exports) live in a "More" overflow menu so they
                 don't compete for attention with the things people actually reach
                 for during a session. */}
-            <div className="mb-4 flex flex-wrap items-center gap-3">
+            {/* On a phone the row is tightened (smaller text and padding, the
+                "View" / "Opinion" words visually hidden) so it fits on one line. */}
+            <div className="mb-4 flex flex-wrap items-center gap-2 text-sm sm:gap-3 sm:text-base">
                 <button
                     ref={shareButtonRef}
                     aria-haspopup="dialog"
                     onClick={() => setShowShareModal(true)}
-                    className="bg-primary text-white py-2 px-4 rounded hover:bg-opacity-90 transition duration-300"
+                    className="bg-primary text-white py-2 px-3 sm:px-4 rounded hover:bg-opacity-90 transition duration-300"
                 >
                     Share
                 </button>
                 <Link
                     to={`/discussion/${discussionSlug}/summary`}
-                    className="border border-gray-300 text-gray-700 py-2 px-4 rounded hover:bg-gray-100 transition duration-300"
+                    className="border border-gray-300 text-gray-700 py-2 px-3 sm:px-4 rounded hover:bg-gray-100 transition duration-300"
                 >
-                    View Summary
+                    <span className="sr-only sm:not-sr-only">View </span>Summary
                 </Link>
                 <button
                     type="button"
                     onClick={() => setShowSnapshots(open => !open)}
                     aria-expanded={showSnapshots}
                     aria-controls="opinion-snapshots"
-                    className="border border-gray-300 text-gray-700 py-2 px-4 rounded hover:bg-gray-100 transition duration-300"
+                    className="border border-gray-300 text-gray-700 py-2 px-3 sm:px-4 rounded hover:bg-gray-100 transition duration-300"
                 >
-                    Opinion Snapshots
+                    <span className="sr-only sm:not-sr-only">Opinion </span>Snapshots
                 </button>
                 {showClusters && (
                     <Link
                         to={`/discussion/${encodeURIComponent(topic)}/clusters`}
-                        className="border border-gray-300 text-gray-700 py-2 px-4 rounded hover:bg-gray-100 transition duration-300"
+                        className="border border-gray-300 text-gray-700 py-2 px-3 sm:px-4 rounded hover:bg-gray-100 transition duration-300"
                     >
                         Opinion Groups
                     </Link>
@@ -1248,7 +1272,7 @@ const DiscussionPage = () => {
                         onClick={() => setShowActionsMenu((open) => !open)}
                         aria-haspopup="true"
                         aria-expanded={showActionsMenu}
-                        className="border border-gray-300 text-gray-700 py-2 px-4 rounded hover:bg-gray-100 transition duration-300"
+                        className="border border-gray-300 text-gray-700 py-2 px-3 sm:px-4 rounded hover:bg-gray-100 transition duration-300"
                     >
                         More ▾
                     </button>
@@ -1262,7 +1286,7 @@ const DiscussionPage = () => {
                             />
                             <div
                                 role="menu"
-                                className="absolute left-0 mt-1 z-20 w-52 bg-white border border-gray-200 rounded shadow-lg py-1"
+                                className="absolute right-0 sm:left-0 sm:right-auto mt-1 z-20 w-52 bg-white border border-gray-200 rounded shadow-lg py-1"
                             >
                                 <button
                                     type="button"
@@ -1773,9 +1797,30 @@ const DiscussionPage = () => {
                 </div>
             )}
 
+            {!locked && (!moderatorOnly || isAdmin) && composerCollapsed && (
+                <button
+                    type="button"
+                    onClick={() => {
+                        // Flush so the input is on screen and can take focus
+                        // inside this tap (iOS only opens the keyboard then).
+                        flushSync(() => setComposerOpen(true));
+                        questionInputRef.current?.focus();
+                    }}
+                    className="sm:hidden w-full mb-4 py-2 rounded-md border border-primary text-primary font-medium hover:bg-gray-50"
+                >
+                    + Add a statement
+                </button>
+            )}
             {!locked && (!moderatorOnly || isAdmin) && (
-            <form onSubmit={handleAddQuestion} className="bg-white shadow-lg rounded-lg p-6 mb-8">
+            <form
+                onSubmit={handleAddQuestion}
+                // Using the composer pins it open, so it does not collapse under
+                // someone's hands when the first question arrives.
+                onFocus={() => setComposerOpen(true)}
+                className={`${composerCollapsed ? 'hidden sm:block ' : ''}bg-white shadow-lg rounded-lg p-6 mb-8`}
+            >
                 <input
+                    ref={questionInputRef}
                     type="text"
                     value={newQuestion}
                     onChange={(e) => updateQuestionDraft('text', e.target.value)}

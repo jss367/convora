@@ -1,4 +1,5 @@
 const { test, expect } = require('./lifecycle-fixtures.cjs');
+const { observeQuestionPayloads } = require('../helpers/question-payloads.cjs');
 
 const HINT = 'Results appear after you vote';
 
@@ -11,10 +12,7 @@ test('results stay hidden until a participant votes, appear without moving the p
      WHERE discussion_id = $1`, [room.id]
   );
   // Everything the server sends this participant about the questions.
-  const payloads = [];
-  page.on('websocket', socket => socket.on('framereceived', event => {
-    if (typeof event.payload === 'string' && event.payload.startsWith('42["questions",')) payloads.push(event.payload);
-  }));
+  const { payloads, errors } = observeQuestionPayloads(page);
   const otherContext = await browser.newContext();
   const moderatorContext = await browser.newContext();
   try {
@@ -28,7 +26,8 @@ test('results stay hidden until a participant votes, appear without moving the p
     await expect(page.getByText(/: \d+$/)).toHaveCount(0);
     await expect(page.getByText(/\d+ votes?\b/)).toHaveCount(0);
     // Hidden on the server, not just in the page.
-    expect(payloads.length).toBeGreaterThan(0);
+    await expect.poll(() => payloads.length).toBeGreaterThan(0);
+    expect(errors).toEqual([]);
     expect(payloads.join('')).not.toMatch(/"value"|Disagree|ownerToken/);
 
     // Another participant voting does not reveal anything either.
@@ -39,6 +38,7 @@ test('results stay hidden until a participant votes, appear without moving the p
     await other.getByRole('button', { name: 'Vote Strongly Disagree on "Results gate question"', exact: true }).click();
     await expect(other.getByText('3 votes', { exact: false })).toBeVisible();
     await expect.poll(() => payloads.length).toBeGreaterThan(before);
+    expect(errors).toEqual([]);
     await expect(hint).toBeVisible();
     expect(payloads.join('')).not.toMatch(/"value"|Disagree|ownerToken/);
 
