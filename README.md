@@ -45,6 +45,10 @@ phones, click **Open room display** in the moderator bar. This opens
 large QR code and join link, the questions as they come in, how many people are
 here now, and how many responses each question has.
 
+You don't need moderator access to open it. On a TV or projector that joined
+with the ordinary link, choose **More ▾ → Open room display**, which switches
+that tab to the display.
+
 The display is read-only. It doesn't count as a participant, can't vote or add
 anything, and never uses a moderator's access, even when opened from the
 moderator's browser. It follows the **Results** setting:

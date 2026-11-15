@@ -1288,6 +1288,19 @@ const DiscussionPage = () => {
                                 role="menu"
                                 className="absolute right-0 sm:left-0 sm:right-auto mt-1 z-20 w-52 bg-white border border-gray-200 rounded shadow-lg py-1"
                             >
+                                {/* Open to everyone, so a TV that joined with the
+                                    ordinary link can switch itself to the
+                                    read-only display. Same tab on purpose: on a
+                                    TV you want this page replaced, not a new tab. */}
+                                <a
+                                    role="menuitem"
+                                    href={`/discussion/${encodeURIComponent(discussionSlug)}/display`}
+                                    onClick={() => setShowActionsMenu(false)}
+                                    title="A read-only page for a shared TV or projector: join QR code, questions and live counts"
+                                    className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
+                                >
+                                    Open room display
+                                </a>
                                 <button
                                     type="button"
                                     role="menuitem"
