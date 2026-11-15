@@ -4830,3 +4830,30 @@ test('unified response migration preserves attribution, limits and upvotes witho
     assert.equal((await pool.query('SELECT max_responses FROM questions WHERE id = $1', [qs[0].id])).rows[0].max_responses, 4);
   } finally { await startServer(); }
 });
+
+test('hidden feedback redacts legacy aliases of positive quality ratings', async () => {
+  const created = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('hidden-quality-alias') });
+  const question = (await pool.query("INSERT INTO questions (discussion_id, text, type) VALUES ($1, 'Feedback', 'Open Ended') RETURNING id", [created.body.id])).rows[0];
+  const vote = (await pool.query("INSERT INTO votes (question_id, user_id, value) VALUES ($1, 'author', 'Answer') RETURNING id", [question.id])).rows[0];
+  await pool.query('UPDATE discussions SET reactions_enabled = TRUE, reactions_visible = TRUE WHERE id = $1', [created.body.id]);
+  const { socket } = await joinAs(created.body.slug, 'critic');
+  try {
+    const rated = waitForQuestions(socket, qs => qs[0]?.votes[0]?.qualityUp === 1, 'quality rating recorded');
+    socket.emit('setResponseRating', created.body.slug, vote.id, 'quality', 1, 'critic');
+    const visible = (await rated)[0].votes[0];
+    assert.equal(visible.upvotes, 1);
+    assert.equal(visible.upvoterTokens.length, 1);
+    for (const enabled of [true, false]) {
+      await pool.query('UPDATE discussions SET reactions_visible = FALSE, reactions_enabled = $2 WHERE id = $1', [created.body.id, enabled]);
+      const visitor = await joinAs(created.body.slug, 'observer');
+      try {
+        const hidden = visitor.questions[0].votes[0];
+        assert.equal(hidden.upvotes, 0);
+        assert.deepEqual(hidden.upvoterTokens, []);
+        assert.equal(hidden.qualityUp, undefined);
+        assert.equal(hidden.upvoters, undefined);
+      } finally { visitor.socket.disconnect(); }
+    }
+    assert.equal((await pool.query('SELECT count(*)::int AS n FROM response_votes WHERE response_id = $1', [vote.id])).rows[0].n, 1);
+  } finally { socket.disconnect(); }
+});

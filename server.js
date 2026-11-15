@@ -1999,6 +1999,13 @@ async function attachBrainstormInteractions(questions, { includeUserIds = false 
     if (!['Open Ended', 'Brainstorm'].includes(q.type)) continue;
     const reveal = q.reactionsEnabled && q.reactionsVisible;
     for (const v of q.votes || []) {
+      // Legacy upvotes and positive quality ratings share storage. Hiding
+      // feedback must also hide these aliases, even if reactions are disabled.
+      if (!q.reactionsVisible) {
+        v.upvotes = 0;
+        if ('upvoterTokens' in v) v.upvoterTokens = [];
+        if ('upvoters' in v) v.upvoters = [];
+      }
       if (reveal) {
         const rating = ratingsByResponse.get(v.id);
         v.qualityUp = rating ? rating.qualityUp : 0;

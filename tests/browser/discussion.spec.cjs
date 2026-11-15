@@ -31,7 +31,7 @@ test('legacy upvotes remain visible without enabling hidden response feedback', 
   const vote = (await rooms.pool.query("INSERT INTO votes (question_id, user_id, value) SELECT id, 'legacy-author', 'Legacy answer' FROM questions WHERE discussion_id = $1 RETURNING id", [room.id])).rows[0];
   await rooms.pool.query("INSERT INTO response_votes (response_id, user_id) VALUES ($1, 'legacy-voter')", [vote.id]);
   await rooms.pool.query("INSERT INTO response_ratings (response_id, user_id, quality) VALUES ($1, 'legacy-voter', 1)", [vote.id]);
-  await rooms.pool.query('UPDATE discussions SET reactions_enabled = FALSE, reactions_visible = FALSE WHERE id = $1', [room.id]);
+  await rooms.pool.query('UPDATE discussions SET reactions_enabled = FALSE, reactions_visible = TRUE WHERE id = $1', [room.id]);
   for (const suffix of ['', '/display']) {
     await page.goto(`/discussion/${room.slug}${suffix}`);
     await expect(page.getByText('Legacy answer', { exact: true })).toBeVisible();
@@ -39,7 +39,7 @@ test('legacy upvotes remain visible without enabling hidden response feedback', 
   }
   // Existing hidden ratings must stay hidden; preserving old upvotes must not
   // enable all feedback in a discussion containing other free-text questions.
-  await rooms.pool.query('UPDATE discussions SET reactions_enabled = TRUE WHERE id = $1', [room.id]);
+  await rooms.pool.query('UPDATE discussions SET reactions_enabled = TRUE, reactions_visible = FALSE WHERE id = $1', [room.id]);
   await page.reload();
   await expect(page.getByLabel('1 legacy upvote', { exact: true })).toHaveCount(0);
 });
