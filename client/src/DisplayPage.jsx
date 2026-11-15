@@ -3,6 +3,8 @@ import { QRCodeSVG } from 'qrcode.react';
 import React, { useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { useConnectionLost, useDiscussionSocket } from './hooks/useDiscussionRoom';
+import useFullscreen from './hooks/useFullscreen';
+import useIdle from './hooks/useIdle';
 import useScreenWakeLock from './hooks/useScreenWakeLock';
 import { AgreementChart, NumericalChart, ResponseCountOnly, YesNoChart } from './display/DisplayCharts';
 import { EPISTEMIC_REACTIONS, QuestionTypes } from './questions/config';
@@ -24,6 +26,9 @@ const MAX_FOCUS_WRITTEN_RESPONSES = 10;
 const QR_MODES = ['full', 'corner', 'hidden'];
 // Nobody is at the screen to press a button, so a failed load retries itself.
 const RETRY_DELAY_MS = 5000;
+// The full-screen button and the cursor fade out after this long without the
+// mouse moving, so the shared screen shows only the discussion.
+const CONTROLS_IDLE_MS = 3000;
 
 const plural = (count, one, many) => `${count} ${count === 1 ? one : many}`;
 
@@ -171,6 +176,24 @@ JoinCard.propTypes = {
     compact: PropTypes.bool,
 };
 
+// The only control on the display. It hides the browser's tabs, toolbar and
+// bookmarks, which otherwise show on a TV when a laptop is mirrored to it. It
+// fades rather than unmounting, so the header does not shift when it hides.
+const FullscreenButton = ({ hidden }) => {
+    const { supported, active, toggle } = useFullscreen();
+    if (!supported) return null;
+    return (
+        <button
+            type="button"
+            onClick={toggle}
+            className={`rounded-lg border-2 border-white/70 px-4 py-1 text-xl font-semibold text-white transition-opacity duration-500 hover:bg-white/15 focus-visible:opacity-100 ${hidden ? 'pointer-events-none opacity-0' : 'opacity-100'}`}
+        >
+            {active ? 'Exit full screen' : 'Full screen'}
+        </button>
+    );
+};
+FullscreenButton.propTypes = { hidden: PropTypes.bool.isRequired };
+
 const DisplayPage = () => {
     const { topic } = useParams();
     const discussionSlug = slugifyTopic(topic);
@@ -178,6 +201,7 @@ const DisplayPage = () => {
     const connectionLost = useConnectionLost(socket);
     // Nobody touches the shared screen, so keep it from going to sleep.
     useScreenWakeLock();
+    const idle = useIdle(CONTROLS_IDLE_MS);
     // undefined while loading, null when the discussion does not exist.
     const [discussion, setDiscussion] = useState(undefined);
     // null until the server has sent the questions at least once.
@@ -278,9 +302,9 @@ const DisplayPage = () => {
     }
 
     return (
-        <main className="flex min-h-screen flex-col bg-gray-100" aria-label="Room display">
-            {/* The right-hand group has room for more controls, such as a full
-                screen button; it wraps below the title on narrow screens. */}
+        <main className={`flex min-h-screen flex-col bg-gray-100 ${idle ? 'cursor-none' : ''}`} aria-label="Room display">
+            {/* The right-hand group holds the full-screen button; it wraps below
+                the title on narrow screens. */}
             <header
                 className="flex flex-wrap items-center justify-between gap-x-10 gap-y-3 bg-primary px-8 py-6 text-white shadow-md lg:px-12"
                 data-testid="display-header"
@@ -293,6 +317,7 @@ const DisplayPage = () => {
                     {/* The small QR code sits in the header, in the page flow, so it
                         never covers a question on a screen nobody scrolls. */}
                     {qrMode === 'corner' && <JoinCard linkUrl={linkUrl} linkText={linkText} title={title} compact />}
+                    <FullscreenButton hidden={idle} />
                         </div>
             </header>
             <div className="flex flex-1 flex-col gap-10 p-8 lg:flex-row lg:items-start lg:p-12">
