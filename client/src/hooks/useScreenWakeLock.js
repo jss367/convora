@@ -17,13 +17,22 @@ export default function useScreenWakeLock() {
         // until released, so a second overlapping request would leave one we
         // never release.
         let requesting = false;
+        // A visibility change that arrived while a request was pending. The
+        // pending request may be refused or its lock dropped because of it, so
+        // it is handled once the request settles. A refusal with no skipped
+        // event (low battery, say) is not retried, so this cannot loop.
+        let missed = false;
 
         const request = async () => {
-            if (requesting || document.visibilityState !== 'visible' || (lock && !lock.released)) return;
+            if (requesting) {
+                missed = true;
+                return;
+            }
+            if (document.visibilityState !== 'visible' || (lock && !lock.released)) return;
             requesting = true;
-            let granted = null;
+            missed = false;
             try {
-                granted = await navigator.wakeLock.request('screen');
+                const granted = await navigator.wakeLock.request('screen');
                 if (active) lock = granted;
                 else granted.release().catch(() => {});
             } catch {
@@ -31,9 +40,7 @@ export default function useScreenWakeLock() {
             } finally {
                 requesting = false;
             }
-            // The tab may have been hidden and shown again while the request was
-            // pending, which drops the lock just granted; ask again if so.
-            if (active && granted?.released) request();
+            if (active && missed) request();
         };
 
         request();
