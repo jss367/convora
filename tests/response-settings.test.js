@@ -14,3 +14,11 @@ test('free-text settings default to unlimited attributed responses and reject in
   assert.equal(normalizeQuestionPayload({ ...base, showAttribution: 'false' }), null);
   assert.equal(normalizeQuestionPayload({ ...base, type: 'Brainstorm' }).type, 'Open Ended');
 });
+
+test('legacy Brainstorm creation keeps its hidden attribution default', () => {
+  const legacy = { text: 'Legacy ideas', type: 'Brainstorm' };
+  assert.equal(normalizeQuestionPayload(legacy).showAttribution, false);
+  assert.equal(normalizeQuestionPayload({ ...legacy, showAttribution: true }).showAttribution, true);
+  assert.equal(normalizeQuestionPayload({ ...legacy, showAttribution: false }).showAttribution, false);
+  assert.equal(normalizeQuestionPayload({ text: 'New written prompt', type: 'Open Ended' }).showAttribution, true);
+});

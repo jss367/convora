@@ -151,7 +151,7 @@ function normalizeQuestionPayload(question) {
 
   return {
     maxResponses: type === 'Open Ended' ? maxResponses : null,
-    showAttribution: question.showAttribution !== false,
+    showAttribution: question.showAttribution ?? question.type !== 'Brainstorm',
     text,
     type,
     minValue,

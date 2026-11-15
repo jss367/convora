@@ -2647,7 +2647,7 @@ async function toggleResponseVote(topic, responseId, userId) {
      FROM votes v
      JOIN questions q ON v.question_id = q.id
      JOIN discussions d ON q.discussion_id = d.id
-     WHERE v.id = $1 AND d.slug = $2`,
+     WHERE v.id = $1 AND d.slug = $2 AND NOT d.locked`,
     [responseId, slug]
   );
   if (ownerResult.rows.length === 0) {

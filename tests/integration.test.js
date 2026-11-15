@@ -4432,6 +4432,22 @@ test('response settings persist, copy, validate, and hide attribution on public 
   } finally { socket.disconnect(); }
 });
 
+test('a legacy Brainstorm creation keeps response authors hidden on socket and CSV views', async () => {
+  const created = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('legacy-brainstorm-privacy') });
+  const { socket } = await joinAs(created.body.slug, 'legacy-author');
+  try {
+    assert.equal((await emitWithAck(socket, 'addQuestion', created.body.slug, { text: 'Legacy ideas', type: 'Brainstorm' }, false, created.body.adminToken)).added, true);
+    const question = (await pool.query('SELECT id, type, show_attribution FROM questions WHERE discussion_id = $1', [created.body.id])).rows[0];
+    assert.equal(question.type, 'Open Ended');
+    assert.equal(question.show_attribution, false);
+    const update = waitForQuestions(socket, qs => qs.some(q => q.id === question.id && q.votes.length === 1), 'legacy anonymous response');
+    await emitWithAck(socket, 'vote', created.body.slug, question.id, 'Legacy contribution', 'legacy-author', 'Legacy Secret Author', 'custom');
+    assert.equal((await update).find(q => q.id === question.id).votes[0].pseudonym, null);
+    const csv = await fetch(`${baseUrl}/api/discussions/${created.body.slug}/export.csv`);
+    assert.equal((await csv.text()).includes('Legacy Secret Author'), false);
+  } finally { socket.disconnect(); }
+});
+
 test('legacy scalar answers update single-response questions but keep unlimited response creation', async () => {
   const created = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('legacy-scalar-update') });
   const questions = (await pool.query("INSERT INTO questions (discussion_id, text, type, max_responses) VALUES ($1, 'Legacy written', 'Open Ended', 1), ($1, 'Former ideas', 'Open Ended', NULL) RETURNING id", [created.body.id])).rows;
@@ -4466,6 +4482,11 @@ test('legacy upvote toggles and new quality ratings stay synchronized after migr
     await update;
     assert.deepEqual(await rating(), { quality: 1, agreement: 'Agree' });
     update = waitForQuestions(socket, qs => qs[0]?.votes[0]?.upvotes === 0 && qs[0]?.votes[0]?.qualityUp === 0, 'legacy upvote removed');
+    socket.emit('toggleResponseVote', created.body.slug, vote.id, 'legacy-voter');
+    await update;
+    assert.deepEqual(await rating(), { quality: null, agreement: 'Agree' });
+    await pool.query('UPDATE discussions SET locked = TRUE WHERE id = $1', [created.body.id]);
+    update = waitForQuestions(socket, qs => qs[0]?.votes[0]?.upvotes === 0, 'locked legacy upvote rejected');
     socket.emit('toggleResponseVote', created.body.slug, vote.id, 'legacy-voter');
     await update;
     assert.deepEqual(await rating(), { quality: null, agreement: 'Agree' });
