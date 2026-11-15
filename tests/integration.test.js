@@ -1411,6 +1411,36 @@ test('rapid show and hide leave every screen matching the stored reveal state', 
   }
 });
 
+test('a vote is acknowledged promptly while other votes keep arriving', async () => {
+  const seed = await seedResultsDiscussion('busy-room');
+  const { socket: busy } = await joinAs(seed.slug, 'busy-voter');
+  const { socket: voter } = await joinAs(seed.slug, 'patient-voter');
+  let loading = true;
+  // A vote every few milliseconds for two seconds, so a new request lands
+  // during every send. An acknowledgment that waits for a quiet moment arrives
+  // only after this stops.
+  const stop = setTimeout(() => { loading = false; }, 2000);
+  const pump = (async () => {
+    for (let i = 0; loading; i += 1) {
+      busy.emit('vote', seed.slug, seed.yesNo, i % 2 === 0 ? 'Yes' : 'No', 'busy-voter', 'Busy', undefined);
+      await new Promise(resolve => setTimeout(resolve, 5));
+    }
+  })();
+  try {
+    await new Promise(resolve => setTimeout(resolve, 300));
+    const started = Date.now();
+    assert.deepEqual(await emitWithAck(voter, 'vote', seed.slug, seed.agreement, 'Agree', 'patient-voter', 'Patient', undefined), { ok: true });
+    assert.equal(loading, true, 'acknowledged while the other votes were still arriving');
+    assert.ok(Date.now() - started < 1500, `acknowledged in ${Date.now() - started} ms`);
+  } finally {
+    clearTimeout(stop);
+    loading = false;
+    await pump;
+    busy.disconnect();
+    voter.disconnect();
+  }
+});
+
 test('a room display is not a participant and cannot vote, write or moderate', async () => {
   const seed = await seedResultsDiscussion('display-read-only');
   const { socket: participant } = await joinAs(seed.slug, 'seed-c');

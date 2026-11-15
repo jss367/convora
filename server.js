@@ -305,37 +305,34 @@ function restViewer(req) {
 //
 // Room-wide sends for one discussion run one at a time. Overlapping sends could
 // finish out of order, and an older payload arriving last would undo a newer
-// change, such as a moderator hiding results again. A request made while one is
-// running marks the room for one more send, which starts after it and so reads
-// the change; requests made meanwhile share that send. A send to one socket
-// that a room-wide send overtakes is dropped: the socket is in the room already
-// and gets the newer payload.
-const questionBroadcasts = new Map(); // slug -> { runs, active, again }
+// change, such as a moderator hiding results again. A request made while a send
+// is running queues one more send, which starts after it and so reads the
+// change; requests made before that queued send starts share it. Each caller
+// waits only for the send that covers its request, never for later ones, so a
+// busy room cannot hold up a vote's acknowledgment. A failed send rejects only
+// its own callers; the next one still runs. A send to one socket that a
+// room-wide send overtakes is dropped: the socket is in the room already and
+// gets the newer payload.
+const questionBroadcasts = new Map(); // slug -> { runs, tail, queued }
 
 function emitQuestions(topic, onlySocket = null, isCurrent = () => true) {
   const slug = slugifyTopic(topic);
   let room = questionBroadcasts.get(slug);
   if (onlySocket) return sendQuestions(slug, onlySocket, isCurrent, room?.runs || 0);
   if (!room) {
-    room = { runs: 0, active: null, again: false };
+    room = { runs: 0, tail: Promise.resolve(), queued: null };
     questionBroadcasts.set(slug, room);
   }
-  if (room.active) {
-    room.again = true;
-    return room.active;
-  }
-  room.active = (async () => {
-    try {
-      do {
-        room.again = false;
-        room.runs += 1;
-        await sendQuestions(slug, null);
-      } while (room.again);
-    } finally {
-      room.active = null;
-    }
-  })();
-  return room.active;
+  if (room.queued) return room.queued;
+  const run = room.tail.catch(() => {}).then(async () => {
+    // From here on, a new request needs a send that starts after this one.
+    room.queued = null;
+    room.runs += 1;
+    await sendQuestions(slug, null);
+  });
+  room.tail = run;
+  room.queued = run;
+  return run;
 }
 
 async function sendQuestions(slug, onlySocket, isCurrent = () => true, runsAtStart = 0) {
