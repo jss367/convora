@@ -408,7 +408,9 @@ async function initializeDatabase(pool) {
       await migration.query("UPDATE questions SET max_responses = 1 WHERE type = 'Open Ended'");
       await migration.query("UPDATE questions SET type = 'Open Ended', show_attribution = FALSE WHERE type = 'Brainstorm'");
       await migration.query(`INSERT INTO response_ratings (response_id, user_id, quality)
-        SELECT response_id, user_id, 1 FROM response_votes ON CONFLICT (response_id, user_id) DO NOTHING`);
+        SELECT response_id, user_id, 1 FROM response_votes
+        ON CONFLICT (response_id, user_id) DO UPDATE
+        SET quality = COALESCE(response_ratings.quality, EXCLUDED.quality)`);
     }
     await migration.query('ALTER TABLE votes ADD COLUMN IF NOT EXISTS request_id TEXT');
     await migration.query('CREATE UNIQUE INDEX IF NOT EXISTS votes_request_id ON votes (question_id, user_id, request_id)');

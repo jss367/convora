@@ -232,6 +232,7 @@ const OpenEndedQuestion = ({
     onModeratorDeleteVote, onModeratorDeleteComment,
 }) => {
     const [idea, setIdea] = useState('');
+    const creation = useRef(null);
 
     const votes = question.votes || [];
     const ownCount = votes.filter(v => ownedVoteIds.has(v.id)).length;
@@ -249,8 +250,15 @@ const OpenEndedQuestion = ({
             return;
         }
         const submitted = idea.trim();
-        handleVote(question.id, { text: submitted, requestId: createRequestId() }, result => {
-            if (result?.ok) setIdea(current => current.trim() === submitted ? '' : current);
+        if (creation.current?.text !== submitted) {
+            creation.current = { text: submitted, id: createRequestId() };
+        }
+        const request = creation.current;
+        handleVote(question.id, { text: submitted, requestId: request.id }, result => {
+            if (result?.ok && creation.current === request) {
+                creation.current = null;
+                setIdea(current => current.trim() === submitted ? '' : current);
+            }
         });
     };
 

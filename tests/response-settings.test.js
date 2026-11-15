@@ -22,3 +22,13 @@ test('legacy Brainstorm creation keeps its hidden attribution default', () => {
   assert.equal(normalizeQuestionPayload({ ...legacy, showAttribution: false }).showAttribution, false);
   assert.equal(normalizeQuestionPayload({ text: 'New written prompt', type: 'Open Ended' }).showAttribution, true);
 });
+
+test('other question types ignore retained free-text response limits', () => {
+  for (const type of ['Agreement', 'Yes/No', 'Numerical', 'Multiple Choice']) {
+    for (const maxResponses of [0, -1, 'invalid', 1.5]) {
+      const normalized = normalizeQuestionPayload({ text: 'A prompt', type, maxResponses, minValue: 0, maxValue: 100, options: ['A', 'B'] });
+      assert.ok(normalized, `${type} ignores ${maxResponses}`);
+      assert.equal(normalized.maxResponses, null);
+    }
+  }
+});

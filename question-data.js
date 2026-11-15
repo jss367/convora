@@ -139,7 +139,7 @@ function normalizeQuestionPayload(question) {
     }
   }
 
-  const maxResponses = question.maxResponses == null || question.maxResponses === '' ? null : parseIntegerInput(question.maxResponses);
+  const maxResponses = type !== 'Open Ended' || question.maxResponses == null || question.maxResponses === '' ? null : parseIntegerInput(question.maxResponses);
   if (maxResponses !== null && (!Number.isSafeInteger(maxResponses) || maxResponses < 1 || maxResponses > 2147483647)) return null;
   if (question.showAttribution !== undefined && typeof question.showAttribution !== 'boolean') return null;
   // Only Multiple Choice questions store options; other types ignore any sent.

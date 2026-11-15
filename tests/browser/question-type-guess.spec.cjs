@@ -1,5 +1,20 @@
 const { test, expect } = require('./lifecycle-fixtures.cjs');
 
+test('switching away from Open Ended ignores its invalid retained limit', async ({ page, rooms }) => {
+  const room = await rooms.create('Retained response setting');
+  await page.goto(`/discussion/${room.slug}`);
+  const picker = page.getByRole('combobox').filter({ has: page.locator('option[value="Numerical"]') });
+  await picker.selectOption('Open Ended');
+  await page.getByLabel('Maximum responses per person (blank for unlimited)').fill('0');
+  await picker.selectOption('Agreement');
+  const text = 'This prompt keeps its chosen poll type';
+  await page.getByPlaceholder('Enter a new question or statement').fill(text);
+  await page.getByPlaceholder('Enter a new question or statement').press('Enter');
+  await expect(page.getByRole('heading', { name: text, exact: true })).toBeVisible();
+  expect((await rooms.pool.query('SELECT type, max_responses FROM questions WHERE discussion_id = $1 AND text = $2', [room.id, text])).rows)
+    .toEqual([{ type: 'Agreement', max_responses: null }]);
+});
+
 test('idea guesses use unified Open Ended and preserve explicitly chosen response settings', async ({ page, rooms }) => {
   const room = await rooms.create('Unified guess');
   await page.goto(`/discussion/${room.slug}`);

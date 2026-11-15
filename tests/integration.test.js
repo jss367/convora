@@ -4632,10 +4632,14 @@ test('unified response migration preserves attribution, limits and upvotes witho
     const qs = (await pool.query("INSERT INTO questions (discussion_id, text, type) VALUES ($1, 'Written', 'Open Ended'), ($1, 'Ideas', 'Brainstorm') RETURNING id", [d])).rows;
     const v = (await pool.query("INSERT INTO votes (question_id, user_id, value) VALUES ($1, 'author', 'Keep me') RETURNING id", [qs[0].id])).rows[0].id;
     await pool.query("INSERT INTO response_votes (response_id, user_id) VALUES ($1, 'voter')", [v]);
+    await pool.query("INSERT INTO response_votes (response_id, user_id) VALUES ($1, 'agreement-voter'), ($1, 'quality-voter')", [v]);
+    await pool.query("INSERT INTO response_ratings (response_id, user_id, quality, agreement) VALUES ($1, 'agreement-voter', NULL, 'Agree'), ($1, 'quality-voter', -1, 'Disagree')", [v]);
     await initializeDatabase(pool);
     const migrated = (await pool.query('SELECT type, max_responses, show_attribution FROM questions WHERE discussion_id = $1 ORDER BY id', [d])).rows;
     assert.deepEqual(migrated, [{ type: 'Open Ended', max_responses: 1, show_attribution: true }, { type: 'Open Ended', max_responses: null, show_attribution: false }]);
-    assert.equal((await pool.query('SELECT quality FROM response_ratings WHERE response_id = $1', [v])).rows[0].quality, 1);
+    assert.equal((await pool.query("SELECT quality FROM response_ratings WHERE response_id = $1 AND user_id = 'voter'", [v])).rows[0].quality, 1);
+    assert.deepEqual((await pool.query("SELECT user_id, quality, agreement FROM response_ratings WHERE response_id = $1 AND user_id <> 'voter' ORDER BY user_id", [v])).rows,
+      [{ user_id: 'agreement-voter', quality: 1, agreement: 'Agree' }, { user_id: 'quality-voter', quality: -1, agreement: 'Disagree' }]);
     await pool.query('UPDATE questions SET max_responses = 4 WHERE id = $1', [qs[0].id]);
     await initializeDatabase(pool);
     assert.equal((await pool.query('SELECT max_responses FROM questions WHERE id = $1', [qs[0].id])).rows[0].max_responses, 4);
