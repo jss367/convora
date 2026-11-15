@@ -37,6 +37,12 @@ A moderator can change this in the moderator bar, under **Results**:
 - **Show results after you vote** is the default, for new and existing discussions.
 - **Always show results** shows every result to everyone.
 
+With **Show results after you vote**, a moderator can also reveal one question
+at a time: click **Show results** on the question to show its results to
+everyone now, whether or not they have voted, and **Hide results** to go back.
+This is the usual way to run a live poll: collect votes, then reveal the answer
+to discuss it.
+
 Moderators always see results. The setting also applies to the summary, opinion
 groups, opinion snapshots and exports: each leaves out the results of questions
 the person viewing has not answered and says how many were left out. Open Ended
@@ -63,6 +69,12 @@ moderator's browser. It follows the **Results** setting:
   question's response count but no tallies, percentages or histograms. The
   display has not voted, so it sees what a participant who has not voted sees.
 - With **Always show results**, it shows the live results.
+
+To put one question's results on the screen, click **Show results** on that
+question from your own moderator page, phone or laptop. The display updates at
+once. Anyone with the link can open the display, so a revealed question's
+results are shown to every participant too. **Hide results** takes them off the
+screen again.
 
 Open Ended and Brainstorm responses appear on the display as they do for
 participants. Brainstorm ratings and reactions appear only when the moderator has

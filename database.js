@@ -327,6 +327,9 @@ async function initializeDatabase(pool) {
     // Per-discussion color theme the moderator picks; 'indigo' is the original look.
     await pool.query("ALTER TABLE discussions ADD COLUMN IF NOT EXISTS theme TEXT NOT NULL DEFAULT 'indigo'");
     await pool.query('ALTER TABLE questions ADD COLUMN IF NOT EXISTS pinned BOOLEAN NOT NULL DEFAULT FALSE');
+    // A moderator has shown this question's results to everyone, voted or not
+    // (see setResultsRevealed in server.js). Off until a moderator turns it on.
+    await pool.query('ALTER TABLE questions ADD COLUMN IF NOT EXISTS results_revealed BOOLEAN NOT NULL DEFAULT FALSE');
     // When participants see the results of tallied questions: 'after_vote' (only
     // once they have answered, the default for existing discussions too) or
     // 'always'. See RESULTS_VISIBILITY_MODES in server.js.

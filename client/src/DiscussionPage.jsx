@@ -395,6 +395,13 @@ const DiscussionPage = () => {
         socket.emit('deleteQuestion', discussionSlug, questionId, adminToken);
     };
 
+    // Show one question's results to everyone, including the room display, or go
+    // back to showing them only after voting. Only offered while results are
+    // shown after voting; with "Always show results" there is nothing to reveal.
+    const handleToggleResultsRevealed = (questionId, revealed) => {
+        socket.emit('setResultsRevealed', discussionSlug, questionId, !revealed, adminToken);
+    };
+
     const handleTogglePin = (questionId, pinned) => {
         socket.emit('setPinned', discussionSlug, questionId, !pinned, adminToken);
     };
@@ -1973,6 +1980,19 @@ const DiscussionPage = () => {
                                         className="text-xs px-2 py-1 rounded border border-gray-300 text-gray-600 hover:bg-gray-100"
                                     >
                                         Edit
+                                    </button>
+                                )}
+                                {discussionState.resultsVisibility !== 'always'
+                                    && [QuestionTypes.AGREEMENT, QuestionTypes.YES_NO, QuestionTypes.NUMERICAL].includes(question.type) && (
+                                    <button
+                                        onClick={() => handleToggleResultsRevealed(question.id, question.resultsRevealed)}
+                                        aria-pressed={question.resultsRevealed === true}
+                                        title={question.resultsRevealed
+                                            ? 'Go back to showing results only to people who have voted'
+                                            : 'Show the results to everyone now, including on the room display'}
+                                        className="text-xs px-2 py-1 rounded border border-indigo-300 text-indigo-700 hover:bg-indigo-50"
+                                    >
+                                        {question.resultsRevealed ? 'Hide results' : 'Show results'}
                                     </button>
                                 )}
                                 <button

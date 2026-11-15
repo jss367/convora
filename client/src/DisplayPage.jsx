@@ -41,7 +41,7 @@ const TalliedResults = ({ question }) => {
         return (
             <div data-testid="display-results-hidden">
                 <p className="text-3xl font-semibold text-gray-800">{plural(count, 'response', 'responses')}</p>
-                <p className="mt-1 text-lg text-gray-500">Results are shown to each person after they vote</p>
+                <p className="mt-1 text-lg text-gray-500">Vote on your phone. The moderator will show the results here.</p>
             </div>
         );
     }
