@@ -1,16 +1,21 @@
 import { useEffect } from 'react';
+import keepAwakeMp4 from '../assets/keep-awake.mp4';
+import keepAwakeWebm from '../assets/keep-awake.webm';
 
 // Keeps the screen from dimming or sleeping while the page is open, the way a
 // video player does. Nobody touches a room display, so without this a TV or
 // laptop turns its screen off partway through a discussion.
 //
-// The browser releases the lock whenever the tab is hidden, so it is requested
-// again each time the page becomes visible. Browsers without the Screen Wake
-// Lock API, or that refuse the request (low battery, insecure origin), just
-// keep their normal sleep behaviour.
+// Two things are done together, because neither works everywhere:
+// - The Screen Wake Lock API, where the browser has it and allows it (HTTPS,
+//   enough battery). The browser releases the lock whenever the tab is hidden,
+//   so it is requested again each time the page becomes visible.
+// - A tiny muted video playing on a loop. Smart TVs can ignore the wake lock,
+//   or have a browser without it, but they do not start a screen saver or go
+//   to sleep while a video plays.
 export default function useScreenWakeLock() {
     useEffect(() => {
-        if (typeof navigator === 'undefined' || !navigator.wakeLock) return undefined;
+        if (typeof navigator === 'undefined' || typeof document === 'undefined') return undefined;
         let lock = null;
         let active = true;
         // Only one request at a time: every lock the browser grants stays held
@@ -18,8 +23,37 @@ export default function useScreenWakeLock() {
         // never release.
         let requesting = false;
 
-        const request = async () => {
-            if (requesting || document.visibilityState !== 'visible' || (lock && !lock.released)) return;
+        const video = document.createElement('video');
+        video.muted = true;
+        video.loop = true;
+        video.setAttribute('muted', '');
+        video.setAttribute('playsinline', '');
+        video.setAttribute('aria-hidden', 'true');
+        video.setAttribute('data-testid', 'keep-awake-video');
+        // Kept on screen (but invisible): some browsers pause videos that are
+        // off screen or not in the document.
+        Object.assign(video.style, {
+            position: 'fixed', left: '0', bottom: '0', width: '1px', height: '1px',
+            opacity: '0.01', pointerEvents: 'none',
+        });
+        // H.264 first for TVs' hardware decoders; WebM for browsers without
+        // H.264, such as open-source Chromium builds.
+        [[keepAwakeMp4, 'video/mp4'], [keepAwakeWebm, 'video/webm']].forEach(([src, type]) => {
+            const source = document.createElement('source');
+            source.src = src;
+            source.type = type;
+            video.appendChild(source);
+        });
+        document.body.appendChild(video);
+
+        const playVideo = () => {
+            const playing = video.play();
+            // Refused autoplay leaves the screen to sleep as it normally would.
+            if (playing && playing.catch) playing.catch(() => {});
+        };
+
+        const requestLock = async () => {
+            if (!navigator.wakeLock || requesting || (lock && !lock.released)) return;
             requesting = true;
             let granted = null;
             try {
@@ -27,21 +61,31 @@ export default function useScreenWakeLock() {
                 if (active) lock = granted;
                 else granted.release().catch(() => {});
             } catch {
-                // Refused; the screen sleeps as it normally would.
+                // Refused; the video still keeps the screen on.
             } finally {
                 requesting = false;
             }
             // The tab may have been hidden and shown again while the request was
             // pending, which drops the lock just granted; ask again if so.
-            if (active && granted?.released) request();
+            if (active && granted?.released && document.visibilityState === 'visible') requestLock();
         };
 
-        request();
-        document.addEventListener('visibilitychange', request);
+        // The browser may pause the video and drops the lock while the tab is
+        // hidden, so both are resumed when it is shown.
+        const onVisible = () => {
+            if (document.visibilityState !== 'visible') return;
+            playVideo();
+            requestLock();
+        };
+
+        onVisible();
+        document.addEventListener('visibilitychange', onVisible);
         return () => {
             active = false;
-            document.removeEventListener('visibilitychange', request);
+            document.removeEventListener('visibilitychange', onVisible);
             if (lock && !lock.released) lock.release().catch(() => {});
+            video.pause();
+            video.remove();
         };
     }, []);
 }

@@ -116,9 +116,11 @@ test('the room display preserves a numerical range ending at zero', async ({ pag
 
 // A fake Screen Wake Lock API that counts the locks held, and releases them
 // when the tab is hidden as browsers do. With deferred, requests stay pending
-// until the test calls window.__wakeLock.grant().
-async function fakeWakeLock(page, { deferred = false } = {}) {
-  await page.addInitScript(deferredRequests => {
+// until the test calls window.__wakeLock.grant(). With api 'missing' the
+// browser has no Screen Wake Lock API, as on older smart TVs; with 'refused'
+// every request is rejected.
+async function fakeWakeLock(page, { deferred = false, api = 'working' } = {}) {
+  await page.addInitScript(({ deferredRequests, apiMode }) => {
     let visibility = 'visible';
     Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => visibility });
     const locks = [];
@@ -136,10 +138,11 @@ async function fakeWakeLock(page, { deferred = false } = {}) {
     };
     Object.defineProperty(navigator, 'wakeLock', {
       configurable: true,
-      value: {
+      value: apiMode === 'missing' ? undefined : {
         request: async type => {
           if (type !== 'screen') throw new Error('unexpected wake lock type');
           window.__wakeLock.requests += 1;
+          if (apiMode === 'refused') throw new DOMException('Wake lock refused', 'NotAllowedError');
           if (deferredRequests) await new Promise(resolve => pending.push(resolve));
           const lock = { released: false, release: async () => { lock.released = true; } };
           locks.push(lock);
@@ -147,8 +150,14 @@ async function fakeWakeLock(page, { deferred = false } = {}) {
         },
       },
     });
-  }, deferred);
+  }, { deferredRequests: deferred, apiMode: api });
 }
+
+const keepAwakeVideoPlaying = page => page.evaluate(() => {
+  const video = document.querySelector('[data-testid="keep-awake-video"]');
+  if (!video) return 'none';
+  return video.paused ? 'paused' : 'playing';
+});
 
 const leaveDisplay = page => page.evaluate(() => {
   window.history.pushState({}, '', '/');
@@ -168,11 +177,38 @@ test('the room display keeps the screen awake, and asks again after the tab was 
   await page.evaluate(() => window.__wakeLock.setVisibility('visible'));
   await expect.poll(() => page.evaluate(() => window.__wakeLock.held())).toBe(1);
   expect(await page.evaluate(() => window.__wakeLock.requests)).toBe(2);
+  // A muted video plays as well, for TVs that ignore the wake lock.
+  expect(await keepAwakeVideoPlaying(page)).toBe('playing');
 
   // Leaving the display for a participant page lets the screen sleep again.
   await leaveDisplay(page);
   await expect.poll(() => page.evaluate(() => window.__wakeLock.held())).toBe(0);
+  expect(await keepAwakeVideoPlaying(page)).toBe('none');
 });
+
+for (const api of ['missing', 'refused']) {
+  test(`the room display still stays awake with a muted video when the wake lock is ${api}`, async ({ page, rooms }) => {
+    const room = await rooms.create(`Wake video ${api} room`, 'Agreement');
+    await fakeWakeLock(page, { api });
+    await page.goto(`/discussion/${room.slug}/display`);
+    await expect(page.getByTestId('display-question')).toBeVisible();
+    await expect.poll(() => keepAwakeVideoPlaying(page)).toBe('playing');
+    expect(await page.evaluate(() => document.querySelector('[data-testid="keep-awake-video"]').muted)).toBe(true);
+
+    // Paused while hidden, it plays again when the tab is shown; there is only
+    // ever one video.
+    await page.evaluate(() => {
+      document.querySelector('[data-testid="keep-awake-video"]').pause();
+      window.__wakeLock.setVisibility('hidden');
+      window.__wakeLock.setVisibility('visible');
+    });
+    await expect.poll(() => keepAwakeVideoPlaying(page)).toBe('playing');
+    expect(await page.locator('[data-testid="keep-awake-video"]').count()).toBe(1);
+
+    await leaveDisplay(page);
+    await expect.poll(() => keepAwakeVideoPlaying(page)).toBe('none');
+  });
+}
 
 test('the room display never holds two wake locks when the tab flips during a request', async ({ page, rooms }) => {
   const room = await rooms.create('Wake lock race room', 'Agreement');
