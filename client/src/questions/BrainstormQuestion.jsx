@@ -214,7 +214,7 @@ const BrainstormQuestion = ({
     const [duplicateIdea, setDuplicateIdea] = useState(null);
     const votes = question.votes || [];
     // Whether reactions/comments are available is set discussion-wide by the
-    // moderator (see the moderator bar in DiscussionPage); each question carries
+    // moderator (see ModeratorPanel); each question carries
     // the resolved flags via getQuestions.
     const reactionsEnabled = question.reactionsEnabled;
     const reactionsVisible = question.reactionsVisible;
