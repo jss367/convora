@@ -998,6 +998,14 @@ test('Multiple Choice results stay hidden until a participant votes, and snapsho
   assert.deepEqual(summarized.leadingOptions, ['Higher']);
   assert.equal(summary.topDivisive.some(q => q.id === questionId), false);
 
+  // Someone who has not answered gets the options, which are part of the
+  // question, but no tallies.
+  const hiddenSummary = (await jsonRequest('GET', `/api/discussions/${slug}/summary`, undefined, asUser('mc-stranger'))).body
+    .questions.find(q => q.id === questionId);
+  assert.deepEqual(hiddenSummary.options, ['Higher', 'Lower', 'About the same']);
+  assert.equal(hiddenSummary.resultsHidden, true);
+  assert.equal('optionCounts' in hiddenSummary || 'responseCount' in hiddenSummary || 'leadingOptions' in hiddenSummary, false);
+
   const url = `/api/discussions/${slug}/snapshots`;
   const saved = await jsonRequest('POST', url, { name: 'Before', adminToken });
   assert.equal(saved.status, 201);

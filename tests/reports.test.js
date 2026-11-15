@@ -106,3 +106,15 @@ test('printable reports escape Multiple Choice option text', () => {
   assert.doesNotMatch(html, /<img src=x/);
   assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt;: 0 \/ Plain: 1/);
 });
+
+test('a hidden Multiple Choice summary keeps its options but no counts', () => {
+  const summary = buildSummary(discussion, [{
+    id: 1, text: 'p(doom)?', type: 'Multiple Choice', options: ['Higher', 'Lower'],
+    votes: [], resultsHidden: true, created_at: '2026-01-01T00:00:00Z',
+  }]);
+  assert.deepEqual(summary.questions, [{
+    id: 1, text: 'p(doom)?', type: 'Multiple Choice', createdAt: '2026-01-01T00:00:00Z',
+    options: ['Higher', 'Lower'], resultsHidden: true,
+  }]);
+  assert.match(renderReportHtml(summary), /Hidden until you vote/);
+});

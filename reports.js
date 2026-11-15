@@ -218,6 +218,9 @@ function buildSummary(discussion, questions) {
         text: question.text,
         type: question.type,
         createdAt: question.created_at,
+        // A Multiple Choice question's options are part of the question, not
+        // its results, so they stay; only the counts are withheld.
+        ...(question.type === 'Multiple Choice' ? { options: choiceOptionsFor(question) } : {}),
         resultsHidden: true,
       };
     }

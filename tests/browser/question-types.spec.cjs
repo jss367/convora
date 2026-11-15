@@ -235,7 +235,7 @@ test('a Multiple Choice question is written with its own options, validated, vot
   }
 });
 
-test('the summary lists an unanswered Multiple Choice question with each option at zero', async ({ page, request }) => {
+test('the summary lists a Multiple Choice question\'s options at zero before anyone answers, and while results are hidden', async ({ page, request }) => {
   const response = await request.post('/api/discussions', { data: { topic: `Choice summary ${Date.now()}` } });
   expect(response.ok()).toBeTruthy();
   const discussion = await response.json();
@@ -256,6 +256,17 @@ test('the summary lists an unanswered Multiple Choice question with each option 
       await expect(bars.getByText(option, { exact: true })).toBeVisible();
     }
     await expect(bars.getByText('0 · 0%', { exact: true })).toHaveCount(3);
+
+    // With results shown only after voting, someone who has not answered still
+    // sees the options, with no counts or percentages.
+    await pool.query("UPDATE discussions SET results_visibility = 'after_vote' WHERE id = $1", [discussion.id]);
+    await page.reload();
+    const labels = page.getByTestId('summary-choice-options');
+    for (const option of ['Higher', 'Lower', 'About the same']) {
+      await expect(labels.getByText(option, { exact: true })).toBeVisible();
+    }
+    await expect(labels.getByText(/%|·/)).toHaveCount(0);
+    await expect(page.getByTestId('summary-choice-bars')).toHaveCount(0);
   } finally {
     await pool.query('DELETE FROM questions WHERE discussion_id = $1', [discussion.id]);
     await pool.query('DELETE FROM discussions WHERE id = $1', [discussion.id]);
