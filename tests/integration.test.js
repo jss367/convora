@@ -4432,6 +4432,33 @@ test('response settings persist, copy, validate, and hide attribution on public 
   } finally { socket.disconnect(); }
 });
 
+test('legacy upvote toggles and new quality ratings stay synchronized after migration', async () => {
+  const created = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('legacy-feedback-sync') });
+  const question = (await pool.query("INSERT INTO questions (discussion_id, text, type) VALUES ($1, 'Feedback', 'Open Ended') RETURNING id", [created.body.id])).rows[0];
+  const vote = (await pool.query("INSERT INTO votes (question_id, user_id, value) VALUES ($1, 'author', 'Keep feedback') RETURNING id", [question.id])).rows[0];
+  const { socket } = await joinAs(created.body.slug, 'legacy-voter');
+  const rating = async () => (await pool.query('SELECT quality, agreement FROM response_ratings WHERE response_id = $1 AND user_id = $2', [vote.id, 'legacy-voter'])).rows[0];
+  try {
+    let update = waitForQuestions(socket, qs => qs[0]?.votes[0]?.upvotes === 1, 'legacy upvote added');
+    socket.emit('toggleResponseVote', created.body.slug, vote.id, 'legacy-voter');
+    await update;
+    assert.equal((await rating())?.quality, 1);
+    await pool.query('UPDATE discussions SET reactions_enabled = TRUE, reactions_visible = TRUE WHERE id = $1', [created.body.id]);
+    update = waitForQuestions(socket, qs => qs[0]?.votes[0]?.qualityDown === 1, 'new quality downvote');
+    socket.emit('setResponseRating', created.body.slug, vote.id, 'quality', -1, 'legacy-voter');
+    assert.equal((await update)[0].votes[0].upvotes, 0);
+    await pool.query("UPDATE response_ratings SET agreement = 'Agree' WHERE response_id = $1", [vote.id]);
+    update = waitForQuestions(socket, qs => qs[0]?.votes[0]?.qualityUp === 1, 'legacy upvote after new rating');
+    socket.emit('toggleResponseVote', created.body.slug, vote.id, 'legacy-voter');
+    await update;
+    assert.deepEqual(await rating(), { quality: 1, agreement: 'Agree' });
+    update = waitForQuestions(socket, qs => qs[0]?.votes[0]?.upvotes === 0 && qs[0]?.votes[0]?.qualityUp === 0, 'legacy upvote removed');
+    socket.emit('toggleResponseVote', created.body.slug, vote.id, 'legacy-voter');
+    await update;
+    assert.deepEqual(await rating(), { quality: null, agreement: 'Agree' });
+  } finally { socket.disconnect(); }
+});
+
 test('unified response migration preserves attribution, limits and upvotes without resetting later changes', async () => {
   await stopServer();
   try {

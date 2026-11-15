@@ -2680,6 +2680,13 @@ async function toggleResponseVote(topic, responseId, userId) {
         [responseId, userId]
       );
     }
+    // Old browsers can still toggle upvotes after migration. Keep the quality
+    // axis in sync in this transaction without touching the agreement axis.
+    await client.query(
+      `INSERT INTO response_ratings (response_id, user_id, quality) VALUES ($1, $2, $3)
+       ON CONFLICT (response_id, user_id) DO UPDATE SET quality = EXCLUDED.quality`,
+      [responseId, userId, deleteResult.rowCount === 0 ? 1 : null]
+    );
     await client.query('COMMIT');
   } catch (e) {
     await client.query('ROLLBACK');
@@ -2722,11 +2729,21 @@ async function getResponseContext(topic, responseId) {
 async function setResponseRating(responseId, userId, axis, value) {
   if (axis === 'quality') {
     const quality = value === 1 || value === -1 ? value : null;
-    await pool.query(
-      `INSERT INTO response_ratings (response_id, user_id, quality) VALUES ($1, $2, $3)
-       ON CONFLICT (response_id, user_id) DO UPDATE SET quality = EXCLUDED.quality`,
-      [responseId, userId, quality]
-    );
+    await withTransaction(async client => {
+      // Share the legacy toggle lock so mixed old/new clients cannot leave
+      // the two representations at different states.
+      await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`response_vote:${responseId}:${userId}`]);
+      await client.query(
+        `INSERT INTO response_ratings (response_id, user_id, quality) VALUES ($1, $2, $3)
+         ON CONFLICT (response_id, user_id) DO UPDATE SET quality = EXCLUDED.quality`,
+        [responseId, userId, quality]
+      );
+      if (quality === 1) {
+        await client.query('INSERT INTO response_votes (response_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [responseId, userId]);
+      } else {
+        await client.query('DELETE FROM response_votes WHERE response_id = $1 AND user_id = $2', [responseId, userId]);
+      }
+    });
   } else if (axis === 'agreement') {
     const agreement = AGREEMENT_OPTIONS.includes(value) ? value : null;
     await pool.query(
