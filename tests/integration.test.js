@@ -1425,6 +1425,63 @@ test('a moderator can reveal one question\'s results to everyone, including the 
   }
 });
 
+test('rapid show and hide leave every screen matching the stored reveal state', async () => {
+  const seed = await seedResultsDiscussion('reveal-race');
+  const { socket: display } = await joinDisplay(seed.slug);
+  const { socket: watcher } = await joinAs(seed.slug, 'watcher');
+  const mod = await connectSocket();
+  try {
+    const last = { display: null, watcher: null };
+    display.on('questions', qs => { last.display = byId(qs, seed.agreement); });
+    watcher.on('questions', qs => { last.watcher = byId(qs, seed.agreement); });
+    // Overlapping refreshes must not deliver an older payload after a newer one.
+    for (let i = 0; i < 10; i += 1) {
+      mod.emit('setResultsRevealed', seed.slug, seed.agreement, i % 2 === 0, seed.adminToken);
+    }
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    const stored = (await pool.query('SELECT results_revealed FROM questions WHERE id = $1', [seed.agreement])).rows[0].results_revealed;
+    for (const [label, question] of Object.entries(last)) {
+      assert.ok(question, `${label} received questions`);
+      assert.equal(question.resultsRevealed, stored, `${label} matches the stored state`);
+      assert.equal(question.resultsHidden, !stored, `${label} hides results exactly when not revealed`);
+    }
+  } finally {
+    display.disconnect();
+    watcher.disconnect();
+    mod.disconnect();
+  }
+});
+
+test('a vote is acknowledged promptly while other votes keep arriving', async () => {
+  const seed = await seedResultsDiscussion('busy-room');
+  const { socket: busy } = await joinAs(seed.slug, 'busy-voter');
+  const { socket: voter } = await joinAs(seed.slug, 'patient-voter');
+  let loading = true;
+  // A vote every few milliseconds for two seconds, so a new request lands
+  // during every send. An acknowledgment that waits for a quiet moment arrives
+  // only after this stops.
+  const stop = setTimeout(() => { loading = false; }, 2000);
+  const pump = (async () => {
+    for (let i = 0; loading; i += 1) {
+      busy.emit('vote', seed.slug, seed.yesNo, i % 2 === 0 ? 'Yes' : 'No', 'busy-voter', 'Busy', undefined);
+      await new Promise(resolve => setTimeout(resolve, 5));
+    }
+  })();
+  try {
+    await new Promise(resolve => setTimeout(resolve, 300));
+    const started = Date.now();
+    assert.deepEqual(await emitWithAck(voter, 'vote', seed.slug, seed.agreement, 'Agree', 'patient-voter', 'Patient', undefined), { ok: true });
+    assert.equal(loading, true, 'acknowledged while the other votes were still arriving');
+    assert.ok(Date.now() - started < 1500, `acknowledged in ${Date.now() - started} ms`);
+  } finally {
+    clearTimeout(stop);
+    loading = false;
+    await pump;
+    busy.disconnect();
+    voter.disconnect();
+  }
+});
+
 test('a room display is not a participant and cannot vote, write or moderate', async () => {
   const seed = await seedResultsDiscussion('display-read-only');
   const { socket: participant } = await joinAs(seed.slug, 'seed-c');

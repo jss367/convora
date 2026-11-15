@@ -315,15 +315,85 @@ function restViewer(req) {
 // displays get the display view, whatever else their socket has claimed.
 // `isCurrent`, given with `onlySocket`, is checked once the data has loaded; a
 // caller whose request has been superseded meanwhile sends nothing.
-async function emitQuestions(topic, onlySocket = null, isCurrent = () => true) {
+//
+// Room-wide sends for one discussion run one at a time. Overlapping sends could
+// finish out of order, and an older payload arriving last would undo a newer
+// change, such as a moderator hiding results again. A request made while a send
+// is running queues one more send, which starts after it and so reads the
+// change; requests made before that queued send starts share it. Each caller
+// waits only for the send that covers its request, never for later ones, so a
+// busy room cannot hold up a vote's acknowledgment. A failed send rejects only
+// its own callers; the next one still runs. A send to one socket is dropped
+// only once a room-wide send that started after it has been delivered: the
+// socket is in the room already and has the newer payload. A room-wide send
+// that started but then failed does not cancel it.
+//
+// A discussion's entry is removed once it is idle: no room-wide send running or
+// queued and no send to one socket still loading. Until then its counters stay,
+// so a send in flight is always compared against the same entry.
+const questionBroadcasts = new Map(); // slug -> { runs, delivered, tail, queued, busy, personal }
+
+function questionRoom(slug) {
+  let room = questionBroadcasts.get(slug);
+  if (!room) {
+    room = { runs: 0, delivered: 0, tail: Promise.resolve(), queued: null, busy: false, personal: 0 };
+    questionBroadcasts.set(slug, room);
+  }
+  return room;
+}
+
+function evictIfIdle(slug, room) {
+  if (!room.busy && room.personal === 0 && questionBroadcasts.get(slug) === room) {
+    questionBroadcasts.delete(slug);
+  }
+}
+
+function emitQuestions(topic, onlySocket = null, isCurrent = () => true) {
   const slug = slugifyTopic(topic);
+  const room = questionRoom(slug);
+  if (onlySocket) {
+    room.personal += 1;
+    return sendQuestions(slug, room, { onlySocket, isCurrent, startedAfterRun: room.runs })
+      .finally(() => {
+        room.personal -= 1;
+        evictIfIdle(slug, room);
+      });
+  }
+  if (room.queued) return room.queued;
+  room.busy = true;
+  const run = room.tail.catch(() => {}).then(async () => {
+    // From here on, a new request needs a send that starts after this one.
+    room.queued = null;
+    room.runs += 1;
+    await sendQuestions(slug, room, { run: room.runs });
+  });
+  room.tail = run;
+  room.queued = run;
+  run.catch(() => {}).then(() => {
+    // Nothing was chained after this run: the room has no send left.
+    if (room.tail !== run) return;
+    room.busy = false;
+    evictIfIdle(slug, room);
+  });
+  return run;
+}
+
+// One send of the questions: to `onlySocket`, or room-wide as room run `run`.
+// A room-wide send records itself as delivered in the same synchronous step as
+// its emits, so a send to one socket never sees it half done.
+async function sendQuestions(slug, room, { onlySocket = null, isCurrent = () => true, startedAfterRun = 0, run = 0 } = {}) {
   const respondents = new Map();
   const questions = await getQuestions(slug, { respondents });
   const access = await getResultsAccess(slug);
+  if (onlySocket && room.delivered > startedAfterRun) return;
   if (onlySocket && !isCurrent()) return;
+  const markDelivered = () => {
+    if (!onlySocket) room.delivered = Math.max(room.delivered, run);
+  };
   if (access.alwaysShow) {
     if (onlySocket?.data.isDisplay && onlySocket.data.display !== slug) return;
     (onlySocket || audience(slug)).emit('questions', questions);
+    markDelivered();
     return;
   }
   if (onlySocket?.data.isDisplay) {
@@ -349,6 +419,7 @@ async function emitQuestions(topic, onlySocket = null, isCurrent = () => true) {
     if (!views.has(userId)) views.set(userId, hideUnansweredResults(questions, respondents, userId));
     target.emit('questions', views.get(userId));
   }
+  markDelivered();
 }
 
 // A socket's view can change without any vote: it identifies itself after
