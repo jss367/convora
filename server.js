@@ -538,6 +538,18 @@ io.on('connection', (socket) => {
     emitPresence(discussionSlug);
 
     try {
+      // A late visitor or reconnect may have missed the deletion broadcast.
+      // Null discussion data alone also means a never-created lazy route, so
+      // distinguish a permanently deleted route using its durable tombstone.
+      const deleted = await pool.query('SELECT 1 FROM deleted_discussion_slugs WHERE slug = $1', [discussionSlug]);
+      if (socket.data.topic !== discussionSlug) return;
+      if (deleted.rows.length) {
+        socket.leave(discussionSlug);
+        socket.data.topic = null;
+        emitPresence(discussionSlug);
+        socket.emit('discussionDeleted', { slug: discussionSlug });
+        return;
+      }
       socket.emit('discussion', await getDiscussionBySlug(discussionSlug));
       await emitQuestions(discussionSlug, socket);
       socket.emit('discussionState', await getDiscussionState(discussionSlug));

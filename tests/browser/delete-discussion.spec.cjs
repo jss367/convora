@@ -5,6 +5,39 @@ const { assertSafeTestDatabase } = require('../../scripts/test-database');
 const databaseUrl = process.env.DATABASE_URL || 'postgresql://convora:convora@127.0.0.1:54330/convora_test';
 assertSafeTestDatabase(databaseUrl);
 
+for (const route of ['canonical', 'legacy']) {
+  test(`opening a deleted ${route} route shows the deletion state`, async ({ page, request }) => {
+    const topic = `Deleted late visit ${Date.now()} ${route}`;
+    const created = await (await request.post('/api/discussions', { data: { topic } })).json();
+    expect((await request.delete(`/api/discussions/${created.slug}`, { data: { adminToken: created.adminToken } })).ok()).toBeTruthy();
+    await page.goto(`/discussion/${route === 'canonical' ? created.slug : encodeURIComponent(topic)}`);
+    await expect(page).toHaveURL('/');
+    await expect(page.getByRole('status')).toHaveText('The discussion was deleted.');
+    await expect(page.getByPlaceholder('Enter a new question or statement')).toHaveCount(0);
+  });
+}
+
+test('a participant who missed deletion while offline leaves the room on reconnect', async ({ page, request }) => {
+  const topic = `Missed deletion ${Date.now()}`;
+  const created = await (await request.post('/api/discussions', { data: { topic } })).json();
+  await page.goto(`/discussion/${created.slug}`);
+  await expect(page.getByRole('heading', { name: `Discussion: ${topic}`, exact: true })).toBeVisible();
+  await page.context().setOffline(true);
+  try {
+    expect((await request.delete(`/api/discussions/${created.slug}`, { data: { adminToken: created.adminToken } })).ok()).toBeTruthy();
+  } finally { await page.context().setOffline(false); }
+  await expect(page).toHaveURL('/');
+  await expect(page.getByRole('status')).toHaveText('The discussion was deleted.');
+});
+
+test('a never-created route still supports lazy question creation', async ({ page }) => {
+  const slug = `never-deleted-${Date.now()}`;
+  await page.goto(`/discussion/${slug}`);
+  await page.getByPlaceholder('Enter a new question or statement').fill('A new statement');
+  await page.getByPlaceholder('Enter a new question or statement').press('Enter');
+  await expect(page.getByRole('heading', { name: 'A new statement', exact: true })).toBeVisible();
+});
+
 test('creator confirms deletion, cancellation and errors preserve the room, and viewers leave', async ({ page, browser, request }) => {
   const topic = `Delete discussion ${Date.now()}`;
   const response = await request.post('/api/discussions', { data: { topic } });

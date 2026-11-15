@@ -98,6 +98,12 @@ test('deletion rejects queued and stale question submissions without reusing the
     assert.equal((await emitWithAck(socket, 'claimModerator', slug)).success, false);
     await stopServer();
     await startServer();
+    const restarted = await connectSocket();
+    try {
+      const deletedJoin = waitForEvent(restarted, 'discussionDeleted');
+      restarted.emit('joinDiscussion', slug);
+      assert.deepEqual(await deletedJoin, { slug });
+    } finally { restarted.disconnect(); }
     const replacement = await jsonRequest('POST', '/api/discussions', { topic });
     assert.equal(replacement.status, 200);
     assert.notEqual(replacement.body.slug, slug);
