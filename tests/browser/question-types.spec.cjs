@@ -234,3 +234,31 @@ test('a Multiple Choice question is written with its own options, validated, vot
     await pool.end();
   }
 });
+
+test('the summary lists an unanswered Multiple Choice question with each option at zero', async ({ page, request }) => {
+  const response = await request.post('/api/discussions', { data: { topic: `Choice summary ${Date.now()}` } });
+  expect(response.ok()).toBeTruthy();
+  const discussion = await response.json();
+  const pool = new Pool({
+    connectionString: process.env.DATABASE_URL || 'postgresql://convora:convora@127.0.0.1:54330/convora_test',
+  });
+  try {
+    await pool.query(
+      "INSERT INTO questions (discussion_id, text, type, options) VALUES ($1, 'p(doom) this year?', 'Multiple Choice', $2)",
+      [discussion.id, JSON.stringify(['Higher', 'Lower', 'About the same'])]
+    );
+    // Results always shown, so the unanswered question's results are visible.
+    await pool.query("UPDATE discussions SET results_visibility = 'always' WHERE id = $1", [discussion.id]);
+    await page.goto(`/discussion/${discussion.slug}/summary`);
+    const bars = page.getByTestId('summary-choice-bars');
+    await expect(bars).toBeVisible();
+    for (const option of ['Higher', 'Lower', 'About the same']) {
+      await expect(bars.getByText(option, { exact: true })).toBeVisible();
+    }
+    await expect(bars.getByText('0 · 0%', { exact: true })).toHaveCount(3);
+  } finally {
+    await pool.query('DELETE FROM questions WHERE discussion_id = $1', [discussion.id]);
+    await pool.query('DELETE FROM discussions WHERE id = $1', [discussion.id]);
+    await pool.end();
+  }
+});

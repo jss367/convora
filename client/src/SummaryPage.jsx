@@ -590,13 +590,12 @@ YesNoBar.propTypes = {
 };
 
 // One bar per option, in the author's order, for a Multiple Choice question.
-// Options are categories rather than a scale, so the bars share one color.
+// Options are categories rather than a scale, so the bars share one color. The
+// options are part of the question, so they are listed even before anyone has
+// answered, each at zero (formatPercent reads 0/0 as 0%).
 const ChoiceBars = ({ options, optionCounts, total }) => {
-    if (!total) {
-        return null;
-    }
     return (
-        <div className="mt-3 space-y-1.5">
+        <div className="mt-3 space-y-1.5" data-testid="summary-choice-bars">
             {options.map(option => {
                 const count = optionCounts[option] || 0;
                 return (
