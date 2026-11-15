@@ -20,6 +20,8 @@ const TALLIED_TYPES = [QuestionTypes.AGREEMENT, QuestionTypes.YES_NO, QuestionTy
 // Written responses beyond this many are summarized, so one busy question cannot
 // push the rest off the screen.
 const MAX_WRITTEN_RESPONSES = 8;
+// Nobody is at the screen to press a button, so a failed load retries itself.
+const RETRY_DELAY_MS = 5000;
 
 const plural = (count, one, many) => `${count} ${count === 1 ? one : many}`;
 
@@ -126,24 +128,42 @@ const DisplayPage = () => {
     const connectionLost = useConnectionLost(socket);
     // undefined while loading, null when the discussion does not exist.
     const [discussion, setDiscussion] = useState(undefined);
-    const [questions, setQuestions] = useState([]);
+    // null until the server has sent the questions at least once.
+    const [questions, setQuestions] = useState(null);
+    const [loadFailed, setLoadFailed] = useState(false);
     const [presence, setPresence] = useState(0);
     const [state, setState] = useState({});
 
     useEffect(() => {
         setDiscussion(undefined);
-        setQuestions([]);
+        setQuestions(null);
+        setLoadFailed(false);
+        let retry = null;
+        const join = () => {
+            clearTimeout(retry);
+            retry = null;
+            socket.emit('joinDisplay', discussionSlug);
+        };
         const handlers = {
             discussion: payload => { if (!payload || payload.slug === discussionSlug) setDiscussion(payload); },
-            questions: payload => setQuestions(Array.isArray(payload) ? payload : []),
+            questions: payload => {
+                setQuestions(Array.isArray(payload) ? payload : []);
+                setLoadFailed(false);
+            },
             presence: setPresence,
             discussionState: payload => setState(payload || {}),
+            // The server could not load this discussion's questions. The socket
+            // is still connected, so nothing else would ask again.
+            error: () => {
+                setLoadFailed(true);
+                if (!retry) retry = setTimeout(join, RETRY_DELAY_MS);
+            },
         };
         for (const [event, handler] of Object.entries(handlers)) socket.on(event, handler);
-        const join = () => socket.emit('joinDisplay', discussionSlug);
         socket.on('connect', join);
         if (socket.connected) join();
         return () => {
+            clearTimeout(retry);
             if (socket.connected) socket.emit('leaveDisplay', discussionSlug);
             socket.off('connect', join);
             for (const [event, handler] of Object.entries(handlers)) socket.off(event, handler);
@@ -198,7 +218,9 @@ const DisplayPage = () => {
                 </aside>
 
                 <section className="min-w-0 flex-1" aria-label="Questions">
-                    {discussion === undefined ? (
+                    {loadFailed && questions === null ? (
+                        <p className="text-2xl text-red-600" role="alert">Couldn’t load the questions. Trying again…</p>
+                    ) : discussion === undefined || questions === null ? (
                         <p className="text-2xl text-gray-500">Loading…</p>
                     ) : questions.length === 0 ? (
                         <p className="text-3xl text-gray-500">No questions yet</p>

@@ -304,10 +304,13 @@ async function emitQuestions(topic, onlySocket = null) {
   const questions = await getQuestions(slug, { respondents });
   const access = await getResultsAccess(slug);
   if (access.alwaysShow) {
+    if (onlySocket?.data.isDisplay && onlySocket.data.display !== slug) return;
     (onlySocket || audience(slug)).emit('questions', questions);
     return;
   }
   if (onlySocket?.data.isDisplay) {
+    // The display may have moved to another discussion while this was loading.
+    if (onlySocket.data.display !== slug) return;
     onlySocket.emit('questions', displayView(questions, respondents));
     return;
   }
@@ -392,6 +395,11 @@ io.on('connection', (socket) => {
   socket.on('joinDisplay', async (topic) => {
     const discussionSlug = slugifyTopic(topic);
     socket.data.isDisplay = true;
+    // Each join supersedes any earlier one still loading, so a slow join cannot
+    // send one discussion's data to a screen that has moved to another.
+    const join = (socket.data.displayJoin || 0) + 1;
+    socket.data.displayJoin = join;
+    const current = () => socket.data.displayJoin === join && socket.data.display === discussionSlug;
     // A socket that was a participant somewhere stops being one.
     const previousTopic = socket.data.topic;
     if (previousTopic) {
@@ -404,13 +412,17 @@ io.on('connection', (socket) => {
     socket.join(displayRoom(discussionSlug));
     socket.data.display = discussionSlug;
     try {
-      socket.emit('discussion', await getDiscussionBySlug(discussionSlug));
+      const discussion = await getDiscussionBySlug(discussionSlug);
+      if (!current()) return;
+      socket.emit('discussion', discussion);
       await emitQuestions(discussionSlug, socket);
-      socket.emit('discussionState', await getDiscussionState(discussionSlug));
+      const state = await getDiscussionState(discussionSlug);
+      if (!current()) return;
+      socket.emit('discussionState', state);
       emitPresence(discussionSlug);
     } catch (error) {
       logError('Error opening room display:', error);
-      socket.emit('error', { message: 'Failed to get questions' });
+      if (current()) socket.emit('error', { message: 'Failed to get questions' });
     }
   });
 
@@ -418,6 +430,7 @@ io.on('connection', (socket) => {
     const slug = topic ? slugifyTopic(topic) : socket.data.display;
     if (!slug) return;
     socket.leave(displayRoom(slug));
+    // Also invalidates any join of this display that is still loading.
     if (socket.data.display === slug) socket.data.display = null;
   });
 
