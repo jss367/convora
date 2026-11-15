@@ -1548,6 +1548,18 @@ const DiscussionPage = () => {
                         >
                             {showJoinQr ? 'Hide join QR' : 'Show join QR'}
                         </button>
+                        {/* A read-only page for the room's shared screen. It carries
+                            no moderator token, so projecting it shows only what
+                            the results setting lets everyone see. */}
+                        <a
+                            href={`/discussion/${encodeURIComponent(discussionSlug)}/display`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="px-3 py-1 rounded bg-white border border-indigo-300 text-indigo-700 hover:bg-indigo-100"
+                            title="A read-only page for a shared TV or projector: join QR code, questions and live counts"
+                        >
+                            Open room display
+                        </a>
                         {/* Color theme picker: clicking a swatch recolors the
                             discussion for everyone in the room. */}
                         <div className="flex items-center gap-1.5 pl-1" role="group" aria-label="Color theme">

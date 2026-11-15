@@ -37,6 +37,27 @@ the person viewing has not answered and says how many were left out. Open Ended
 and Brainstorm questions are not affected. Their responses are the discussion
 itself, not a tally, and Brainstorm reactions keep their own moderator toggles.
 
+## Room display
+
+To show a discussion on a shared TV or projector while people vote on their
+phones, click **Open room display** in the moderator bar. This opens
+`/discussion/<discussion>/display` in a new tab. It shows the discussion title, a
+large QR code and join link, the questions as they come in, how many people are
+here now, and how many responses each question has.
+
+The display is read-only. It doesn't count as a participant, can't vote or add
+anything, and never uses a moderator's access, even when opened from the
+moderator's browser. It follows the **Results** setting:
+
+- With **Show results after you vote**, the server sends the display each
+  question's response count but no tallies, percentages or histograms. The
+  display has not voted, so it sees what a participant who has not voted sees.
+- With **Always show results**, it shows the live results.
+
+Open Ended and Brainstorm responses appear on the display as they do for
+participants. Brainstorm ratings and reactions appear only when the moderator has
+made them visible.
+
 ## Compare opinions before and after discussion
 
 Open **Opinion Snapshots** in a discussion. A moderator can save named snapshots

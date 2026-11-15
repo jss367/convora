@@ -112,6 +112,9 @@ app.use(express.static(path.join(__dirname, 'dist')));
 // sockets reported those as extra "people" — the "it says 2 but there's no one
 // else here" symptom. Sockets that haven't run `identify` yet fall back to
 // their own id, so several genuinely anonymous viewers still each count once.
+//
+// Room displays (see joinDisplay) are kept in their own room, so they are never
+// counted here, but they receive the count so the screen can show it.
 function emitPresence(topic) {
   if (!topic) return;
   const room = io.sockets.adapter.rooms.get(topic);
@@ -122,7 +125,21 @@ function emitPresence(topic) {
       people.add(member?.data.userId || socketId);
     }
   }
-  io.to(topic).emit('presence', people.size);
+  audience(topic).emit('presence', people.size);
+}
+
+// A room display (/discussion/:topic/display) is a read-only screen shown to the
+// whole room. Its sockets join this room instead of the discussion's own room,
+// so they never count as participants, and they receive their own view of the
+// questions (see displayView).
+function displayRoom(slug) {
+  return `display:${slug}`;
+}
+
+// Everyone watching a discussion: its participants and its room displays. Used
+// for broadcasts every viewer gets alike (the discussion, its state, presence).
+function audience(slug) {
+  return io.to(slug).to(displayRoom(slug));
 }
 
 // Push a freshly reserved handle to a user's OTHER sockets in a discussion (all
@@ -188,7 +205,7 @@ async function getDiscussionState(topic) {
 }
 
 async function emitDiscussionState(topic) {
-  io.to(topic).emit('discussionState', await getDiscussionState(topic));
+  audience(topic).emit('discussionState', await getDiscussionState(topic));
 }
 
 // When participants may see the results of Agreement, Yes/No and Numerical
@@ -241,6 +258,17 @@ function hideUnansweredResults(questions, respondents, userId) {
   return hidden ? view : questions;
 }
 
+// The room display's copy of the questions when results are shown only after
+// voting. A display is not a voter, so it has answered nothing and every tallied
+// question loses its votes exactly as for a participant who has not answered.
+// It keeps only how many responses the question has, so the room can watch
+// answers come in without seeing what they are.
+function displayView(questions, respondents) {
+  return questions.map(question => (respondents.has(question.id)
+    ? { ...question, votes: [], resultsHidden: true, responseCount: (question.votes || []).length }
+    : question));
+}
+
 // The questions as one REST caller may see them. `token` is a moderator token
 // and `userId` the participant's id, both optional; a caller that supplies
 // neither is treated as a participant who has answered nothing.
@@ -268,15 +296,23 @@ function restViewer(req) {
 // each socket gets its own view: moderators (sockets that proved a token through
 // checkModerator) the full payload, everyone else the payload with the results
 // of questions they have not answered removed. Views are built once per
-// participant and shared by their sockets, from a single questions query.
+// participant and shared by their sockets, from a single questions query. Room
+// displays get the display view, whatever else their socket has claimed.
 async function emitQuestions(topic, onlySocket = null) {
   const slug = slugifyTopic(topic);
   const respondents = new Map();
   const questions = await getQuestions(slug, { respondents });
   const access = await getResultsAccess(slug);
   if (access.alwaysShow) {
-    (onlySocket || io.to(slug)).emit('questions', questions);
+    (onlySocket || audience(slug)).emit('questions', questions);
     return;
+  }
+  if (onlySocket?.data.isDisplay) {
+    onlySocket.emit('questions', displayView(questions, respondents));
+    return;
+  }
+  if (!onlySocket && io.sockets.adapter.rooms.get(displayRoom(slug))?.size) {
+    io.to(displayRoom(slug)).emit('questions', displayView(questions, respondents));
   }
   const targets = onlySocket
     ? [onlySocket]
@@ -333,9 +369,57 @@ function bindSocketUser(socket, claimed) {
   return socket.data.userId || null;
 }
 
+// The only events a room display's socket may send (see socket.use below).
+const DISPLAY_EVENTS = new Set(['joinDisplay', 'leaveDisplay']);
+
 // WebSocket handlers
 io.on('connection', (socket) => {
   console.log('New client connected');
+
+  // A socket that has opened a room display stays read-only for the rest of its
+  // connection: it can switch which discussion it displays, and nothing else. It
+  // cannot vote, write, identify as a participant or prove a moderator token, so
+  // the screen never adds to any count and never receives a moderator's view.
+  // Requests that expect an acknowledgment are told why they were refused.
+  socket.use(([event, ...args], next) => {
+    if (!socket.data.isDisplay || DISPLAY_EVENTS.has(event)) return next();
+    const ack = args[args.length - 1];
+    if (typeof ack === 'function') ack({ ok: false, success: false, error: 'display_read_only' });
+  });
+
+  // Open the read-only room display for a discussion. The socket joins the
+  // display room, never the discussion's own room, so presence does not count it.
+  socket.on('joinDisplay', async (topic) => {
+    const discussionSlug = slugifyTopic(topic);
+    socket.data.isDisplay = true;
+    // A socket that was a participant somewhere stops being one.
+    const previousTopic = socket.data.topic;
+    if (previousTopic) {
+      socket.leave(previousTopic);
+      socket.data.topic = null;
+      emitPresence(previousTopic);
+    }
+    const previousDisplay = socket.data.display;
+    if (previousDisplay && previousDisplay !== discussionSlug) socket.leave(displayRoom(previousDisplay));
+    socket.join(displayRoom(discussionSlug));
+    socket.data.display = discussionSlug;
+    try {
+      socket.emit('discussion', await getDiscussionBySlug(discussionSlug));
+      await emitQuestions(discussionSlug, socket);
+      socket.emit('discussionState', await getDiscussionState(discussionSlug));
+      emitPresence(discussionSlug);
+    } catch (error) {
+      logError('Error opening room display:', error);
+      socket.emit('error', { message: 'Failed to get questions' });
+    }
+  });
+
+  socket.on('leaveDisplay', (topic) => {
+    const slug = topic ? slugifyTopic(topic) : socket.data.display;
+    if (!slug) return;
+    socket.leave(displayRoom(slug));
+    if (socket.data.display === slug) socket.data.display = null;
+  });
 
   socket.on('joinDiscussion', async (topic) => {
     const discussionSlug = slugifyTopic(topic);
@@ -453,7 +537,7 @@ io.on('connection', (socket) => {
       }
 
       await addQuestion(discussionSlug, normalizedQuestion);
-      io.to(discussionSlug).emit('discussion', await getDiscussionBySlug(discussionSlug));
+      audience(discussionSlug).emit('discussion', await getDiscussionBySlug(discussionSlug));
       await emitQuestions(discussionSlug);
       reply({ added: true });
     } catch (error) {
@@ -591,7 +675,7 @@ io.on('connection', (socket) => {
       const token = await claimModerator(discussionSlug);
       if (token) {
         if (typeof cb === 'function') cb({ success: true, token });
-        io.to(discussionSlug).emit('discussion', await getDiscussionBySlug(discussionSlug));
+        audience(discussionSlug).emit('discussion', await getDiscussionBySlug(discussionSlug));
         await emitDiscussionState(discussionSlug);
         // This socket now holds the moderator token, so it gets the moderator's
         // view of the questions (see checkModerator).
@@ -861,7 +945,7 @@ io.on('connection', (socket) => {
         return;
       }
       await pool.query('UPDATE discussions SET topic = $1 WHERE id = $2', [title, discussionId]);
-      io.to(discussionSlug).emit('discussion', await getDiscussionBySlug(discussionSlug));
+      audience(discussionSlug).emit('discussion', await getDiscussionBySlug(discussionSlug));
       reply({ updated: true });
     } catch (error) {
       // discussions.topic is unique (discussions_topic_unique); renaming to an

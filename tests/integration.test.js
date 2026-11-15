@@ -1159,6 +1159,146 @@ test('Open Ended and Brainstorm responses are not affected by the results settin
   }
 });
 
+// A room display joins as a display, never as a participant.
+async function joinDisplay(slug) {
+  const socket = await connectSocket();
+  const joined = nextQuestions(socket, 'room display join');
+  socket.emit('joinDisplay', slug);
+  return { socket, questions: await joined };
+}
+
+// A hidden question on the display carries its response count and nothing else
+// a tally could be rebuilt from.
+function assertDisplayHidden(question, responseCount, label) {
+  const { responseCount: count, ...rest } = question;
+  assert.equal(count, responseCount, `${label}: response count`);
+  assertResultsHidden(rest, label);
+}
+
+test('a room display shows response counts but no results while results are shown after voting', async () => {
+  const seed = await seedResultsDiscussion('display-hidden');
+  const { socket: display, questions: initial } = await joinDisplay(seed.slug);
+  const { socket: voter } = await joinAs(seed.slug, 'seed-c');
+  const mod = await connectSocket();
+  try {
+    for (const id of [seed.agreement, seed.yesNo, seed.numerical]) assertDisplayHidden(byId(initial, id), 2, 'initial display view');
+    // Open Ended responses are the discussion itself and stay visible.
+    assert.deepEqual(byId(initial, seed.written).votes.map(vote => vote.value), ['Because reasons']);
+    assert.equal(byId(initial, seed.written).resultsHidden, false);
+
+    // Live votes update the counts and still reveal nothing.
+    const broadcast = nextQuestions(display, 'display broadcast after a vote');
+    assert.deepEqual(await emitWithAck(voter, 'vote', seed.slug, seed.agreement, 'Strongly Agree', 'seed-c', 'Seed C', undefined), { ok: true });
+    const updated = await broadcast;
+    assertDisplayHidden(byId(updated, seed.agreement), 3, 'after a vote');
+    assertDisplayHidden(byId(updated, seed.yesNo), 2, 'question nobody new answered');
+    assert.doesNotMatch(JSON.stringify(updated.filter(q => q.id !== seed.written)), /Seed C|Strongly Agree/);
+
+    // A moderator acting elsewhere does not turn the display into a moderator view.
+    assert.equal((await emitWithAck(mod, 'checkModerator', seed.slug, seed.adminToken)).isModerator, true);
+    const afterPin = nextQuestions(display, 'display broadcast after a moderator action');
+    mod.emit('setPinned', seed.slug, seed.numerical, true, seed.adminToken);
+    assertDisplayHidden(byId(await afterPin, seed.numerical), 2, 'after a moderator action');
+  } finally {
+    display.disconnect();
+    voter.disconnect();
+    mod.disconnect();
+  }
+});
+
+test('a room display shows live results when the moderator always shows them', async () => {
+  const seed = await seedResultsDiscussion('display-always');
+  const { socket: display } = await joinDisplay(seed.slug);
+  const { socket: voter } = await joinAs(seed.slug, 'seed-c');
+  const mod = await connectSocket();
+  try {
+    const opened = waitForQuestions(display, qs => byId(qs, seed.agreement)?.resultsHidden === false, 'display after switching to always');
+    const state = waitForEvent(display, 'discussionState', s => s.resultsVisibility === 'always');
+    mod.emit('setResultsVisibility', seed.slug, 'always', seed.adminToken);
+    await state;
+    const all = await opened;
+    assertResultsShown(byId(all, seed.agreement), ['Agree', 'Disagree'], 'display: agreement');
+    assertResultsShown(byId(all, seed.yesNo), ['Yes', 'No'], 'display: yes/no');
+    assertResultsShown(byId(all, seed.numerical), ['30', '50'], 'display: numerical');
+
+    const live = nextQuestions(display, 'display live broadcast');
+    await emitWithAck(voter, 'vote', seed.slug, seed.agreement, 'Unsure', 'seed-c', 'Seed C', undefined);
+    assertResultsShown(byId(await live, seed.agreement), ['Agree', 'Disagree', 'Unsure'], 'display: live');
+
+    // A display opened while results are always shown gets them at once, and
+    // loses them as soon as the moderator switches back.
+    const { socket: late, questions: lateView } = await joinDisplay(seed.slug);
+    try {
+      assertResultsShown(byId(lateView, seed.numerical), ['30', '50'], 'late display');
+      const closed = waitForQuestions(late, qs => byId(qs, seed.agreement)?.resultsHidden === true, 'display after switching back');
+      mod.emit('setResultsVisibility', seed.slug, 'after_vote', seed.adminToken);
+      assertDisplayHidden(byId(await closed, seed.agreement), 3, 'back to after_vote');
+    } finally {
+      late.disconnect();
+    }
+  } finally {
+    display.disconnect();
+    voter.disconnect();
+    mod.disconnect();
+  }
+});
+
+test('a room display is not a participant and cannot vote, write or moderate', async () => {
+  const seed = await seedResultsDiscussion('display-read-only');
+  const { socket: participant } = await joinAs(seed.slug, 'seed-c');
+  try {
+    // The display gets the presence count, which does not include itself.
+    const display = await connectSocket();
+    try {
+      const presence = waitForEvent(display, 'presence');
+      const questions = nextQuestions(display, 'display join');
+      display.emit('joinDisplay', seed.slug);
+      assert.equal(await presence, 1);
+      await questions;
+
+      // A participant joining is counted, and the display hears about it.
+      const { socket: second } = await joinAs(seed.slug, 'seed-d');
+      try {
+        assert.equal(await waitForEvent(display, 'presence', count => count === 2), 2);
+      } finally {
+        second.disconnect();
+      }
+      assert.equal(await waitForEvent(participant, 'presence', count => count === 1), 1);
+
+      // Even if it claims an identity, it cannot vote, add anything or moderate.
+      display.emit('identify', seed.slug, 'seed-display');
+      assert.deepEqual(await emitWithAck(display, 'vote', seed.slug, seed.agreement, 'Agree', 'seed-display', 'Display', undefined),
+        { ok: false, success: false, error: 'display_read_only' });
+      assert.equal((await emitWithAck(display, 'addQuestion', seed.slug, { text: 'From the screen', type: 'Open Ended' }, true, null)).ok, false);
+      assert.equal((await emitWithAck(display, 'checkModerator', seed.slug, seed.adminToken)).ok, false);
+      assert.equal((await emitWithAck(display, 'claimModerator', seed.slug)).success, false);
+      // Nor can it switch itself into the participant room.
+      display.emit('joinDiscussion', seed.slug);
+      const stillHidden = nextQuestions(display, 'display after attempted switch');
+      await emitWithAck(participant, 'vote', seed.slug, seed.agreement, 'Agree', 'seed-c', 'Seed C', undefined);
+      assertDisplayHidden(byId(await stillHidden, seed.agreement), 3, 'after identify and moderator attempts');
+
+      const stored = await pool.query(
+        `SELECT COUNT(*)::int AS count FROM votes WHERE user_id = 'seed-display'
+          OR question_id IN (SELECT id FROM questions WHERE text = 'From the screen')`
+      );
+      assert.equal(stored.rows[0].count, 0);
+      assert.equal((await pool.query("SELECT COUNT(*)::int AS count FROM questions WHERE text = 'From the screen'")).rows[0].count, 0);
+      const participants = await emitWithAck(participant, 'listParticipants', seed.slug, seed.adminToken);
+      assert.equal(participants.participants.some(p => p.pseudonym === 'Display'), false);
+    } finally {
+      display.disconnect();
+    }
+    // Closing the display does not change the participant count either.
+    const after = waitForEvent(participant, 'presence');
+    const { socket: third } = await joinAs(seed.slug, 'seed-e');
+    third.disconnect();
+    assert.equal(await after, 2);
+  } finally {
+    participant.disconnect();
+  }
+});
+
 function storedVotes(questionId) {
   return pool.query('SELECT user_id, value FROM votes WHERE question_id = $1 ORDER BY id', [questionId])
     .then(result => result.rows);
