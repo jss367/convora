@@ -2762,13 +2762,14 @@ async function toggleResponseVote(topic, responseId, userId) {
   const slug = slugifyTopic(topic);
   return withTransaction(async client => {
     // Hold the discussion row while checking the lock and writing feedback,
-    // so a toggle waiting for a moderator lock sees the committed lock.
+    // so a waiting toggle sees committed lock and feedback-setting changes.
     const ownerResult = await client.query(
       `SELECT v.user_id
        FROM votes v
        JOIN questions q ON v.question_id = q.id
        JOIN discussions d ON q.discussion_id = d.id
-       WHERE v.id = $1 AND d.slug = $2 AND NOT d.locked FOR SHARE OF d`,
+       WHERE v.id = $1 AND d.slug = $2 AND NOT d.locked
+         AND d.reactions_enabled AND d.reactions_visible FOR SHARE OF d`,
       [responseId, slug]
     );
     if (ownerResult.rows.length === 0) {

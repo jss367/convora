@@ -2395,6 +2395,7 @@ test('Socket.IO ownership tokens hide stable ids and differ per response', async
     assert.equal(vote2.ownerToken, tokenFor(vote2.id, 'same-browser'));
     assert.notEqual(vote1.ownerToken, vote2.ownerToken);
 
+    await pool.query('UPDATE discussions SET reactions_enabled = TRUE, reactions_visible = TRUE WHERE id = (SELECT discussion_id FROM questions WHERE id = $1)', [q1.id]);
     // Upvoter ids are likewise tokenized per response (and self-matchable).
     const upUpdate = waitForQuestions(
       author,
@@ -4755,6 +4756,7 @@ test('legacy scalar answers update single-response questions but keep unlimited 
 
 test('a legacy upvote waiting for a moderator lock changes neither feedback store', async () => {
   const created = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('legacy-lock-race') });
+  await pool.query('UPDATE discussions SET reactions_enabled = TRUE, reactions_visible = TRUE WHERE id = $1', [created.body.id]);
   const q = (await pool.query("INSERT INTO questions (discussion_id, text, type) VALUES ($1, 'Locked feedback', 'Open Ended') RETURNING id", [created.body.id])).rows[0];
   const vote = (await pool.query("INSERT INTO votes (question_id, user_id, value) VALUES ($1, 'author', 'Keep locked') RETURNING id", [q.id])).rows[0];
   const { socket } = await joinAs(created.body.slug, 'legacy-voter');
@@ -4779,6 +4781,7 @@ test('a legacy upvote waiting for a moderator lock changes neither feedback stor
 
 test('legacy upvote toggles and new quality ratings stay synchronized after migration', async () => {
   const created = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('legacy-feedback-sync') });
+  await pool.query('UPDATE discussions SET reactions_enabled = TRUE, reactions_visible = TRUE WHERE id = $1', [created.body.id]);
   const question = (await pool.query("INSERT INTO questions (discussion_id, text, type) VALUES ($1, 'Feedback', 'Open Ended') RETURNING id", [created.body.id])).rows[0];
   const vote = (await pool.query("INSERT INTO votes (question_id, user_id, value) VALUES ($1, 'author', 'Keep feedback') RETURNING id", [question.id])).rows[0];
   const { socket } = await joinAs(created.body.slug, 'legacy-voter');
@@ -4857,3 +4860,28 @@ test('hidden feedback redacts legacy aliases of positive quality ratings', async
     assert.equal((await pool.query('SELECT count(*)::int AS n FROM response_votes WHERE response_id = $1', [vote.id])).rows[0].n, 1);
   } finally { socket.disconnect(); }
 });
+
+for (const [enabled, visible] of [[false, true], [true, false], [false, false]]) {
+  test(`legacy upvotes cannot add or remove feedback when enabled=${enabled}, visible=${visible}`, async () => {
+    const created = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('legacy-feedback-flags') });
+    const q = (await pool.query("INSERT INTO questions (discussion_id, text, type) VALUES ($1, 'Feedback', 'Open Ended') RETURNING id", [created.body.id])).rows[0];
+    const vote = (await pool.query("INSERT INTO votes (question_id, user_id, value) VALUES ($1, 'author', 'Answer') RETURNING id", [q.id])).rows[0];
+    await pool.query('UPDATE discussions SET reactions_enabled = $2, reactions_visible = $3 WHERE id = $1', [created.body.id, enabled, visible]);
+    const { socket } = await joinAs(created.body.slug, 'legacy-voter');
+    try {
+      for (const existing of [false, true]) {
+        if (existing) {
+          await pool.query("INSERT INTO response_votes (response_id, user_id) VALUES ($1, 'legacy-voter')", [vote.id]);
+          await pool.query("INSERT INTO response_ratings (response_id, user_id, quality, agreement) VALUES ($1, 'legacy-voter', 1, 'Agree')", [vote.id]);
+        }
+        // This handler always broadcasts after completing, including rejection.
+        const update = waitForQuestions(socket, qs => qs[0]?.id === q.id, 'legacy toggle completed');
+        socket.emit('toggleResponseVote', created.body.slug, vote.id, 'legacy-voter');
+        await update;
+        assert.equal((await pool.query('SELECT count(*)::int AS n FROM response_votes WHERE response_id = $1', [vote.id])).rows[0].n, existing ? 1 : 0);
+        assert.deepEqual((await pool.query('SELECT quality, agreement FROM response_ratings WHERE response_id = $1', [vote.id])).rows,
+          existing ? [{ quality: 1, agreement: 'Agree' }] : []);
+      }
+    } finally { socket.disconnect(); }
+  });
+}
