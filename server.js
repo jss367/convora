@@ -15,7 +15,7 @@ const { slugifyTopic, formatTopicTitle, titleFromSlug, suffixSlug, MAX_TOPIC_LEN
 const { buildSummary, renderReportHtml } = require('./reports');
 const {
   AGREEMENT_OPTIONS, parseOptions, parseStoredVoteValue,
-  getQuestionRange, normalizeQuestionPayload, choiceOptionsFor,
+  normalizeQuestionPayload, choiceOptionsFor, isValidVote,
 } = require('./question-data');
 
 const app = express();
@@ -682,42 +682,32 @@ io.on('connection', (socket) => {
         reply(false);
         return;
       }
-      // Single-choice opinion types only accept their known options. Without
-      // this, a crafted socket message could store an arbitrary string as an
-      // Agreement/Yes-No vote, skewing the results bars and the cluster
-      // analysis (which scores votes by their agreement label).
-      // Multiple Choice checks against the question's own stored options.
-      const choices = choiceOptionsFor(target);
-      if (choices && !choices.includes(vote)) {
+      // Single-choice types accept only their options (Multiple Choice its own
+      // stored ones) and Numerical a number within the question's range.
+      // Without this, a crafted socket message could store an arbitrary value
+      // that skews the results bars, the summary statistics and the cluster
+      // analysis. addVote checks again against the locked question row, in
+      // case a moderator edits the question before the vote is stored.
+      const questionRow = {
+        type: target.type, options: target.options, min_value: target.minValue, max_value: target.maxValue,
+      };
+      if (!isValidVote(questionRow, vote)) {
         socket.emit('error', { message: 'Invalid vote.' });
         reply(false);
         return;
-      }
-      // Numerical votes must be a finite number within the question's configured
-      // range. Without this, a crafted socket message could store out-of-range
-      // (or non-numeric) values that silently skew the average / std-dev / spread
-      // shown in the summary — the range is otherwise only enforced at
-      // create/edit time, never when a vote is cast. getQuestionRange supplies
-      // the 0..100 default for legacy questions with null bounds.
-      if (target.type === 'Numerical') {
-        // Require a real scalar numeric value before range-checking. Number('')
-        // / Number([]) / Number(null) all coerce to 0, which would otherwise
-        // slip past the range check for any range that includes 0 and let
-        // addVote persist the original non-numeric payload.
-        const isNumber = typeof vote === 'number';
-        const isNumericString = typeof vote === 'string' && vote.trim() !== '';
-        const num = isNumber ? vote : isNumericString ? Number(vote) : NaN;
-        const { minValue, maxValue } = getQuestionRange({ min_value: target.minValue, max_value: target.maxValue });
-        if (!Number.isFinite(num) || num < minValue || num > maxValue) {
-          socket.emit('error', { message: 'Invalid vote.' });
-          reply(false);
-          return;
-        }
       }
       // Persist the reserved handle in pseudonym mode rather than the client's
       // (possibly pre-reservation, colliding) local pick — see canonicalPseudonym.
       const handle = await canonicalPseudonym(discussionSlug, target.discussionId, userId, mode, pseudonym);
       const result = await addVote(questionId, vote, userId, handle);
+      if (result.reason === 'invalid') {
+        // The question was edited between the check above and the write, and
+        // this vote no longer fits it.
+        socket.emit('error', { message: 'This question changed. Please vote again.' });
+        reply(false);
+        await emitQuestions(discussionSlug);
+        return;
+      }
       if (result.reason === 'duplicate') {
         // An identical Brainstorm idea is already listed. Tell the submitter
         // (via the optional ack) so they can vote on that one instead.
@@ -1165,52 +1155,45 @@ io.on('connection', (socket) => {
         return;
       }
 
-      // Scope existence through discussion_id so a moderator of one discussion
-      // can't probe or edit another's questions by passing a foreign id.
-      const existing = await pool.query(
-        'SELECT id FROM questions WHERE id = $1 AND discussion_id = $2',
-        [questionId, discussionId]
-      );
-      if (existing.rows.length === 0) {
-        reply({ updated: false, reason: 'not_found' });
-        return;
-      }
-
-      const responses = await pool.query('SELECT 1 FROM votes WHERE question_id = $1 LIMIT 1', [questionId]);
-      if (responses.rows.length > 0) {
-        socket.emit('error', { message: 'This question already has responses and can no longer be edited.' });
-        reply({ updated: false, reason: 'has_responses' });
-        return;
-      }
-
-      // Validate the same way creation does: non-empty text, a known type, and
-      // (for Numerical) a valid min < max range.
+      // Validate the same way creation does: non-empty text, a known type, a
+      // valid min < max range for Numerical and valid options for Multiple Choice.
       const normalizedUpdates = normalizeQuestionPayload(updates);
-      if (!normalizedUpdates) {
-        reply({ updated: false, reason: 'invalid' });
-        return;
-      }
 
-      // The NOT EXISTS guard closes the race between the response check above and
-      // this write: if a vote landed in between, no row is updated and we report
-      // it as having responses rather than silently editing an answered question.
-      const result = await pool.query(
-        `UPDATE questions SET text = $1, type = $2, min_value = $3, max_value = $4, options = $7
-         WHERE id = $5 AND discussion_id = $6
-           AND NOT EXISTS (SELECT 1 FROM votes WHERE question_id = $5)`,
-        [
-          normalizedUpdates.text,
-          normalizedUpdates.type,
-          normalizedUpdates.minValue,
-          normalizedUpdates.maxValue,
-          questionId,
-          discussionId,
-          JSON.stringify(normalizedUpdates.options),
-        ]
-      );
-      if (result.rowCount === 0) {
+      // One transaction, with the question row locked FOR UPDATE before the
+      // response check. A vote locks the same row FOR SHARE while it is
+      // validated and stored (see addVote), so the two serialize: an edit that
+      // waited for a vote then sees that response and is refused, and a vote
+      // that waited for an edit is checked against the edited question.
+      // Scoping through discussion_id stops a moderator of one discussion from
+      // probing or editing another's questions by passing a foreign id.
+      const outcome = await withTransaction(async (client) => {
+        const existing = await client.query(
+          'SELECT id FROM questions WHERE id = $1 AND discussion_id = $2 FOR UPDATE',
+          [questionId, discussionId]
+        );
+        if (existing.rows.length === 0) return 'not_found';
+        const responses = await client.query('SELECT 1 FROM votes WHERE question_id = $1 LIMIT 1', [questionId]);
+        if (responses.rows.length > 0) return 'has_responses';
+        if (!normalizedUpdates) return 'invalid';
+        await client.query(
+          `UPDATE questions SET text = $1, type = $2, min_value = $3, max_value = $4, options = $5
+           WHERE id = $6`,
+          [
+            normalizedUpdates.text,
+            normalizedUpdates.type,
+            normalizedUpdates.minValue,
+            normalizedUpdates.maxValue,
+            JSON.stringify(normalizedUpdates.options),
+            questionId,
+          ]
+        );
+        return 'updated';
+      });
+      if (outcome === 'has_responses') {
         socket.emit('error', { message: 'This question already has responses and can no longer be edited.' });
-        reply({ updated: false, reason: 'has_responses' });
+      }
+      if (outcome !== 'updated') {
+        reply({ updated: false, reason: outcome });
         return;
       }
       await emitQuestions(discussionSlug);
@@ -1925,6 +1908,28 @@ async function attachBrainstormInteractions(questions, { includeUserIds = false 
 function ownerToken(idPart, userId) {
   if (idPart === null || idPart === undefined || !userId) return null;
   return crypto.createHash('sha256').update(`${idPart}:${userId}`).digest('hex');
+}
+
+// Run `work(client)` in a transaction on one pooled connection: commit when it
+// returns, roll back when it throws, and always release the connection.
+async function withTransaction(work) {
+  const client = await pool.connect();
+  let releaseError;
+  try {
+    await client.query('BEGIN');
+    const result = await work(client);
+    await client.query('COMMIT');
+    return result;
+  } catch (error) {
+    try {
+      await client.query('ROLLBACK');
+    } catch (rollbackError) {
+      releaseError = rollbackError;
+    }
+    throw error;
+  } finally {
+    client.release(releaseError);
+  }
 }
 
 async function addQuestion(topic, question) {

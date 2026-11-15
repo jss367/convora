@@ -1,3 +1,5 @@
+const { isValidVote } = require('./question-data');
+
 // Vote persistence is separate from transport handlers so every caller uses the
 // same transaction and concurrency rules. Pseudonyms are sanitized by callers.
 
@@ -42,9 +44,16 @@ function createVoteStore(pool) {
   // cannot delete itself.
   function addVote(questionId, vote, userId, pseudonym) {
     return inTransaction(async client => {
-      const typeResult = await client.query('SELECT id, type FROM questions WHERE id = $1', [questionId]);
+      // FOR SHARE holds off a moderator's edit (editQuestion locks the row FOR
+      // UPDATE) until this vote is stored, and makes a vote that arrives during
+      // an edit wait and then read the edited row. Either way the vote is
+      // checked against the question as it will be when the vote is stored.
+      const typeResult = await client.query(
+        'SELECT id, type, options, min_value, max_value FROM questions WHERE id = $1 FOR SHARE', [questionId]
+      );
       const question = typeResult.rows[0];
       if (!question) throw new Error('Question not found');
+      if (!isValidVote(question, vote)) return { added: false, reason: 'invalid' };
       // PostgreSQL accepts equivalent integer spellings such as 1, '01', '+1'.
       // All must use the same lock key, not the caller's unnormalized value.
       questionId = question.id;

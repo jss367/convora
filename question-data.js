@@ -97,6 +97,27 @@ function parseIntegerInput(value) {
   return NaN;
 }
 
+// Whether `vote` is an acceptable answer to `question` (a questions row:
+// type, options, min_value, max_value). Single-choice types accept only their
+// options; Numerical a finite number within the question's range. Open Ended
+// and Brainstorm accept any text. Used both before a vote is sent to the store
+// and again inside the vote's transaction, against the locked question row, so
+// a vote validated before a moderator's edit cannot be stored after it.
+function isValidVote(question, vote) {
+  const choices = choiceOptionsFor(question);
+  if (choices) return choices.includes(vote);
+  if (question.type === 'Numerical') {
+    // Number('') / Number([]) / Number(null) all coerce to 0, so require a real
+    // number or a non-blank string before range-checking.
+    const isNumber = typeof vote === 'number';
+    const isNumericString = typeof vote === 'string' && vote.trim() !== '';
+    const num = isNumber ? vote : isNumericString ? Number(vote) : NaN;
+    const { minValue, maxValue } = getQuestionRange(question);
+    return Number.isFinite(num) && num >= minValue && num <= maxValue;
+  }
+  return true;
+}
+
 function normalizeQuestionPayload(question) {
   if (!question || typeof question !== 'object') {
     return null;
@@ -136,6 +157,6 @@ function normalizeQuestionPayload(question) {
 
 module.exports = {
   AGREEMENT_OPTIONS, YES_NO_OPTIONS, parseOptions, parseStoredVoteValue,
-  getQuestionRange, normalizeQuestionPayload, normalizeChoiceOptions, choiceOptionsFor,
+  getQuestionRange, normalizeQuestionPayload, normalizeChoiceOptions, choiceOptionsFor, isValidVote,
   MULTIPLE_CHOICE_MIN_OPTIONS, MULTIPLE_CHOICE_MAX_OPTIONS, MULTIPLE_CHOICE_MAX_OPTION_LENGTH,
 };

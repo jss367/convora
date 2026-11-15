@@ -456,6 +456,83 @@ for (const { type, value, expected, equivalentIds } of [
   });
 }
 
+// Give a racing statement on the questions table up to two seconds to block on
+// the row lock the test holds, so the test releases the lock only once the race
+// is set up. Without serialization nothing blocks, and the test goes on to
+// assert the outcome anyway, which is what catches the bug.
+async function waitForQuestionLockWait() {
+  const deadline = Date.now() + 2000;
+  while (Date.now() < deadline) {
+    const waiting = await pool.query(
+      `SELECT count(*)::int AS count FROM pg_stat_activity
+       WHERE wait_event_type = 'Lock' AND query ILIKE '%questions%'`
+    );
+    if (waiting.rows[0].count > 0) return;
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+}
+
+test('a vote that waits for a moderator edit is checked against the edited options', async () => {
+  const created = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('edit-then-vote') });
+  const inserted = await pool.query(
+    `INSERT INTO questions (discussion_id, text, type, options)
+     VALUES ($1, 'Which?', 'Multiple Choice', $2) RETURNING id`,
+    [created.body.id, JSON.stringify(['Old A', 'Old B'])]
+  );
+  const questionId = inserted.rows[0].id;
+  const editor = await pool.connect();
+  let vote;
+  try {
+    // The moderator's edit holds the row while the vote arrives.
+    await editor.query('BEGIN');
+    await editor.query('UPDATE questions SET options = $1 WHERE id = $2', [JSON.stringify(['New A', 'New B']), questionId]);
+    vote = createVoteStore(pool).addVote(questionId, 'Old A', 'racer', null);
+    await waitForQuestionLockWait();
+    await editor.query('COMMIT');
+    assert.deepEqual(await vote, { added: false, reason: 'invalid' });
+    assert.deepEqual(await storedVotes(questionId), []);
+    // A vote for one of the new options is stored as usual.
+    assert.deepEqual(await createVoteStore(pool).addVote(questionId, 'New A', 'racer', null), { added: true });
+  } finally {
+    await editor.query('ROLLBACK').catch(() => {});
+    editor.release();
+    await Promise.allSettled([vote]);
+  }
+});
+
+test('a moderator edit that waits for an in-flight vote is refused once the vote is stored', async () => {
+  const topic = uniqueTopic('vote-then-edit');
+  const mod = await connectSocket();
+  const voter = await pool.connect();
+  let edit;
+  try {
+    mod.emit('joinDiscussion', topic);
+    const token = await claimModerator(mod, topic);
+    const added = waitForQuestions(mod, (qs) => qs.length === 1, 'question added');
+    mod.emit('addQuestion', topic, { text: 'Which?', type: 'Multiple Choice', options: ['Old A', 'Old B'] });
+    const question = (await added)[0];
+
+    // A vote is mid-transaction: it has locked the question and stored its
+    // answer but not yet committed when the edit arrives.
+    await voter.query('BEGIN');
+    await voter.query('SELECT id FROM questions WHERE id = $1 FOR SHARE', [question.id]);
+    await voter.query("INSERT INTO votes (question_id, user_id, value) VALUES ($1, 'racer', 'Old A')", [question.id]);
+    edit = emitWithAck(mod, 'editQuestion', topic, question.id,
+      { text: 'Which?', type: 'Multiple Choice', options: ['New A', 'New B'] }, token);
+    await waitForQuestionLockWait();
+    await voter.query('COMMIT');
+
+    assert.deepEqual(await edit, { updated: false, reason: 'has_responses' });
+    const stored = await pool.query('SELECT options FROM questions WHERE id = $1', [question.id]);
+    assert.deepEqual(stored.rows[0].options, ['Old A', 'Old B']);
+  } finally {
+    await voter.query('ROLLBACK').catch(() => {});
+    voter.release();
+    await Promise.allSettled([edit]);
+    mod.disconnect();
+  }
+});
+
 test('updating a poll repairs legacy duplicates without removing brainstorm ideas', async () => {
   const created = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('legacy-duplicates') });
   const questions = await pool.query(
