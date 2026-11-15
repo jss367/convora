@@ -95,3 +95,14 @@ test('Multiple Choice summaries count each option in order and stay out of the o
   assert.deepEqual(tied.questions[0].leadingOptions, ['Higher', 'Lower']);
   assert.deepEqual(buildSummary(discussion, [{ ...question, votes: [] }]).questions[0].leadingOptions, []);
 });
+
+test('printable reports escape Multiple Choice option text', () => {
+  const summary = buildSummary(discussion, [{
+    id: 1, text: 'Pick one', type: 'Multiple Choice',
+    options: ['<img src=x onerror=alert(1)>', 'Plain'],
+    votes: [vote(1, 'a', 'Plain')],
+  }]);
+  const html = renderReportHtml(summary);
+  assert.doesNotMatch(html, /<img src=x/);
+  assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt;: 0 \/ Plain: 1/);
+});
