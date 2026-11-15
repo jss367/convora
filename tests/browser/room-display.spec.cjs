@@ -116,9 +116,9 @@ test('the room display preserves a numerical range ending at zero', async ({ pag
 
 // A fake Screen Wake Lock API that counts the locks held, and releases them
 // when the tab is hidden as browsers do. With deferred, requests stay pending
-// until the test calls window.__wakeLock.grant(). With api 'missing' the
-// browser has no Screen Wake Lock API, as on older smart TVs; with 'refused'
-// every request is rejected.
+// until the test calls window.__wakeLock.grant() or window.__wakeLock.deny().
+// With api 'missing' the browser has no Screen Wake Lock API, as on older smart
+// TVs; with 'refused' every request is rejected.
 async function fakeWakeLock(page, { deferred = false, api = 'working' } = {}) {
   await page.addInitScript(({ deferredRequests, apiMode }) => {
     let visibility = 'visible';
@@ -129,7 +129,8 @@ async function fakeWakeLock(page, { deferred = false, api = 'working' } = {}) {
       requests: 0,
       pending: () => pending.length,
       held: () => locks.filter(lock => !lock.released).length,
-      grant: () => pending.splice(0).forEach(resolve => resolve()),
+      grant: () => pending.splice(0).forEach(({ resolve }) => resolve()),
+      deny: () => pending.splice(0).forEach(({ reject }) => reject(new DOMException('Document is hidden', 'NotAllowedError'))),
       setVisibility(next) {
         visibility = next;
         if (next === 'hidden') locks.forEach(lock => { lock.released = true; });
@@ -143,7 +144,7 @@ async function fakeWakeLock(page, { deferred = false, api = 'working' } = {}) {
           if (type !== 'screen') throw new Error('unexpected wake lock type');
           window.__wakeLock.requests += 1;
           if (apiMode === 'refused') throw new DOMException('Wake lock refused', 'NotAllowedError');
-          if (deferredRequests) await new Promise(resolve => pending.push(resolve));
+          if (deferredRequests) await new Promise((resolve, reject) => pending.push({ resolve, reject }));
           const lock = { released: false, release: async () => { lock.released = true; } };
           locks.push(lock);
           return lock;
@@ -276,4 +277,25 @@ test('the moderator shows and hides one question\'s results on the room display'
     await displayContext.close();
     await participantContext.close();
   }
+});
+
+test('the room display asks again when a request is refused after the tab flipped during it', async ({ page, rooms }) => {
+  const room = await rooms.create('Wake lock refused room', 'Agreement');
+  await fakeWakeLock(page, { deferred: true });
+  await page.goto(`/discussion/${room.slug}/display`);
+  await expect(page.getByTestId('display-question')).toBeVisible();
+  await expect.poll(() => page.evaluate(() => window.__wakeLock.pending())).toBe(1);
+
+  // Hidden and shown while the request is pending, and the browser refuses it
+  // because the document was hidden. The skipped visibility change is replayed.
+  await page.evaluate(() => {
+    window.__wakeLock.setVisibility('hidden');
+    window.__wakeLock.setVisibility('visible');
+  });
+  await page.evaluate(() => window.__wakeLock.deny());
+  await expect.poll(() => page.evaluate(() => window.__wakeLock.pending())).toBe(1);
+  expect(await page.evaluate(() => window.__wakeLock.requests)).toBe(2);
+  await page.evaluate(() => window.__wakeLock.grant());
+  await expect.poll(() => page.evaluate(() => window.__wakeLock.held())).toBe(1);
+  expect(await page.evaluate(() => window.__wakeLock.requests)).toBe(2);
 });

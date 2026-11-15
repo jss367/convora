@@ -22,6 +22,11 @@ export default function useScreenWakeLock() {
         // until released, so a second overlapping request would leave one we
         // never release.
         let requesting = false;
+        // A visibility change that arrived while a request was pending. The
+        // pending request may be refused or its lock dropped because of it, so
+        // it is handled once the request settles. A refusal with no skipped
+        // event (low battery, say) is not retried, so this cannot loop.
+        let missed = false;
 
         const video = document.createElement('video');
         video.muted = true;
@@ -53,11 +58,16 @@ export default function useScreenWakeLock() {
         };
 
         const requestLock = async () => {
-            if (!navigator.wakeLock || requesting || (lock && !lock.released)) return;
+            if (!navigator.wakeLock) return;
+            if (requesting) {
+                missed = true;
+                return;
+            }
+            if (lock && !lock.released) return;
             requesting = true;
-            let granted = null;
+            missed = false;
             try {
-                granted = await navigator.wakeLock.request('screen');
+                const granted = await navigator.wakeLock.request('screen');
                 if (active) lock = granted;
                 else granted.release().catch(() => {});
             } catch {
@@ -65,9 +75,10 @@ export default function useScreenWakeLock() {
             } finally {
                 requesting = false;
             }
-            // The tab may have been hidden and shown again while the request was
-            // pending, which drops the lock just granted; ask again if so.
-            if (active && granted?.released && document.visibilityState === 'visible') requestLock();
+            // The tab was shown again while the request was pending. Whether the
+            // request was granted (and the lock dropped by the hide) or refused
+            // because the tab was hidden, ask again.
+            if (active && missed && document.visibilityState === 'visible') requestLock();
         };
 
         // The browser drops the lock while the tab is hidden; the video is
