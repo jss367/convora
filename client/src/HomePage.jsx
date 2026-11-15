@@ -8,7 +8,6 @@ const HomePage = () => {
     // opened (see knownDiscussions.js), never a server-wide list.
     const [discussions, setDiscussions] = useState(getKnownDiscussions);
     const [newDiscussion, setNewDiscussion] = useState('');
-    const [listPublicly, setListPublicly] = useState(false);
     // Discussions their moderators chose to list; null until loaded.
     const [publicDiscussions, setPublicDiscussions] = useState(null);
     // True while a create request is in flight, so a repeated Enter or a
@@ -72,7 +71,7 @@ const HomePage = () => {
                     headers: {
                         'Content-Type': 'application/json',
                     },
-                    body: JSON.stringify({ topic, listed: listPublicly }),
+                    body: JSON.stringify({ topic }),
                 });
                 if (!response.ok) {
                     throw new Error('Failed to create discussion');
@@ -137,15 +136,6 @@ const HomePage = () => {
                     />
                     <button type="submit" className="px-4 py-2 bg-primary text-white rounded hover:bg-opacity-90 transition duration-300">Create</button>
                 </form>
-                <label className="mt-2 flex items-center gap-2 text-gray-700">
-                    <input
-                        type="checkbox"
-                        checked={listPublicly}
-                        onChange={(e) => setListPublicly(e.target.checked)}
-                    />
-                    List publicly on this page
-                    <span className="text-sm text-gray-500">(otherwise only people with the link can find it)</span>
-                </label>
             </div>
 
             <h2 className="text-2xl font-bold mb-4">Your Discussions</h2>
