@@ -113,3 +113,52 @@ test('the room display preserves a numerical range ending at zero', async ({ pag
   await expect(bars.first()).toHaveAttribute('title', '1 response');
   await expect(bars.last()).toHaveAttribute('title', '1 response');
 });
+
+test('the room display keeps the screen awake, and asks again after the tab was hidden', async ({ page, rooms }) => {
+  const room = await rooms.create('Wake lock room', 'Agreement');
+  // A fake Screen Wake Lock API that counts the locks held, and releases them
+  // when the tab is hidden as browsers do.
+  await page.addInitScript(() => {
+    let visibility = 'visible';
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => visibility });
+    const locks = [];
+    window.__wakeLock = {
+      requests: 0,
+      held: () => locks.filter(lock => !lock.released).length,
+      setVisibility(next) {
+        visibility = next;
+        if (next === 'hidden') locks.forEach(lock => { lock.released = true; });
+        document.dispatchEvent(new Event('visibilitychange'));
+      },
+    };
+    Object.defineProperty(navigator, 'wakeLock', {
+      configurable: true,
+      value: {
+        request: async type => {
+          if (type !== 'screen') throw new Error('unexpected wake lock type');
+          window.__wakeLock.requests += 1;
+          const lock = { released: false, release: async () => { lock.released = true; } };
+          locks.push(lock);
+          return lock;
+        },
+      },
+    });
+  });
+
+  await page.goto(`/discussion/${room.slug}/display`);
+  await expect(page.getByTestId('display-question')).toBeVisible();
+  await expect.poll(() => page.evaluate(() => window.__wakeLock.held())).toBe(1);
+
+  await page.evaluate(() => window.__wakeLock.setVisibility('hidden'));
+  expect(await page.evaluate(() => window.__wakeLock.held())).toBe(0);
+  await page.evaluate(() => window.__wakeLock.setVisibility('visible'));
+  await expect.poll(() => page.evaluate(() => window.__wakeLock.held())).toBe(1);
+  expect(await page.evaluate(() => window.__wakeLock.requests)).toBe(2);
+
+  // Leaving the display for a participant page lets the screen sleep again.
+  await page.evaluate(() => {
+    window.history.pushState({}, '', '/');
+    window.dispatchEvent(new PopStateEvent('popstate'));
+  });
+  await expect.poll(() => page.evaluate(() => window.__wakeLock.held())).toBe(0);
+});
