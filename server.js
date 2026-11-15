@@ -310,17 +310,18 @@ function restViewer(req) {
 // change; requests made before that queued send starts share it. Each caller
 // waits only for the send that covers its request, never for later ones, so a
 // busy room cannot hold up a vote's acknowledgment. A failed send rejects only
-// its own callers; the next one still runs. A send to one socket that a
-// room-wide send overtakes is dropped: the socket is in the room already and
-// gets the newer payload.
-const questionBroadcasts = new Map(); // slug -> { runs, tail, queued }
+// its own callers; the next one still runs. A send to one socket is dropped
+// only once a room-wide send that started after it has been delivered: the
+// socket is in the room already and has the newer payload. A room-wide send
+// that started but then failed does not cancel it.
+const questionBroadcasts = new Map(); // slug -> { runs, delivered, tail, queued }
 
 function emitQuestions(topic, onlySocket = null, isCurrent = () => true) {
   const slug = slugifyTopic(topic);
   let room = questionBroadcasts.get(slug);
-  if (onlySocket) return sendQuestions(slug, onlySocket, isCurrent, room?.runs || 0);
+  if (onlySocket) return sendQuestions(slug, { onlySocket, isCurrent, startedAfterRun: room?.runs || 0 });
   if (!room) {
-    room = { runs: 0, tail: Promise.resolve(), queued: null };
+    room = { runs: 0, delivered: 0, tail: Promise.resolve(), queued: null };
     questionBroadcasts.set(slug, room);
   }
   if (room.queued) return room.queued;
@@ -328,22 +329,30 @@ function emitQuestions(topic, onlySocket = null, isCurrent = () => true) {
     // From here on, a new request needs a send that starts after this one.
     room.queued = null;
     room.runs += 1;
-    await sendQuestions(slug, null);
+    await sendQuestions(slug, { run: room.runs });
   });
   room.tail = run;
   room.queued = run;
   return run;
 }
 
-async function sendQuestions(slug, onlySocket, isCurrent = () => true, runsAtStart = 0) {
+// One send of the questions: to `onlySocket`, or room-wide as room run `run`.
+// A room-wide send records itself as delivered in the same synchronous step as
+// its emits, so a send to one socket never sees it half done.
+async function sendQuestions(slug, { onlySocket = null, isCurrent = () => true, startedAfterRun = 0, run = 0 } = {}) {
   const respondents = new Map();
   const questions = await getQuestions(slug, { respondents });
   const access = await getResultsAccess(slug);
-  if (onlySocket && (questionBroadcasts.get(slug)?.runs || 0) !== runsAtStart) return;
+  const room = questionBroadcasts.get(slug);
+  if (onlySocket && (room?.delivered || 0) > startedAfterRun) return;
   if (onlySocket && !isCurrent()) return;
+  const markDelivered = () => {
+    if (!onlySocket && room) room.delivered = Math.max(room.delivered, run);
+  };
   if (access.alwaysShow) {
     if (onlySocket?.data.isDisplay && onlySocket.data.display !== slug) return;
     (onlySocket || audience(slug)).emit('questions', questions);
+    markDelivered();
     return;
   }
   if (onlySocket?.data.isDisplay) {
@@ -369,6 +378,7 @@ async function sendQuestions(slug, onlySocket, isCurrent = () => true, runsAtSta
     if (!views.has(userId)) views.set(userId, hideUnansweredResults(questions, respondents, userId));
     target.emit('questions', views.get(userId));
   }
+  markDelivered();
 }
 
 // A socket's view can change without any vote: it identifies itself after
