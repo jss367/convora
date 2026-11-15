@@ -88,9 +88,10 @@ moderator's browser. It follows the **Results** setting:
   question's response count but no tallies, percentages or histograms. The
   display has not voted, so it sees what a participant who has not voted sees.
 - With **Always show results**, it shows the live results as charts sized for
-  the room: a labelled bar with count and percentage for each agreement or
-  yes/no option, and a histogram with the average and median for numerical
-  questions.
+  the room: a labelled bar with count and percentage for each agreement,
+  yes/no or multiple choice option, and a histogram with the average and median
+  for numerical questions. While results are hidden, a multiple choice question
+  still lists its options under the response count.
 
 Two moderator bar settings change the display from wherever the moderator is
 sitting, so nobody has to touch the shared screen:

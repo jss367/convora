@@ -401,3 +401,37 @@ test('the room display goes full screen and hides its controls and the cursor wh
   await expect.poll(() => page.evaluate(() => document.fullscreenElement)).toBe(null);
   await expect(enter).toBeVisible();
 });
+
+test('the room display lists Multiple Choice options while results are hidden, then charts them', async ({ browser, rooms }) => {
+  const room = await rooms.create('Choice display', 'Multiple Choice');
+  await rooms.pool.query('UPDATE questions SET options = $1 WHERE discussion_id = $2',
+    [JSON.stringify(['Higher', 'Lower', 'About the same']), room.id]);
+  await rooms.pool.query(
+    `INSERT INTO votes (question_id, value, user_id)
+     SELECT id, v.value, v.user_id FROM questions,
+       (VALUES ('Higher', 'seed-a'), ('Higher', 'seed-b'), ('Lower', 'seed-c')) AS v(value, user_id)
+     WHERE discussion_id = $1`, [room.id]
+  );
+  const context = await browser.newContext();
+  try {
+    const display = await context.newPage();
+    await display.goto(`/discussion/${room.slug}/display`);
+    const question = display.getByTestId('display-question');
+    await expect(question.getByTestId('display-results-hidden')).toContainText('3');
+    await expect(question.getByTestId('display-choice-options').getByRole('listitem'))
+      .toHaveText(['Higher', 'Lower', 'About the same']);
+    await expect(question.getByTestId('display-chart')).toHaveCount(0);
+
+    await rooms.pool.query("UPDATE discussions SET results_visibility = 'always' WHERE id = $1", [room.id]);
+    await display.reload();
+    const chart = question.getByTestId('display-chart');
+    await expect(chart.getByRole('listitem')).toHaveCount(3);
+    await expect(chart.getByLabel('Higher: 2, 67%')).toBeVisible();
+    await expect(chart.getByLabel('Lower: 1, 33%')).toBeVisible();
+    await expect(chart.getByLabel('About the same: 0, 0%')).toBeVisible();
+    await expect(question.getByText('67% Higher', { exact: true })).toBeVisible();
+    await expect(display.getByTestId('display-choice-options')).toHaveCount(0);
+  } finally {
+    await context.close();
+  }
+});
