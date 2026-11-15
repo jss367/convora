@@ -12,6 +12,7 @@ test('creator confirms deletion, cancellation and errors preserve the room, and 
   const pool = new Pool({ connectionString: databaseUrl });
   const participantContext = await browser.newContext();
   const moderatorContext = await browser.newContext();
+  const displayContext = await browser.newContext();
   try {
     await pool.query("INSERT INTO discussion_moderators (discussion_id, user_id, token) VALUES ($1, 'promoted', 'delete-test-moderator')", [id]);
     await page.goto(`/discussion/${slug}?admin=${adminToken}`);
@@ -26,8 +27,11 @@ test('creator confirms deletion, cancellation and errors preserve the room, and 
 
     const participant = await participantContext.newPage();
     const moderator = await moderatorContext.newPage();
+    const display = await displayContext.newPage();
     await participant.goto(`/discussion/${slug}`);
     await moderator.goto(`/discussion/${slug}?admin=delete-test-moderator`);
+    await display.goto(`/discussion/${slug}/display`);
+    await expect(display.getByRole('heading', { name: topic, exact: true })).toBeVisible();
     await expect(moderator.getByText("You're the moderator")).toBeVisible();
     for (const viewer of [participant, moderator]) {
       await viewer.getByRole('button', { name: 'More ▾', exact: true }).click();
@@ -51,9 +55,12 @@ test('creator confirms deletion, cancellation and errors preserve the room, and 
       await expect(viewer.getByRole('link', { name: topic, exact: true })).toHaveCount(0);
     }
     expect(await page.evaluate(slug => localStorage.getItem(`convora_admin_${slug}`), slug)).toBeNull();
+    await expect(display.getByText('Discussion not found', { exact: true })).toBeVisible();
+    await expect(display.getByRole('heading', { name: topic, exact: true })).toHaveCount(0);
   } finally {
     await participantContext.close();
     await moderatorContext.close();
+    await displayContext.close();
     await pool.query('DELETE FROM discussions WHERE id = $1', [id]);
     await pool.end();
   }

@@ -1,6 +1,7 @@
 export const QuestionTypes = {
     AGREEMENT: 'Agreement',
     YES_NO: 'Yes/No',
+    MULTIPLE_CHOICE: 'Multiple Choice',
     NUMERICAL: 'Numerical',
     OPEN_ENDED: 'Open Ended',
     BRAINSTORM: 'Brainstorm'
@@ -10,9 +11,18 @@ export const QuestionTypes = {
 export const QuestionTypeDescriptions = {
     [QuestionTypes.AGREEMENT]: 'Each participant picks one option on the five-point scale from Strongly Agree to Strongly Disagree.',
     [QuestionTypes.YES_NO]: 'Each participant picks a simple Yes or No — a binary alternative to the five-point agreement scale.',
+    [QuestionTypes.MULTIPLE_CHOICE]: 'Each participant picks one of the answers you write, such as Higher, Lower or About the same.',
     [QuestionTypes.NUMERICAL]: 'Each participant submits a single number on a slider between your min and max.',
     [QuestionTypes.OPEN_ENDED]: 'Each participant gives one free-text response, which they can edit later. One answer per person.',
     [QuestionTypes.BRAINSTORM]: 'Each participant can add as many separate ideas as they want, and remove their own. Many answers per person.'
+};
+
+// Bounds on a Multiple Choice question's options. Mirror the
+// MULTIPLE_CHOICE_* constants in question-data.js, which enforces them.
+export const MULTIPLE_CHOICE_LIMITS = {
+    MIN_OPTIONS: 2,
+    MAX_OPTIONS: 6,
+    MAX_OPTION_LENGTH: 100,
 };
 
 export const VoteOptions = {

@@ -68,6 +68,54 @@ test('server startup creates schema and applies the pseudonym migration', async 
   assert.deepEqual(columns.rows.map((row) => row.column_name), ['short_code', 'pseudonym']);
 });
 
+test('deletion rejects queued and stale question submissions without reusing the deleted slug', async () => {
+  const topic = uniqueTopic('delete-race');
+  const created = await jsonRequest('POST', '/api/discussions', { topic });
+  const { id, slug, adminToken } = created.body;
+  const { socket } = await joinAs(slug, 'stale-participant');
+  const blocker = await pool.connect();
+  try {
+    await blocker.query('BEGIN');
+    await blocker.query('SELECT id FROM discussions WHERE id = $1 FOR UPDATE', [id]);
+    const deleting = jsonRequest('DELETE', `/api/discussions/${slug}`, { adminToken });
+    const waitForLocks = async count => {
+      const deadline = Date.now() + 5000;
+      while (Date.now() < deadline) {
+        const result = await pool.query("SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname = current_database() AND state = 'active' AND wait_event_type = 'Lock'");
+        if (result.rows[0].n >= count) return;
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+      throw new Error('Timed out waiting for blocked lifecycle operations');
+    };
+    await waitForLocks(1);
+    const adding = emitWithAck(socket, 'addQuestion', slug, { text: 'A queued stale question', type: 'Agreement' }, true);
+    await waitForLocks(2);
+    await blocker.query('COMMIT');
+    assert.equal((await deleting).status, 200);
+    assert.equal((await adding).added, false);
+    assert.equal((await pool.query('SELECT count(*)::int AS n FROM discussions WHERE slug = $1', [slug])).rows[0].n, 0);
+    assert.equal((await emitWithAck(socket, 'addQuestion', slug, { text: 'A later stale question', type: 'Agreement' }, true)).added, false);
+    assert.equal((await emitWithAck(socket, 'claimModerator', slug)).success, false);
+    await stopServer();
+    await startServer();
+    const replacement = await jsonRequest('POST', '/api/discussions', { topic });
+    assert.equal(replacement.status, 200);
+    assert.notEqual(replacement.body.slug, slug);
+    assert.equal((await jsonRequest('GET', `/api/discussions/resolve/${slug}`)).status, 404);
+    assert.equal((await jsonRequest('DELETE', `/api/discussions/${replacement.body.slug}`, { adminToken: replacement.body.adminToken })).status, 200);
+    const source = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('copy-source') });
+    const duplicate = await jsonRequest('POST', '/api/duplicate-discussion', { originalTopic: source.body.slug, newTopic: topic });
+    assert.equal(duplicate.status, 200);
+    assert.notEqual(duplicate.body.newSlug, slug);
+    assert.notEqual(duplicate.body.newSlug, replacement.body.slug);
+    assert.equal((await jsonRequest('GET', `/api/discussions/resolve/${slug}`)).status, 404);
+  } finally {
+    await blocker.query('ROLLBACK');
+    blocker.release();
+    socket.disconnect();
+  }
+});
+
 test('only the creator can delete a discussion, removing all contents and notifying viewers', async () => {
   const created = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('delete') });
   const other = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('keep') });
@@ -251,9 +299,14 @@ test('persisted categorical snapshots render ordered labels, zero counts, and al
   const cases = [
     { type: 'Agreement', labels: ['Strongly Disagree', 'Disagree', 'Unsure', 'Agree', 'Strongly Agree'], before: [1, 0, 1, 0, 2], after: [0, 2, 0, 1, 1] },
     { type: 'Yes/No', labels: ['No', 'Yes'], before: [1, 0], after: [0, 2] },
+    // Author-written options keep the author's order, not alphabetical or key order.
+    { type: 'Multiple Choice', labels: ['Lower', 'About the same', 'Higher'], before: [2, 0, 1], after: [0, 1, 2], choice: true },
   ];
   for (const item of cases) {
-    const added = await pool.query('INSERT INTO questions (discussion_id, text, type) VALUES ($1, $2, $3) RETURNING id', [id, `Saved ${item.type} opinions`, item.type]);
+    const added = await pool.query(
+      'INSERT INTO questions (discussion_id, text, type, options) VALUES ($1, $2, $3, $4) RETURNING id',
+      [id, `Saved ${item.type} opinions`, item.type, item.choice ? JSON.stringify(item.labels) : null]
+    );
     item.id = added.rows[0].id;
   }
   const setResponses = async phase => {
@@ -288,6 +341,26 @@ test('persisted categorical snapshots render ordered labels, zero counts, and al
           .map(cell => Number(cell[1].replace(/<[^>]+>/g, '').match(/^(\d+) /)[1])),
       }));
     assert.deepEqual(rows, item.labels.map((label, index) => ({ label, counts: [item.before[index], item.after[index]] })));
+  }
+
+  // Someone who has not answered gets each Multiple Choice snapshot without its
+  // counts, but still sees the options it asked about.
+  const choice = cases.find(item => item.choice);
+  const { snapshots: [hiddenBefore, hiddenAfter] } = (await jsonRequest('GET', url, undefined, asUser('snapshot-stranger'))).body;
+  const hiddenEarlier = hiddenBefore.data.questions.find(q => q.id === choice.id);
+  assert.deepEqual(hiddenEarlier, {
+    id: choice.id, text: 'Saved Multiple Choice opinions', type: 'Multiple Choice', options: choice.labels, resultsHidden: true,
+  });
+  const hiddenHtml = renderToStaticMarkup(React.createElement(QuestionComparison, {
+    before: hiddenEarlier, after: hiddenAfter.data.questions.find(q => q.id === choice.id),
+    comparing: true, beforeName: hiddenBefore.name, afterName: hiddenAfter.name,
+  }));
+  assert.deepEqual([...hiddenHtml.matchAll(/<li[^>]*>([^<]*)<\/li>/g)].map(match => match[1]), choice.labels);
+  assert.doesNotMatch(hiddenHtml, /<table|\d+%/);
+  // A long unbroken option wraps inside the card rather than overflowing it.
+  for (const item of hiddenHtml.matchAll(/<li class="([^"]*)"/g)) {
+    assert.match(item[1], /\bmax-w-full\b/);
+    assert.match(item[1], /\bbreak-words\b/);
   }
 });
 
@@ -493,6 +566,83 @@ for (const { type, value, expected, equivalentIds } of [
     }
   });
 }
+
+// Give a racing statement on the questions table up to two seconds to block on
+// the row lock the test holds, so the test releases the lock only once the race
+// is set up. Without serialization nothing blocks, and the test goes on to
+// assert the outcome anyway, which is what catches the bug.
+async function waitForQuestionLockWait() {
+  const deadline = Date.now() + 2000;
+  while (Date.now() < deadline) {
+    const waiting = await pool.query(
+      `SELECT count(*)::int AS count FROM pg_stat_activity
+       WHERE wait_event_type = 'Lock' AND query ILIKE '%questions%'`
+    );
+    if (waiting.rows[0].count > 0) return;
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+}
+
+test('a vote that waits for a moderator edit is checked against the edited options', async () => {
+  const created = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('edit-then-vote') });
+  const inserted = await pool.query(
+    `INSERT INTO questions (discussion_id, text, type, options)
+     VALUES ($1, 'Which?', 'Multiple Choice', $2) RETURNING id`,
+    [created.body.id, JSON.stringify(['Old A', 'Old B'])]
+  );
+  const questionId = inserted.rows[0].id;
+  const editor = await pool.connect();
+  let vote;
+  try {
+    // The moderator's edit holds the row while the vote arrives.
+    await editor.query('BEGIN');
+    await editor.query('UPDATE questions SET options = $1 WHERE id = $2', [JSON.stringify(['New A', 'New B']), questionId]);
+    vote = createVoteStore(pool).addVote(questionId, 'Old A', 'racer', null);
+    await waitForQuestionLockWait();
+    await editor.query('COMMIT');
+    assert.deepEqual(await vote, { added: false, reason: 'invalid' });
+    assert.deepEqual(await storedVotes(questionId), []);
+    // A vote for one of the new options is stored as usual.
+    assert.deepEqual(await createVoteStore(pool).addVote(questionId, 'New A', 'racer', null), { added: true });
+  } finally {
+    await editor.query('ROLLBACK').catch(() => {});
+    editor.release();
+    await Promise.allSettled([vote]);
+  }
+});
+
+test('a moderator edit that waits for an in-flight vote is refused once the vote is stored', async () => {
+  const topic = uniqueTopic('vote-then-edit');
+  const mod = await connectSocket();
+  const voter = await pool.connect();
+  let edit;
+  try {
+    mod.emit('joinDiscussion', topic);
+    const token = await claimModerator(mod, topic);
+    const added = waitForQuestions(mod, (qs) => qs.length === 1, 'question added');
+    mod.emit('addQuestion', topic, { text: 'Which?', type: 'Multiple Choice', options: ['Old A', 'Old B'] });
+    const question = (await added)[0];
+
+    // A vote is mid-transaction: it has locked the question and stored its
+    // answer but not yet committed when the edit arrives.
+    await voter.query('BEGIN');
+    await voter.query('SELECT id FROM questions WHERE id = $1 FOR SHARE', [question.id]);
+    await voter.query("INSERT INTO votes (question_id, user_id, value) VALUES ($1, 'racer', 'Old A')", [question.id]);
+    edit = emitWithAck(mod, 'editQuestion', topic, question.id,
+      { text: 'Which?', type: 'Multiple Choice', options: ['New A', 'New B'] }, token);
+    await waitForQuestionLockWait();
+    await voter.query('COMMIT');
+
+    assert.deepEqual(await edit, { updated: false, reason: 'has_responses' });
+    const stored = await pool.query('SELECT options FROM questions WHERE id = $1', [question.id]);
+    assert.deepEqual(stored.rows[0].options, ['Old A', 'Old B']);
+  } finally {
+    await voter.query('ROLLBACK').catch(() => {});
+    voter.release();
+    await Promise.allSettled([edit]);
+    mod.disconnect();
+  }
+});
 
 test('updating a poll repairs legacy duplicates without removing brainstorm ideas', async () => {
   const created = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('legacy-duplicates') });
@@ -848,6 +998,216 @@ test('Yes/No questions record a single choice that only an explicit clear remove
   } finally {
     author.disconnect();
     voter.disconnect();
+  }
+});
+
+test('Multiple Choice questions validate their options and accept only those options as votes', async () => {
+  const topic = uniqueTopic('multiple-choice');
+  const author = await connectSocket();
+  const voter = await connectSocket();
+  const pdoom = ['Higher', 'Lower', 'About the same'];
+
+  try {
+    const joined = waitForQuestions(author, (questions) => Array.isArray(questions), 'author join');
+    author.emit('joinDiscussion', topic);
+    await joined;
+    voter.emit('joinDiscussion', topic);
+
+    // Each malformed option list is refused before anything is stored.
+    for (const options of [
+      undefined,
+      'Higher, Lower',
+      ['Only one'],
+      ['A', 'B', 'C', 'D', 'E', 'F', 'G'],
+      ['Higher', '   '],
+      ['Higher', 42],
+      ['Higher', 'x'.repeat(101)],
+      ['Higher', ' higher  '],
+    ]) {
+      const ack = await emitWithAck(author, 'addQuestion', topic,
+        { text: 'Did your p(doom) change?', type: 'Multiple Choice', options }, true);
+      assert.deepEqual(ack, { added: false, reason: 'invalid' }, `rejects ${JSON.stringify(options)}`);
+    }
+    const stored = await pool.query(
+      "SELECT count(*)::int AS count FROM questions q JOIN discussions d ON d.id = q.discussion_id WHERE d.slug = $1",
+      [topic]
+    );
+    assert.equal(stored.rows[0].count, 0);
+
+    // Options are trimmed and kept in the author's order.
+    const added = waitForQuestions(author, (qs) => qs.length === 1, 'multiple choice broadcast');
+    const ack = await emitWithAck(author, 'addQuestion', topic, {
+      text: 'In the last year, did your p(doom) get higher or lower?',
+      type: 'Multiple Choice',
+      options: ['  Higher ', 'Lower', 'About   the same'],
+    }, true);
+    assert.deepEqual(ack, { added: true });
+    const question = (await added)[0];
+    assert.equal(question.type, 'Multiple Choice');
+    assert.deepEqual(question.options, pdoom);
+
+    const vote = (value) => emitWithAck(voter, 'vote', topic, question.id, value, 'mc-user', 'Chooser', undefined);
+    assert.deepEqual(await vote('Higher'), { ok: true });
+    assert.deepEqual(await storedVotes(question.id), [{ user_id: 'mc-user', value: 'Higher' }]);
+
+    // Switching replaces the single choice; re-selecting keeps it.
+    assert.deepEqual(await vote('About the same'), { ok: true });
+    assert.deepEqual(await vote('About the same'), { ok: true });
+    assert.deepEqual(await storedVotes(question.id), [{ user_id: 'mc-user', value: 'About the same' }]);
+
+    // Anything that is not one of this question's options is rejected,
+    // including another type's options and a near-match.
+    for (const invalid of ['Agree', 'Yes', 'higher', 'Higher ', '', null, ['Higher']]) {
+      assert.deepEqual(await vote(invalid), { ok: false }, `rejects ${JSON.stringify(invalid)}`);
+    }
+    assert.deepEqual(await storedVotes(question.id), [{ user_id: 'mc-user', value: 'About the same' }]);
+
+    // Undo is the explicit clear, as for the other single-choice types.
+    assert.deepEqual(await emitWithAck(voter, 'clearVote', topic, question.id, 'mc-user'), { ok: true });
+    assert.deepEqual(await storedVotes(question.id), []);
+  } finally {
+    author.disconnect();
+    voter.disconnect();
+  }
+});
+
+test('Multiple Choice results stay hidden until a participant votes, and snapshots keep the options', async () => {
+  const created = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('mc-results') });
+  const { id, slug, adminToken } = created.body;
+  const inserted = await pool.query(
+    `INSERT INTO questions (discussion_id, text, type, options)
+     VALUES ($1, 'p(doom) over the last year?', 'Multiple Choice', $2) RETURNING id`,
+    [id, JSON.stringify(['Higher', 'Lower', 'About the same'])]
+  );
+  const questionId = inserted.rows[0].id;
+  await pool.query(
+    `INSERT INTO votes (question_id, value, user_id, pseudonym) VALUES
+      ($1, 'Higher', 'seed-a', 'Seed A'), ($1, 'Higher', 'seed-b', 'Seed B'), ($1, 'Lower', 'seed-c', 'Seed C')`,
+    [questionId]
+  );
+
+  const { socket, questions } = await joinAs(slug, 'mc-newcomer');
+  try {
+    const hidden = byId(questions, questionId);
+    assertResultsHidden(hidden, 'unanswered multiple choice');
+    // The options are the question, not its results, so they stay visible.
+    assert.deepEqual(hidden.options, ['Higher', 'Lower', 'About the same']);
+
+    const shown = waitForQuestions(socket, qs => byId(qs, questionId)?.resultsHidden === false, 'results after voting');
+    socket.emit('vote', slug, questionId, 'About the same', 'mc-newcomer', 'Newcomer');
+    assertResultsShown(byId(await shown, questionId), ['Higher', 'Higher', 'Lower', 'About the same'], 'answered multiple choice');
+  } finally {
+    socket.disconnect();
+  }
+
+  // The summary reports per-option counts in the author's order and keeps the
+  // question out of the agree/disagree rankings.
+  const summary = (await jsonRequest('GET', `/api/discussions/${slug}/summary`, undefined, asModerator(adminToken))).body;
+  const summarized = summary.questions.find(q => q.id === questionId);
+  assert.deepEqual(summarized.options, ['Higher', 'Lower', 'About the same']);
+  assert.deepEqual(summarized.optionCounts, { Higher: 2, Lower: 1, 'About the same': 1 });
+  assert.deepEqual(summarized.leadingOptions, ['Higher']);
+  assert.equal(summary.topDivisive.some(q => q.id === questionId), false);
+
+  // Someone who has not answered gets the options, which are part of the
+  // question, but no tallies.
+  const hiddenSummary = (await jsonRequest('GET', `/api/discussions/${slug}/summary`, undefined, asUser('mc-stranger'))).body
+    .questions.find(q => q.id === questionId);
+  assert.deepEqual(hiddenSummary.options, ['Higher', 'Lower', 'About the same']);
+  assert.equal(hiddenSummary.resultsHidden, true);
+  assert.equal('optionCounts' in hiddenSummary || 'responseCount' in hiddenSummary || 'leadingOptions' in hiddenSummary, false);
+
+  const url = `/api/discussions/${slug}/snapshots`;
+  const saved = await jsonRequest('POST', url, { name: 'Before', adminToken });
+  assert.equal(saved.status, 201);
+  const snapshotQuestion = saved.body.data.questions.find(q => q.id === questionId);
+  assert.deepEqual(snapshotQuestion.options, ['Higher', 'Lower', 'About the same']);
+  assert.deepEqual(snapshotQuestion.optionCounts, { Higher: 2, Lower: 1, 'About the same': 1 });
+  assert.equal(snapshotQuestion.responseCount, 4);
+
+  // A participant who has not answered gets the snapshot without its tallies.
+  const redacted = (await jsonRequest('GET', url, undefined, asUser('mc-stranger'))).body.snapshots[0];
+  assert.deepEqual(redacted.data.questions.find(q => q.id === questionId),
+    {
+      id: questionId, text: 'p(doom) over the last year?', type: 'Multiple Choice',
+      options: ['Higher', 'Lower', 'About the same'], resultsHidden: true,
+    });
+
+  // A moderator can reveal a Multiple Choice question's results to everyone.
+  const moderator = await connectSocket();
+  try {
+    moderator.emit('joinDiscussion', slug);
+    const revealed = waitForQuestions(moderator, qs => byId(qs, questionId)?.resultsRevealed === true, 'results revealed');
+    moderator.emit('setResultsRevealed', slug, questionId, true, adminToken);
+    await revealed;
+  } finally {
+    moderator.disconnect();
+  }
+  const strangerSummary = (await jsonRequest('GET', `/api/discussions/${slug}/summary`, undefined, asUser('mc-stranger'))).body;
+  const revealedSummary = strangerSummary.questions.find(q => q.id === questionId);
+  assert.notEqual(revealedSummary.resultsHidden, true);
+  assert.deepEqual(revealedSummary.optionCounts, { Higher: 2, Lower: 1, 'About the same': 1 });
+});
+
+test('the CSV export preserves Multiple Choice option labels as literal strings', async () => {
+  const created = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('mc-csv-literals') });
+  const { id, slug, adminToken } = created.body;
+  const options = ['null', '"quoted"', '["A"]', '{"x":1}', 'true', '=SUM(A1)'];
+  const inserted = await pool.query(
+    'INSERT INTO questions (discussion_id, text, type, options) VALUES ($1, $2, $3, $4) RETURNING id',
+    [id, 'Pick a literal label', 'Multiple Choice', JSON.stringify(options)]
+  );
+  for (const [index, value] of options.entries()) {
+    await pool.query('INSERT INTO votes (question_id, value, user_id) VALUES ($1, $2, $3)',
+      [inserted.rows[0].id, value, 'literal-voter-' + index]);
+  }
+
+  const response = await fetch(baseUrl + '/api/discussions/' + slug + '/export.csv', {
+    headers: asModerator(adminToken),
+  });
+  assert.equal(response.status, 200);
+  const csv = await response.text();
+  const values = csv.split('\n').slice(1).map(line => {
+    const fields = Array.from(line.matchAll(/(?:^|,)("(?:[^"]|"")*"|[^,]*)/g), match => match[1]);
+    const value = fields[7];
+    return value.startsWith('"') ? value.slice(1, -1).replace(/""/g, '"') : value;
+  });
+  // Literal JSON-looking labels survive unchanged; the existing CSV formula
+  // neutralization still applies to a formula-looking option.
+  assert.deepEqual(values, ['null', '"quoted"', '["A"]', '{"x":1}', 'true', "'=SUM(A1)"]);
+});
+
+test('a moderator can edit a question to Multiple Choice, and options are saved with the edit', async () => {
+  const topic = uniqueTopic('edit-mc');
+  const mod = await connectSocket();
+
+  try {
+    mod.emit('joinDiscussion', topic);
+    const token = await claimModerator(mod, topic);
+
+    const added = waitForQuestions(mod, (qs) => qs.length === 1, 'question added');
+    mod.emit('addQuestion', topic, { text: 'Agree?', type: 'Agreement', minValue: null, maxValue: null, options: [] });
+    const question = (await added)[0];
+    assert.deepEqual(question.options, []);
+
+    // Missing or invalid options make the edit invalid.
+    const invalid = await emitWithAck(mod, 'editQuestion', topic, question.id,
+      { text: 'Which?', type: 'Multiple Choice', options: ['Only one'] }, token);
+    assert.deepEqual(invalid, { updated: false, reason: 'invalid' });
+
+    const toChoice = waitForQuestions(mod, (qs) => qs[0]?.type === 'Multiple Choice', 'edit to multiple choice');
+    const ack = await emitWithAck(mod, 'editQuestion', topic, question.id,
+      { text: 'Which?', type: 'Multiple Choice', options: ['Red', 'Blue'] }, token);
+    assert.equal(ack.updated, true);
+    assert.deepEqual((await toChoice)[0].options, ['Red', 'Blue']);
+
+    // Switching away clears the options, so a stale list cannot linger.
+    const back = waitForQuestions(mod, (qs) => qs[0]?.type === 'Yes/No', 'edit back to yes/no');
+    await emitWithAck(mod, 'editQuestion', topic, question.id,
+      { text: 'Yes?', type: 'Yes/No', options: ['Red', 'Blue'] }, token);
+    assert.deepEqual((await back)[0].options, []);
+  } finally {
+    mod.disconnect();
   }
 });
 

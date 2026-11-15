@@ -32,3 +32,26 @@ export function clampNumericalValue(raw, min, max) {
     }
     return Math.min(max, Math.max(min, parsed));
 }
+
+// Checks a Multiple Choice question's options the way the server does
+// (normalizeChoiceOptions in question-data.js): 2 to 6 non-empty options of at
+// most 100 characters, none repeated ignoring case and spacing. Returns
+// { options } with each option trimmed, or { error } with a message to show.
+// The limits are passed in so this file stays free of the React-side config.
+export function validateChoiceOptions(rawOptions, { MIN_OPTIONS, MAX_OPTIONS, MAX_OPTION_LENGTH }) {
+    const options = (Array.isArray(rawOptions) ? rawOptions : [])
+        .map(option => String(option ?? '').trim().replace(/\s+/g, ' '));
+    if (options.some(option => option === '')) {
+        return { error: 'Fill in every answer option, or remove the empty ones.' };
+    }
+    if (options.length < MIN_OPTIONS || options.length > MAX_OPTIONS) {
+        return { error: `A multiple choice question needs ${MIN_OPTIONS} to ${MAX_OPTIONS} answer options.` };
+    }
+    if (options.some(option => option.length > MAX_OPTION_LENGTH)) {
+        return { error: `Keep each answer option to ${MAX_OPTION_LENGTH} characters or fewer.` };
+    }
+    if (new Set(options.map(option => option.toLowerCase())).size !== options.length) {
+        return { error: 'Each answer option must be different.' };
+    }
+    return { options };
+}

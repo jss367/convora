@@ -54,7 +54,38 @@ function getQuestionRange(question) {
 
 // The question types a discussion supports. Mirrors QuestionTypes in
 // client/src/questions/config.js — used to validate creates/edits server-side.
-const VALID_QUESTION_TYPES = new Set(['Agreement', 'Yes/No', 'Numerical', 'Open Ended', 'Brainstorm']);
+const VALID_QUESTION_TYPES = new Set(['Agreement', 'Yes/No', 'Multiple Choice', 'Numerical', 'Open Ended', 'Brainstorm']);
+
+// A Multiple Choice question carries its own answer options, set by whoever
+// writes it. Participants pick exactly one. Mirrors MULTIPLE_CHOICE_LIMITS in
+// client/src/questions/config.js.
+const MULTIPLE_CHOICE_MIN_OPTIONS = 2;
+const MULTIPLE_CHOICE_MAX_OPTIONS = 6;
+const MULTIPLE_CHOICE_MAX_OPTION_LENGTH = 100;
+
+// Trimmed options, or null when the list is not a valid set of choices: too few
+// or too many, an empty or overlong option, or two options that differ only in
+// case or spacing (participants could not tell them apart).
+function normalizeChoiceOptions(options) {
+  if (!Array.isArray(options)) return null;
+  const normalized = options.map(option => (typeof option === 'string' ? option.trim().replace(/\s+/g, ' ') : ''));
+  if (normalized.length < MULTIPLE_CHOICE_MIN_OPTIONS || normalized.length > MULTIPLE_CHOICE_MAX_OPTIONS) return null;
+  if (normalized.some(option => !option || option.length > MULTIPLE_CHOICE_MAX_OPTION_LENGTH)) return null;
+  if (new Set(normalized.map(option => option.toLowerCase())).size !== normalized.length) return null;
+  return normalized;
+}
+
+// The answers a single-choice question accepts, or null for types that are not
+// single-choice. Agreement and Yes/No have fixed options; Multiple Choice uses
+// the question's stored ones.
+function choiceOptionsFor(question) {
+  if (question.type === 'Agreement') return AGREEMENT_OPTIONS;
+  if (question.type === 'Yes/No') return YES_NO_OPTIONS;
+  if (question.type === 'Multiple Choice') {
+    return parseOptions(question.options).filter(option => typeof option === 'string');
+  }
+  return null;
+}
 
 function parseIntegerInput(value) {
   if (typeof value === 'number' && Number.isInteger(value)) {
@@ -64,6 +95,27 @@ function parseIntegerInput(value) {
     return Number(value);
   }
   return NaN;
+}
+
+// Whether `vote` is an acceptable answer to `question` (a questions row:
+// type, options, min_value, max_value). Single-choice types accept only their
+// options; Numerical a finite number within the question's range. Open Ended
+// and Brainstorm accept any text. Used both before a vote is sent to the store
+// and again inside the vote's transaction, against the locked question row, so
+// a vote validated before a moderator's edit cannot be stored after it.
+function isValidVote(question, vote) {
+  const choices = choiceOptionsFor(question);
+  if (choices) return choices.includes(vote);
+  if (question.type === 'Numerical') {
+    // Number('') / Number([]) / Number(null) all coerce to 0, so require a real
+    // number or a non-blank string before range-checking.
+    const isNumber = typeof vote === 'number';
+    const isNumericString = typeof vote === 'string' && vote.trim() !== '';
+    const num = isNumber ? vote : isNumericString ? Number(vote) : NaN;
+    const { minValue, maxValue } = getQuestionRange(question);
+    return Number.isFinite(num) && num >= minValue && num <= maxValue;
+  }
+  return true;
 }
 
 function normalizeQuestionPayload(question) {
@@ -87,16 +139,24 @@ function normalizeQuestionPayload(question) {
     }
   }
 
+  // Only Multiple Choice questions store options; other types ignore any sent.
+  let options = [];
+  if (type === 'Multiple Choice') {
+    options = normalizeChoiceOptions(question.options);
+    if (!options) return null;
+  }
+
   return {
     text,
     type,
     minValue,
     maxValue,
-    options: Array.isArray(question.options) ? question.options : [],
+    options,
   };
 }
 
 module.exports = {
   AGREEMENT_OPTIONS, YES_NO_OPTIONS, parseOptions, parseStoredVoteValue,
-  getQuestionRange, normalizeQuestionPayload,
+  getQuestionRange, normalizeQuestionPayload, normalizeChoiceOptions, choiceOptionsFor, isValidVote,
+  MULTIPLE_CHOICE_MIN_OPTIONS, MULTIPLE_CHOICE_MAX_OPTIONS, MULTIPLE_CHOICE_MAX_OPTION_LENGTH,
 };
