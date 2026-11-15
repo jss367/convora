@@ -18,6 +18,7 @@ import ChoiceOptionsEditor from './questions/ChoiceOptionsEditor';
 import OpenEndedQuestion from './questions/OpenEndedQuestion';
 import NumericalResults from './questions/NumericalResults';
 import { clampNumericalValue, sortQuestionsMostRecent, validateChoiceOptions } from './questions/questionHelpers.mjs';
+import { guessQuestionType } from './questions/guessQuestionType.mjs';
 import {
     QuestionTypes, QuestionTypeDescriptions, VoteOptions, YesNoOptions,
     EPISTEMIC_REACTIONS, ALL_REACTION_KEYS, MULTIPLE_CHOICE_LIMITS,
@@ -27,7 +28,7 @@ import {
 // minimum it needs; they are kept while the type changes so switching away and
 // back does not lose what was typed.
 const emptyQuestionDraft = () => ({
-    text: '', type: QuestionTypes.AGREEMENT, minValue: 0, maxValue: 100, options: ['', ''],
+    text: '', type: QuestionTypes.AGREEMENT, minValue: 0, maxValue: 100, options: ['', ''], typeChosen: false,
 });
 
 // Color themes a moderator can apply to a discussion. Keys and the palettes
@@ -78,6 +79,17 @@ const DiscussionPage = () => {
     const [questions, setQuestions] = useState([]);
     const [questionDraft, setQuestionDraft] = useState(emptyQuestionDraft);
     const { text: newQuestion, type: questionType, minValue, maxValue, options: choiceOptions } = questionDraft;
+    // Until the author picks a type themselves, the type follows the wording:
+    // the guess when there is one, otherwise the default.
+    const updateQuestionText = (text) => setQuestionDraft(current => ({
+        ...current,
+        text,
+        type: current.typeChosen ? current.type : guessQuestionType(text) ?? QuestionTypes.AGREEMENT,
+    }));
+    // Changing the type or the numerical range by hand is a deliberate choice,
+    // so later edits to the wording leave it alone.
+    const chooseQuestionSetting = (field, value) => setQuestionDraft(current => ({ ...current, [field]: value, typeChosen: true }));
+    const typeGuessed = !questionDraft.typeChosen && guessQuestionType(newQuestion) !== null;
     const updateQuestionDraft = (field, value) => setQuestionDraft(current => ({ ...current, [field]: value }));
     const [sliderValues, setSliderValues] = useState({});
     const [sortOption, setSortOption] = useState(SortOptions.MOST_RECENT);
@@ -1925,7 +1937,7 @@ const DiscussionPage = () => {
                     ref={questionInputRef}
                     type="text"
                     value={newQuestion}
-                    onChange={(e) => updateQuestionDraft('text', e.target.value)}
+                    onChange={(e) => updateQuestionText(e.target.value)}
                     // Holding Enter auto-repeats; submit once per key press.
                     onKeyDown={(e) => { if (e.key === 'Enter' && e.repeat) e.preventDefault(); }}
                     placeholder="Enter a new question or statement"
@@ -1935,18 +1947,34 @@ const DiscussionPage = () => {
                     <label className="block mb-2">Question Type:</label>
                     <select
                         value={questionType}
-                        onChange={(e) => updateQuestionDraft('type', e.target.value)}
+                        onPointerDown={() => setQuestionDraft(current => ({ ...current, typeChosen: true }))}
+                        onKeyDown={(event) => {
+                            // Confirming this picker must not submit the question
+                            // if the native menu has already consumed its close.
+                            if (event.key === 'Enter') event.preventDefault();
+                            if (['Enter', ' ', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) {
+                                setQuestionDraft(current => ({ ...current, typeChosen: true }));
+                            }
+                        }}
+                        onChange={(e) => chooseQuestionSetting('type', e.target.value)}
                         className="w-full p-3 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary"
                     >
                         {Object.values(QuestionTypes).map(type => (
                             <option key={type} value={type}>{type}</option>
                         ))}
                     </select>
+                    {/* A status, so screen readers hear the type change while
+                        the author is still in the text box. */}
+                    {typeGuessed && (
+                        <p role="status" className="mt-2 text-sm text-primary">
+                            Set to {questionType} based on your wording. Pick another type if that is not what you meant.
+                        </p>
+                    )}
                     {QuestionTypeDescriptions[questionType] && (
                         <p className="mt-2 text-sm text-gray-500">{QuestionTypeDescriptions[questionType]}</p>
                     )}
                 </div>
-                {questionType === QuestionTypes.OPEN_ENDED && <ResponseSettings maxResponses={questionDraft.maxResponses} showAttribution={questionDraft.showAttribution} onChange={updateQuestionDraft} />}
+                {questionType === QuestionTypes.OPEN_ENDED && <ResponseSettings maxResponses={questionDraft.maxResponses} showAttribution={questionDraft.showAttribution} onChange={chooseQuestionSetting} />}
                 {questionType === QuestionTypes.MULTIPLE_CHOICE && (
                     <ChoiceOptionsEditor
                         options={choiceOptions}
@@ -1960,7 +1988,7 @@ const DiscussionPage = () => {
                             <input
                                 type="number"
                                 value={minValue}
-                                onChange={(e) => updateQuestionDraft('minValue', parseInt(e.target.value))}
+                                onChange={(e) => chooseQuestionSetting('minValue', parseInt(e.target.value))}
                                 className="w-full p-3 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary"
                             />
                         </div>
@@ -1969,7 +1997,7 @@ const DiscussionPage = () => {
                             <input
                                 type="number"
                                 value={maxValue}
-                                onChange={(e) => updateQuestionDraft('maxValue', parseInt(e.target.value))}
+                                onChange={(e) => chooseQuestionSetting('maxValue', parseInt(e.target.value))}
                                 className="w-full p-3 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary"
                             />
                         </div>

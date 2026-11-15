@@ -2,6 +2,7 @@ import PropTypes from 'prop-types';
 import React, { useState, useRef } from 'react';
 import { AgreementMiniBar } from './OpinionResults';
 import { AGREEMENT_SCALE, AGREEMENT_SHORT, EPISTEMIC_REACTIONS } from './config';
+import { createRequestId } from '../request-id.mjs';
 
 // A single response, with optional two-axis rating (quality up/down +
 // agreement scale), epistemic reactions, and a comment thread — each shown only
@@ -248,7 +249,7 @@ const OpenEndedQuestion = ({
             return;
         }
         const submitted = idea.trim();
-        handleVote(question.id, { text: submitted, requestId: crypto.randomUUID() }, result => {
+        handleVote(question.id, { text: submitted, requestId: createRequestId() }, result => {
             if (result?.ok) setIdea(current => current.trim() === submitted ? '' : current);
         });
     };

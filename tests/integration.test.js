@@ -1764,6 +1764,36 @@ test('rapid show and hide leave every screen matching the stored reveal state', 
   }
 });
 
+test('cleanup waits for a pending vote before deleting its rows', async () => {
+  const created = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('cleanup-vote-order') });
+  const question = (await pool.query("INSERT INTO questions (discussion_id, text, type) VALUES ($1, 'Pending vote', 'Agreement') RETURNING id", [created.body.id])).rows[0];
+  const vote = (await pool.query("INSERT INTO votes (question_id, user_id, value) VALUES ($1, 'pending-voter', 'Agree') RETURNING id", [question.id])).rows[0];
+  const writer = await pool.connect();
+  try {
+    await writer.query('BEGIN');
+    await writer.query('SELECT id FROM questions WHERE id = $1 FOR SHARE', [question.id]);
+    // Start cleanup while a writer already holds the production parent lock.
+    // Child-first cleanup takes the vote row then blocks on that parent,
+    // forming a cycle when the writer updates the vote below.
+    const cleaned = cleanupDiscussions(pool).then(() => ({ ok: true }), error => ({ ok: false, code: error.code }));
+    await waitForQuestionLockWait();
+    let written;
+    try {
+      await writer.query("UPDATE votes SET value = 'Disagree' WHERE id = $1", [vote.id]);
+      await writer.query('COMMIT');
+      written = { ok: true };
+    } catch (error) {
+      await writer.query('ROLLBACK');
+      written = { ok: false, code: error.code };
+    }
+    assert.deepEqual([written, await cleaned], [{ ok: true }, { ok: true }]);
+    assert.equal((await pool.query('SELECT count(*)::int AS n FROM discussions')).rows[0].n, 0);
+  } finally {
+    await writer.query('ROLLBACK');
+    writer.release();
+  }
+});
+
 test('a vote is acknowledged promptly while other votes keep arriving', async () => {
   const seed = await seedResultsDiscussion('busy-room');
   const { socket: busy } = await joinAs(seed.slug, 'busy-voter');
@@ -4459,6 +4489,30 @@ test('legacy scalar answers update single-response questions but keep unlimited 
   await store.addVote(questions[1].id, 'First idea', 'author', 'Author');
   await store.addVote(questions[1].id, 'Second idea', 'author', 'Author');
   assert.equal((await pool.query('SELECT count(*)::int AS n FROM votes WHERE question_id = $1', [questions[1].id])).rows[0].n, 2);
+});
+
+test('a legacy upvote waiting for a moderator lock changes neither feedback store', async () => {
+  const created = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('legacy-lock-race') });
+  const q = (await pool.query("INSERT INTO questions (discussion_id, text, type) VALUES ($1, 'Locked feedback', 'Open Ended') RETURNING id", [created.body.id])).rows[0];
+  const vote = (await pool.query("INSERT INTO votes (question_id, user_id, value) VALUES ($1, 'author', 'Keep locked') RETURNING id", [q.id])).rows[0];
+  const { socket } = await joinAs(created.body.slug, 'legacy-voter');
+  const blocker = await pool.connect();
+  try {
+    await blocker.query('BEGIN');
+    await blocker.query('UPDATE discussions SET locked = TRUE WHERE id = $1', [created.body.id]);
+    const update = waitForQuestions(socket, qs => qs.find(question => question.id === q.id)?.votes[0]?.upvotes === 0, 'toggle after lock commits');
+    socket.emit('toggleResponseVote', created.body.slug, vote.id, 'legacy-voter');
+    await waitForQuestionLockWait();
+    await blocker.query('COMMIT');
+    await update;
+    for (const table of ['response_votes', 'response_ratings']) {
+      assert.equal((await pool.query(`SELECT count(*)::int AS n FROM ${table} WHERE response_id = $1`, [vote.id])).rows[0].n, 0);
+    }
+  } finally {
+    await blocker.query('ROLLBACK');
+    blocker.release();
+    socket.disconnect();
+  }
 });
 
 test('legacy upvote toggles and new quality ratings stay synchronized after migration', async () => {

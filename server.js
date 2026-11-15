@@ -2637,38 +2637,27 @@ async function assignPseudonym(slug, userId, preferred, { regenerate = false } =
 // Toggle a user's upvote on an open-ended response. Adds the upvote if absent,
 // removes it if already present.
 async function toggleResponseVote(topic, responseId, userId) {
-  // Confirm the response belongs to the room's discussion before mutating it.
-  // Without the topic join a client in one room could toggle a vote on a
-  // response id that lives in another discussion. Also fetch the owner so we
-  // can reject self-upvotes below.
   const slug = slugifyTopic(topic);
-  const ownerResult = await pool.query(
-    `SELECT v.user_id
-     FROM votes v
-     JOIN questions q ON v.question_id = q.id
-     JOIN discussions d ON q.discussion_id = d.id
-     WHERE v.id = $1 AND d.slug = $2 AND NOT d.locked`,
-    [responseId, slug]
-  );
-  if (ownerResult.rows.length === 0) {
-    return;
-  }
-  // Reject self-upvotes: the UI disables the button for your own response, but
-  // the event can still be emitted from the console, so enforce it server-side.
-  if (ownerResult.rows[0].user_id === userId) {
-    console.log('Ignoring self-upvote on response', responseId);
-    return;
-  }
-  // Serialize concurrent toggles from the same user (double-click, two tabs) on
-  // this response. A plain transaction is not enough under Read Committed: when
-  // no row exists yet, both toggles' DELETEs see 0 rows, both INSERT, and
-  // ON CONFLICT silently drops one — leaving the vote ON after two toggles that
-  // should cancel out. A transaction-scoped advisory lock keyed on
-  // (response, user) forces the second toggle to wait for the first to commit,
-  // then re-read the now-current state and flip it correctly.
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
+  return withTransaction(async client => {
+    // Hold the discussion row while checking the lock and writing feedback,
+    // so a toggle waiting for a moderator lock sees the committed lock.
+    const ownerResult = await client.query(
+      `SELECT v.user_id
+       FROM votes v
+       JOIN questions q ON v.question_id = q.id
+       JOIN discussions d ON q.discussion_id = d.id
+       WHERE v.id = $1 AND d.slug = $2 AND NOT d.locked FOR SHARE OF d`,
+      [responseId, slug]
+    );
+    if (ownerResult.rows.length === 0) {
+      return;
+    }
+    // Reject self-upvotes: the UI disables the button for your own response, but
+    // the event can still be emitted from the console, so enforce it server-side.
+    if (ownerResult.rows[0].user_id === userId) {
+      console.log('Ignoring self-upvote on response', responseId);
+      return;
+    }
     await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`response_vote:${responseId}:${userId}`]);
     const deleteResult = await client.query(
       'DELETE FROM response_votes WHERE response_id = $1 AND user_id = $2',
@@ -2687,13 +2676,7 @@ async function toggleResponseVote(topic, responseId, userId) {
        ON CONFLICT (response_id, user_id) DO UPDATE SET quality = EXCLUDED.quality`,
       [responseId, userId, deleteResult.rowCount === 0 ? 1 : null]
     );
-    await client.query('COMMIT');
-  } catch (e) {
-    await client.query('ROLLBACK');
-    throw e;
-  } finally {
-    client.release();
-  }
+  });
 }
 
 // Look up a brainstorm response within a topic and return its owner plus the

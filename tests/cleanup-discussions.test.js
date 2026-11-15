@@ -27,7 +27,7 @@ test('cleanup removes dependent roots atomically without locks that block plain 
   await cleanupDiscussions(db.pool);
   assert.equal(db.statements[0], 'BEGIN');
   assert.equal(db.statements.at(-1), 'COMMIT');
-  const deletes = db.statements.slice(1, -1);
+  const deletes = db.statements.filter(sql => sql.startsWith('DELETE '));
   // votes -> questions -> discussions have non-cascading foreign keys. Their
   // dependent interaction and moderator rows use ON DELETE CASCADE.
   assert.deepEqual(deletes, ['DELETE FROM votes', 'DELETE FROM questions', 'DELETE FROM discussions']);
