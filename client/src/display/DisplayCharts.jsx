@@ -139,19 +139,29 @@ export const NumericalChart = ({ question, minValue, maxValue, focus }) => {
         const clamped = Math.min(Math.max(n, minValue), maxValue);
         bins[Math.min(binCount - 1, Math.floor(((clamped - minValue) / range) * binCount))] += 1;
     });
-    // The axis labels bin edges: where each bin starts, then the maximum. With
-    // many bins and little room, every other edge is enough.
-    const edges = [...bins.map((_, i) => minValue + Math.ceil((i * range) / binCount)), maxValue];
-    const edgeStep = !focus && binCount > 6 ? 2 : 1;
-    const axisEdges = edges
-        .map((value, i) => ({ value, at: (i / binCount) * 100 }))
-        .filter((_, i) => i % edgeStep === 0 || i === binCount);
+    // A short whole-number range (1-5, 0-10) gets one bin per value: each bar is
+    // labelled with its value, centered under it. A longer range is labelled at
+    // the bin edges, where each bin starts and then the maximum. With many labels
+    // and little room, every other one is enough.
+    const oneValuePerBin = binCount === range + 1;
+    const labelStep = !focus && binCount > 6 ? 2 : 1;
+    const axisLabels = oneValuePerBin
+        ? bins
+            .map((_, i) => ({ value: minValue + i, at: ((i + 0.5) / binCount) * 100, align: 'center' }))
+            .filter((_, i) => i % labelStep === 0 || i === binCount - 1)
+        : [...bins.map((_, i) => minValue + Math.ceil((i * range) / binCount)), maxValue]
+            .map((value, i) => ({ value, at: (i / binCount) * 100, align: i === 0 ? 'start' : i === binCount ? 'end' : 'center' }))
+            .filter((_, i) => i % labelStep === 0 || i === binCount);
     const tallest = Math.max(...bins);
     const sorted = [...values].sort((a, b) => a - b);
     const mid = Math.floor(total / 2);
     const median = total % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
     const average = values.reduce((sum, n) => sum + n, 0) / total;
-    const averageAt = ((Math.min(Math.max(average, minValue), maxValue) - minValue) / range) * 100;
+    // On the same scale as the axis: one-value bars are centered on their value.
+    const clampedAverage = Math.min(Math.max(average, minValue), maxValue) - minValue;
+    const averageAt = oneValuePerBin
+        ? ((clampedAverage + 0.5) / binCount) * 100
+        : (clampedAverage / range) * 100;
 
     return (
         <div>
@@ -189,8 +199,8 @@ export const NumericalChart = ({ question, minValue, maxValue, focus }) => {
                     aria-hidden="true"
                 />
                 <div className={`${s.axis} relative mt-2 h-[1.5em] tabular-nums text-gray-600`} data-testid="display-histogram-axis">
-                    {axisEdges.map(({ value, at }, i) => {
-                        const shift = i === 0 ? '' : i === axisEdges.length - 1 ? '-translate-x-full' : '-translate-x-1/2';
+                    {axisLabels.map(({ value, at, align }) => {
+                        const shift = { start: '', center: '-translate-x-1/2', end: '-translate-x-full' }[align];
                         return (
                             <span key={at} className={`absolute top-0 ${shift}`} style={{ left: `${at}%` }}>{value}</span>
                         );

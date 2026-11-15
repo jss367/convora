@@ -166,6 +166,26 @@ test('the room display preserves a numerical range ending at zero', async ({ pag
   await expect(bars.last()).toHaveAttribute('aria-label', '1 response');
 });
 
+test('the room display labels each value once on a short numerical scale', async ({ page, rooms }) => {
+  const room = await rooms.create('Short scale display', 'Numerical');
+  await rooms.pool.query("UPDATE discussions SET results_visibility = 'always' WHERE id = $1", [room.id]);
+  await rooms.pool.query('UPDATE questions SET min_value = 1, max_value = 5 WHERE discussion_id = $1', [room.id]);
+  await rooms.pool.query(
+    `INSERT INTO votes (question_id, value, user_id)
+     SELECT id, v.value, v.user_id FROM questions,
+       (VALUES ('1', 'seed-a'), ('5', 'seed-b')) AS v(value, user_id)
+     WHERE discussion_id = $1`, [room.id]
+  );
+  await page.goto(`/discussion/${room.slug}/display`);
+  const question = page.getByTestId('display-question');
+  // One bar per value, each labelled once: no second "5" for the maximum.
+  await expect(question.getByTestId('display-histogram-axis').locator('span')).toHaveText(['1', '2', '3', '4', '5']);
+  const bars = question.getByTestId('display-histogram-bin');
+  await expect(bars).toHaveCount(5);
+  await expect(bars.first()).toHaveAttribute('aria-label', '1 response');
+  await expect(bars.last()).toHaveAttribute('aria-label', '1 response');
+});
+
 // A fake Screen Wake Lock API that counts the locks held, and releases them
 // when the tab is hidden as browsers do. With deferred, requests stay pending
 // until the test calls window.__wakeLock.grant() or window.__wakeLock.deny().
