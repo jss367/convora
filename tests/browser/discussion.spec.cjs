@@ -4,11 +4,14 @@ test('participants can add responses when secure-context randomUUID is unavailab
   const room = await rooms.create('Insecure-context response');
   await page.addInitScript(() => Object.defineProperty(crypto, 'randomUUID', { value: undefined }));
   await page.goto(`/discussion/${room.slug}`);
-  await page.getByPlaceholder('Enter a response').fill('A response without randomUUID');
+  const draft = page.getByPlaceholder('Enter a response');
+  await draft.fill('A response without randomUUID');
   await page.getByRole('button', { name: 'Add Response', exact: true }).click();
-  await expect(page.getByText('A response without randomUUID', { exact: true })).toBeVisible();
+  const response = page.getByRole('listitem').getByText('A response without randomUUID', { exact: true });
+  await expect(response).toBeVisible();
+  await expect(draft).toHaveValue('');
   await page.reload();
-  await expect(page.getByText('A response without randomUUID', { exact: true })).toBeVisible();
+  await expect(response).toBeVisible();
 });
 
 test('a moderator can remove their own response while voting is locked', async ({ page, rooms }) => {
