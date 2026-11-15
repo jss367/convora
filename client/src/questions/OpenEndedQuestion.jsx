@@ -1,115 +1,339 @@
-import React, { useEffect, useRef, useState } from 'react';
 import PropTypes from 'prop-types';
+import React, { useState, useRef } from 'react';
+import { AgreementMiniBar } from './OpinionResults';
+import { AGREEMENT_SCALE, AGREEMENT_SHORT, EPISTEMIC_REACTIONS } from './config';
+import { createRequestId } from '../request-id.mjs';
 
-const OpenEndedQuestion = ({ question, userVote, handleVote, pending, ownedVoteIds, upvotedVoteIds, handleResponseVote, locked, isAdmin, onModeratorDeleteVote }) => {
-    const savedResponse = userVote?.value ?? '';
-    const [response, setResponse] = useState(savedResponse);
-    const previousSaved = useRef({ questionId: question.id, value: savedResponse });
-    const submitted = useRef(null);
+// A single response, with optional two-axis rating (quality up/down +
+// agreement scale), epistemic reactions, and a comment thread — each shown only
+// when the moderator has enabled/revealed it. Rating and reaction counts are
+// aggregates; only this user's own selections (myRating/myReactions) are known
+// to the client, so nothing reveals who voted which way.
+const WrittenResponse = ({
+    vote, isOwn, isAdmin, showAttribution, showLegacyUpvotes, onEdit, pending, ownedCommentIds, reactionsActive, activeReactionKeys, commentsEnabled, locked,
+    myRating, myReactions, onDeleteVote, onModeratorDelete, onSetRating, onToggleReaction,
+    onAddComment, onDeleteComment, onModeratorDeleteComment,
+}) => {
+    const [editing, setEditing] = useState(false);
+    const [draft, setDraft] = useState(vote.value);
+    const draftRef = useRef(draft);
+    draftRef.current = draft;
+    const [comment, setComment] = useState('');
+    const [commentPending, setCommentPending] = useState(false);
+    const commentPendingRef = useRef(false);
+    const net = (vote.qualityUp || 0) - (vote.qualityDown || 0);
+    const comments = vote.comments || [];
+    // You can't rate/react to your own response (the server rejects it too), so
+    // disable those controls on own ideas — but commenting on your own response is
+    // fine. Counts/histogram stay visible read-only either way.
+    const ratingDisabled = locked || isOwn;
 
-    // Socket broadcasts recreate vote objects even when this answer is unchanged.
-    // A delayed save can also arrive after the participant has started a newer
-    // edit. Adopt remote changes only while clean or acknowledging that exact draft.
-    // Observe fresh vote objects too: an unchanged save still needs to clear
-    // pending state even though its saved text did not change.
-    useEffect(() => {
-        const previous = previousSaved.current;
-        const pending = submitted.current;
-        setResponse(current => {
-            const canAdopt = pending
-                ? pending.value === savedResponse && current === pending.draft
-                : current === previous.value;
-            if (previous.questionId !== question.id || canAdopt) {
-                return savedResponse;
-            }
-            return current;
+    const submitComment = () => {
+        const trimmed = comment.trim();
+        if (trimmed === '' || commentPendingRef.current) return;
+        commentPendingRef.current = true;
+        setCommentPending(true);
+        onAddComment(vote.id, trimmed, (added) => {
+            if (added) setComment(current => current === comment ? '' : current);
+            commentPendingRef.current = false;
+            setCommentPending(false);
         });
-        if (previous.questionId !== question.id || pending?.value === savedResponse) {
-            submitted.current = null;
-        }
-        previousSaved.current = { questionId: question.id, value: savedResponse };
-    }, [question.id, savedResponse, userVote]);
+    };
 
-    // Most-upvoted responses first; ties keep submission order (vote id).
-    const sortedResponses = [...(question.votes || [])].sort(
-        (a, b) => (b.upvotes || 0) - (a.upvotes || 0) || a.id - b.id
+    return (
+        <li className="bg-gray-50 rounded-md p-3">
+            <div className="flex items-start gap-3">
+                {reactionsActive && (
+                    <div className="flex flex-col items-center shrink-0 select-none">
+                        <button
+                            type="button"
+                            onClick={() => onSetRating(vote.id, 'quality', 1)}
+                            disabled={ratingDisabled}
+                            title="Worth considering"
+                            className={`leading-none text-lg ${myRating.quality === 1 ? 'text-primary' : 'text-gray-400 hover:text-gray-600'} ${ratingDisabled ? 'opacity-50 cursor-not-allowed' : ''}`}
+                        >▲</button>
+                        <span className="text-xs font-semibold text-gray-700">{net > 0 ? `+${net}` : net}</span>
+                        <button
+                            type="button"
+                            onClick={() => onSetRating(vote.id, 'quality', -1)}
+                            disabled={ratingDisabled}
+                            title="Not worth considering"
+                            className={`leading-none text-lg ${myRating.quality === -1 ? 'text-red-500' : 'text-gray-400 hover:text-gray-600'} ${ratingDisabled ? 'opacity-50 cursor-not-allowed' : ''}`}
+                        >▼</button>
+                    </div>
+                )}
+                <div className="flex-1 min-w-0">
+                    <div className="flex items-start justify-between gap-2">
+                        <span className="text-gray-800 whitespace-pre-wrap">
+                            {showAttribution && <span className="block text-xs text-gray-500">{vote.pseudonym || 'Anonymous'}</span>}
+                            {editing ? <span className="block">
+                                <textarea aria-label="Edit response" value={draft} onChange={e => setDraft(e.target.value)} className="w-full border rounded p-2" />
+                                <button disabled={pending || !draft.trim()} onClick={() => onEdit(draft, result => { if (result?.ok && draftRef.current === draft) setEditing(false); })} className="mr-3 text-primary">Save response</button>
+                                <button onClick={() => setEditing(false)}>Cancel</button>
+                            </span> : <span>{vote.value}</span>}
+                            {isOwn && <span className="text-xs text-gray-500"> (You)</span>}
+                        </span>
+                        {isOwn && !locked && !editing && <button className="text-sm text-primary" onClick={() => { setDraft(vote.value); setEditing(true); }}>Edit</button>}
+                        {(isOwn || isAdmin) && (
+                            <button
+                                disabled={locked && !isAdmin}
+                                onClick={isAdmin ? onModeratorDelete : onDeleteVote}
+                                title={isOwn ? undefined : 'Remove this response (moderator)'}
+                                className="ml-2 text-sm text-red-500 hover:text-red-700 shrink-0"
+                            >
+                                {isOwn ? 'Delete' : 'Remove'}
+                            </button>
+                        )}
+                    </div>
+
+                    {showLegacyUpvotes && vote.upvotes > 0 && (
+                        <span className="text-sm text-gray-600" aria-label={`${vote.upvotes} legacy upvote${vote.upvotes === 1 ? '' : 's'}`}>▲ {vote.upvotes}</span>
+                    )}
+                    {reactionsActive && (
+                        <div className="mt-2">
+                            <div className="flex flex-wrap gap-1">
+                                {AGREEMENT_SCALE.map(seg => (
+                                    <button
+                                        key={seg.key}
+                                        type="button"
+                                        onClick={() => onSetRating(vote.id, 'agreement', seg.key)}
+                                        disabled={ratingDisabled}
+                                        aria-label={`${seg.label}: "${vote.value}"`}
+                                        aria-pressed={myRating.agreement === seg.key}
+                                        className={`group relative px-2 py-0.5 text-xs rounded border ${myRating.agreement === seg.key
+                                            ? 'bg-primary text-white border-primary'
+                                            : 'bg-white text-gray-600 border-gray-300 hover:border-primary'} ${ratingDisabled ? 'opacity-50 cursor-not-allowed' : ''}`}
+                                    >
+                                        {AGREEMENT_SHORT[seg.key]}
+                                        {/* Full label on hover and keyboard focus; a title
+                                            alone never shows for keyboard users. */}
+                                        <span
+                                            aria-hidden="true"
+                                            className="pointer-events-none absolute bottom-full left-1/2 z-10 mb-1 hidden -translate-x-1/2 whitespace-nowrap rounded bg-gray-800 px-2 py-0.5 text-xs font-normal text-white group-hover:block group-focus-visible:block"
+                                        >
+                                            {seg.label}
+                                        </span>
+                                    </button>
+                                ))}
+                            </div>
+                            <AgreementMiniBar counts={vote.agreementCounts || {}} />
+                        </div>
+                    )}
+
+                    {reactionsActive && (
+                        <div className="flex flex-wrap gap-1 mt-2">
+                            {EPISTEMIC_REACTIONS.filter(r => activeReactionKeys.includes(r.key)).map(r => {
+                                const count = (vote.reactionCounts || {})[r.key] || 0;
+                                const active = myReactions.includes(r.key);
+                                return (
+                                    <button
+                                        key={r.key}
+                                        type="button"
+                                        onClick={() => onToggleReaction(vote.id, r.key)}
+                                        disabled={ratingDisabled}
+                                        title={r.label}
+                                        className={`px-2 py-0.5 text-xs rounded-full border ${active
+                                            ? 'bg-indigo-100 border-indigo-400 text-indigo-800'
+                                            : 'bg-white border-gray-300 text-gray-600 hover:border-indigo-300'} ${ratingDisabled ? 'opacity-50 cursor-not-allowed' : ''}`}
+                                    >
+                                        <span className="mr-1">{r.emoji}</span>{r.label}
+                                        {count > 0 && <span className="ml-1 font-semibold">{count}</span>}
+                                    </button>
+                                );
+                            })}
+                        </div>
+                    )}
+
+                    {commentsEnabled && (
+                        <div className="mt-3 border-t border-gray-200 pt-2">
+                            {comments.length > 0 && (
+                                <ul className="space-y-1 mb-2">
+                                    {comments.map(c => (
+                                        <li key={c.id} className="text-sm flex items-start justify-between gap-2">
+                                            <span>
+                                                <span className="font-semibold text-gray-600">{c.pseudonym || 'Anonymous'}:</span>{' '}
+                                                <span className="text-gray-800 whitespace-pre-wrap">{c.body}</span>
+                                            </span>
+                                            {(ownedCommentIds.has(c.id) || isAdmin) && (
+                                                <button
+                                                    onClick={() => (ownedCommentIds.has(c.id) ? onDeleteComment(c.id) : onModeratorDeleteComment(c.id))}
+                                                    title={ownedCommentIds.has(c.id) ? undefined : 'Remove this comment (moderator)'}
+                                                    className="text-xs text-red-500 hover:text-red-700 shrink-0"
+                                                >
+                                                    {ownedCommentIds.has(c.id) ? 'Delete' : 'Remove'}
+                                                </button>
+                                            )}
+                                        </li>
+                                    ))}
+                                </ul>
+                            )}
+                            {!locked && (
+                                <div className="flex gap-2">
+                                    <input
+                                        type="text"
+                                        value={comment}
+                                        onChange={(e) => setComment(e.target.value)}
+                                        onKeyDown={(e) => { if (e.key === 'Enter') submitComment(); }}
+                                        placeholder="Add a comment"
+                                        className="flex-1 min-w-0 p-1.5 border rounded text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                                    />
+                                    <button
+                                        onClick={submitComment}
+                                        disabled={commentPending || comment.trim() === ''}
+                                        aria-busy={commentPending}
+                                        className="shrink-0 px-3 py-1 text-sm bg-primary text-white rounded hover:bg-opacity-90 disabled:opacity-50"
+                                    >
+                                        Post
+                                    </button>
+                                </div>
+                            )}
+                        </div>
+                    )}
+                </div>
+            </div>
+        </li>
     );
+};
+
+WrittenResponse.propTypes = {
+    vote: PropTypes.shape({
+        id: PropTypes.oneOfType([PropTypes.string, PropTypes.number]).isRequired,
+        value: PropTypes.string.isRequired,
+        pseudonym: PropTypes.string,
+        ownerToken: PropTypes.string,
+        qualityUp: PropTypes.number,
+        qualityDown: PropTypes.number,
+        upvotes: PropTypes.number,
+        agreementCounts: PropTypes.object,
+        reactionCounts: PropTypes.object,
+        comments: PropTypes.array,
+    }).isRequired,
+    isOwn: PropTypes.bool,
+    showAttribution: PropTypes.bool,
+    showLegacyUpvotes: PropTypes.bool,
+    onEdit: PropTypes.func,
+    pending: PropTypes.bool,
+    isAdmin: PropTypes.bool,
+    ownedCommentIds: PropTypes.instanceOf(Set).isRequired,
+    reactionsActive: PropTypes.bool,
+    commentsEnabled: PropTypes.bool,
+    activeReactionKeys: PropTypes.array.isRequired,
+    locked: PropTypes.bool,
+    myRating: PropTypes.object,
+    myReactions: PropTypes.array,
+    onDeleteVote: PropTypes.func.isRequired,
+    onModeratorDelete: PropTypes.func,
+    onSetRating: PropTypes.func.isRequired,
+    onToggleReaction: PropTypes.func.isRequired,
+    onAddComment: PropTypes.func.isRequired,
+    onDeleteComment: PropTypes.func.isRequired,
+    onModeratorDeleteComment: PropTypes.func,
+};
+
+// Participants can add any number of separate ideas and delete their own. The
+// moderator can layer reactions (two-axis ratings + epistemic reactions) and
+// comments on top, revealing them when the room shifts from generating ideas to
+// evaluating them.
+const OpenEndedQuestion = ({
+    question, ownedVoteIds, ownedCommentIds, handleVote, pending, handleDeleteVote, locked, isAdmin, myBrainstorm,
+    activeReactionKeys, onSetRating, onToggleReaction, onAddComment, onDeleteComment,
+    onModeratorDeleteVote, onModeratorDeleteComment,
+}) => {
+    const [idea, setIdea] = useState('');
+    const creation = useRef(null);
+
+    const votes = question.votes || [];
+    const ownCount = votes.filter(v => ownedVoteIds.has(v.id)).length;
+    const atLimit = question.maxResponses != null && ownCount >= question.maxResponses;
+    // Whether reactions/comments are available is set discussion-wide by the
+    // moderator (see the moderator bar in DiscussionPage); each question carries
+    // the resolved flags via getQuestions.
+    const reactionsEnabled = question.reactionsEnabled;
+    const reactionsVisible = question.reactionsVisible;
+    const commentsEnabled = question.commentsEnabled;
+    const reactionsActive = reactionsEnabled && reactionsVisible;
+
+    const submitIdea = () => {
+        if (idea.trim() === '' || pending) {
+            return;
+        }
+        const submitted = idea.trim();
+        if (creation.current?.text !== submitted) {
+            creation.current = { text: submitted, id: createRequestId() };
+        }
+        const request = creation.current;
+        handleVote(question.id, { text: submitted, requestId: request.id }, result => {
+            if (result?.ok && creation.current === request) {
+                creation.current = null;
+                setIdea(current => current.trim() === submitted ? '' : current);
+            }
+        });
+    };
 
     return (
         <div>
-            {!locked && (
+            {!locked && !atLimit && (
                 <>
                     <textarea
-                        value={response}
-                        onChange={(e) => setResponse(e.target.value)}
+                        value={idea}
+                        onChange={(e) => setIdea(e.target.value)}
                         className="w-full p-2 border rounded mb-2"
-                        rows="4"
-                        placeholder="Enter your response here"
+                        rows="3"
+                        placeholder="Enter a response"
                     />
                     <button
-                        onClick={() => {
-                            const trimmed = response.trim();
-                            if (trimmed === '' || pending) {
-                                return;
-                            }
-                            submitted.current = { draft: response, value: trimmed };
-                            handleVote(question.id, trimmed);
-                        }}
-                        disabled={response.trim() === '' || pending}
+                        onClick={submitIdea}
+                        disabled={idea.trim() === '' || pending}
                         className="px-4 py-2 bg-primary text-white rounded hover:bg-opacity-90 transition duration-300 mb-4 disabled:opacity-50"
                     >
-                        {pending ? 'Saving…' : userVote ? 'Update Response' : 'Submit Response'}
+                        {pending ? 'Saving…' : 'Add Response'}
                     </button>
+
                 </>
             )}
 
-            {question.votes && question.votes.length > 0 && (
+            {atLimit && <p className="text-sm text-gray-500 mb-3">You have reached the limit of {question.maxResponses} responses. You can edit or delete your existing responses.</p>}
+            {reactionsEnabled && !reactionsVisible && (
+                <p className="text-sm text-gray-500 mb-2">
+                    Reactions are hidden for now — the moderator will open them up for the discussion.
+                </p>
+            )}
+
+            {votes.length > 0 && (
                 <div className="mt-4">
-                    <h3 className="font-semibold mb-2">All Responses:</h3>
+                    <h3 className="font-semibold mb-2">All Responses ({votes.length}):</h3>
                     <ul className="space-y-2">
-                        {sortedResponses.map((vote) => {
-                            // Ownership is matched via the per-response token
-                            // (the server no longer sends raw user ids); the
-                            // parent precomputes the set of ids we own/upvoted.
-                            const isOwnResponse = ownedVoteIds.has(vote.id);
-                            const isYou = isOwnResponse;
-                            const upvotes = vote.upvotes || 0;
-                            const hasUpvoted = upvotedVoteIds.has(vote.id);
-                            return (
-                                <li key={vote.id} className="bg-gray-50 rounded-md p-3 flex items-start gap-3">
-                                    <button
-                                        onClick={() => handleResponseVote(vote.id)}
-                                        disabled={isOwnResponse || locked}
-                                        title={isOwnResponse ? "You can't upvote your own response" : 'Upvote'}
-                                        className={`flex flex-col items-center justify-center px-2 py-1 rounded-md border transition duration-200 ${hasUpvoted
-                                            ? 'bg-primary text-white border-primary'
-                                            : 'bg-white text-gray-600 border-gray-300 hover:border-primary'
-                                            } ${(isOwnResponse || locked) ? 'opacity-40 cursor-not-allowed' : ''}`}
-                                    >
-                                        <span className="leading-none">▲</span>
-                                        <span className="text-xs font-semibold">{upvotes}</span>
-                                    </button>
-                                    <div className="flex-1">
-                                        <div className="flex items-start justify-between gap-2">
-                                            <div className="text-xs font-semibold text-gray-500 mb-1">
-                                                {vote.pseudonym || 'Anonymous'}
-                                                {isYou && ' (you)'}
-                                            </div>
-                                            {isAdmin && (
-                                                <button
-                                                    onClick={() => onModeratorDeleteVote(question.id, vote.id)}
-                                                    title="Remove this response (moderator)"
-                                                    className="text-xs text-red-500 hover:text-red-700 shrink-0"
-                                                >
-                                                    Remove
-                                                </button>
-                                            )}
-                                        </div>
-                                        <div className="text-gray-800 whitespace-pre-wrap">{vote.value}</div>
-                                    </div>
-                                </li>
-                            );
-                        })}
+                        {votes.map((vote) => (
+                            <WrittenResponse
+                                key={vote.id}
+                                vote={vote}
+                                // Ownership is matched via the per-response token
+                                // (the server no longer sends raw user ids); the
+                                // parent precomputes the sets of ids we own.
+                                isOwn={ownedVoteIds.has(vote.id)}
+                                showAttribution={question.showAttribution !== false}
+                                // Legacy upvotes were always visible. Preserve
+                                // those totals without revealing other feedback.
+                                showLegacyUpvotes={!reactionsEnabled}
+                                pending={pending}
+                                onEdit={(text, callback) => handleVote(question.id, { text, responseId: vote.id }, callback)}
+                                isAdmin={isAdmin}
+                                ownedCommentIds={ownedCommentIds}
+                                reactionsActive={reactionsActive}
+                                activeReactionKeys={activeReactionKeys}
+                                commentsEnabled={commentsEnabled}
+                                locked={locked}
+                                myRating={myBrainstorm.ratings[vote.id] || {}}
+                                myReactions={myBrainstorm.reactions[vote.id] || []}
+                                onDeleteVote={() => handleDeleteVote(question.id, vote.id)}
+                                onModeratorDelete={() => onModeratorDeleteVote(question.id, vote.id)}
+                                onSetRating={onSetRating}
+                                onToggleReaction={onToggleReaction}
+                                onAddComment={onAddComment}
+                                onDeleteComment={onDeleteComment}
+                                onModeratorDeleteComment={onModeratorDeleteComment}
+                            />
+                        ))}
                     </ul>
                 </div>
             )}
@@ -120,26 +344,35 @@ const OpenEndedQuestion = ({ question, userVote, handleVote, pending, ownedVoteI
 OpenEndedQuestion.propTypes = {
     question: PropTypes.shape({
         id: PropTypes.oneOfType([PropTypes.string, PropTypes.number]).isRequired,
+        maxResponses: PropTypes.number,
+        showAttribution: PropTypes.bool,
+        reactionsEnabled: PropTypes.bool,
+        reactionsVisible: PropTypes.bool,
+        commentsEnabled: PropTypes.bool,
         votes: PropTypes.arrayOf(PropTypes.shape({
+            id: PropTypes.oneOfType([PropTypes.string, PropTypes.number]).isRequired,
             ownerToken: PropTypes.string,
-            value: PropTypes.string.isRequired,
-            pseudonym: PropTypes.string,
-            upvotes: PropTypes.number,
-            upvoterTokens: PropTypes.array
+            value: PropTypes.string.isRequired
         }))
     }).isRequired,
-    userVote: PropTypes.shape({
-        ownerToken: PropTypes.string,
-        value: PropTypes.string
-    }),
+    ownedVoteIds: PropTypes.instanceOf(Set).isRequired,
+    ownedCommentIds: PropTypes.instanceOf(Set).isRequired,
     handleVote: PropTypes.func.isRequired,
     pending: PropTypes.bool,
-    ownedVoteIds: PropTypes.instanceOf(Set).isRequired,
-    upvotedVoteIds: PropTypes.instanceOf(Set).isRequired,
-    handleResponseVote: PropTypes.func.isRequired,
+    handleDeleteVote: PropTypes.func.isRequired,
     locked: PropTypes.bool,
     isAdmin: PropTypes.bool,
-    onModeratorDeleteVote: PropTypes.func
+    myBrainstorm: PropTypes.shape({
+        ratings: PropTypes.object,
+        reactions: PropTypes.object,
+    }).isRequired,
+    activeReactionKeys: PropTypes.array.isRequired,
+    onSetRating: PropTypes.func.isRequired,
+    onToggleReaction: PropTypes.func.isRequired,
+    onAddComment: PropTypes.func.isRequired,
+    onDeleteComment: PropTypes.func.isRequired,
+    onModeratorDeleteVote: PropTypes.func,
+    onModeratorDeleteComment: PropTypes.func,
 };
 
 export default OpenEndedQuestion;

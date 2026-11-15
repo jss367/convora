@@ -9,7 +9,6 @@ const AGREEMENT = 'Agreement';
 const YES_NO = 'Yes/No';
 const NUMERICAL = 'Numerical';
 const OPEN_ENDED = 'Open Ended';
-const BRAINSTORM = 'Brainstorm';
 
 const AUXILIARY = '(?:is|are|was|were|do|does|did|will|would|should|can|could|has|have)';
 const WH_WORD = '(?:why|how|what|which|who|whose|where|when)';
@@ -30,13 +29,13 @@ const RULES = [
     { type: NUMERICAL, pattern: /^rate (?:your|the|this|our|how)\b/ },
     { type: NUMERICAL, pattern: /\bon a scale\b|\bscale (?:of|from) \d/ },
 
-    { type: BRAINSTORM, pattern: /^what(?:'re| are) (?:some|a few|good|other|possible|potential)\b/ },
-    { type: BRAINSTORM, pattern: /^what (?:else )?(?:should|could|can|might) we\b/ },
-    { type: BRAINSTORM, pattern: /^how (?:can|could|might) we\b/ },
-    { type: BRAINSTORM, pattern: /^(?:what|which|any) (?:ideas|suggestions|ways|options|topics|features|questions|names|examples|alternatives)\b/ },
-    { type: BRAINSTORM, pattern: /^(?:ideas|suggestions|ways|options|names|topics|examples|alternatives) (?:for|to|on)\b/ },
-    { type: BRAINSTORM, pattern: /^(?:list|name|suggest) (?:some|a|an|one|two|three|the|your|any|\d+)\b/ },
-    { type: BRAINSTORM, pattern: /^brainstorm\b/ },
+    { type: OPEN_ENDED, pattern: /^what(?:'re| are) (?:some|a few|good|other|possible|potential)\b/ },
+    { type: OPEN_ENDED, pattern: /^what (?:else )?(?:should|could|can|might) we\b/ },
+    { type: OPEN_ENDED, pattern: /^how (?:can|could|might) we\b/ },
+    { type: OPEN_ENDED, pattern: /^(?:what|which|any) (?:ideas|suggestions|ways|options|topics|features|questions|names|examples|alternatives)\b/ },
+    { type: OPEN_ENDED, pattern: /^(?:ideas|suggestions|ways|options|names|topics|examples|alternatives) (?:for|to|on)\b/ },
+    { type: OPEN_ENDED, pattern: /^(?:list|name|suggest) (?:some|a|an|one|two|three|the|your|any|\d+)\b/ },
+    { type: OPEN_ENDED, pattern: /^brainstorm\b/ },
 
     // A question word only counts once the wording is clearly a question: either
     // a verb follows it ("what do ...") or the text ends in a question mark.

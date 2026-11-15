@@ -3,11 +3,6 @@ const { isValidVote } = require('./question-data');
 // Vote persistence is separate from transport handlers so every caller uses the
 // same transaction and concurrency rules. Pseudonyms are sanitized by callers.
 
-// SQL for the form in which two Brainstorm ideas count as the same idea:
-// whitespace runs collapsed to one space, ends trimmed, lowercased. Done in SQL
-// on both sides so the stored and submitted text are normalized identically.
-const NORMALIZED_IDEA = (expr) => `lower(btrim(regexp_replace(${expr}, '\\s+', ' ', 'g')))`;
-
 function createVoteStore(pool) {
   async function inTransaction(work) {
     const client = await pool.connect();
@@ -49,7 +44,7 @@ function createVoteStore(pool) {
       // an edit wait and then read the edited row. Either way the vote is
       // checked against the question as it will be when the vote is stored.
       const typeResult = await client.query(
-        'SELECT id, type, options, min_value, max_value FROM questions WHERE id = $1 FOR SHARE', [questionId]
+        'SELECT id, type, options, min_value, max_value, max_responses FROM questions WHERE id = $1 FOR SHARE', [questionId]
       );
       const question = typeResult.rows[0];
       if (!question) throw new Error('Question not found');
@@ -59,29 +54,32 @@ function createVoteStore(pool) {
       questionId = question.id;
       const questionType = question.type;
 
-      if (questionType === 'Brainstorm') {
-        // Each idea is an independent response, so one participant can add many.
-        // The same idea twice (from anyone) would split its ratings, so it is
-        // stored once: ideas match when equal ignoring case and whitespace.
-        // The check-then-insert is serialized per question, otherwise two
-        // simultaneous submissions would both see no match and both insert.
-        await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
-          `brainstorm_idea:${questionId}`,
-        ]);
-        const existing = await client.query(
-          `SELECT 1 FROM votes
-           WHERE question_id = $1
-             AND ${NORMALIZED_IDEA('value')} = ${NORMALIZED_IDEA('$2::text')}
-           LIMIT 1`,
-          [questionId, vote]
-        );
-        if (existing.rows.length > 0) {
-          return { added: false, reason: 'duplicate' };
+      if (['Open Ended', 'Brainstorm'].includes(questionType)) {
+        const payload = typeof vote === 'object' && vote !== null ? vote : { text: vote };
+        if (typeof payload.text !== 'string' || !payload.text.trim()) throw new Error('Response cannot be empty');
+        if (payload.requestId != null && (typeof payload.requestId !== 'string' || payload.requestId.length > 100)) throw new Error('Invalid request id');
+        await lockPollVote(client, questionId, userId);
+        // Pre-upgrade Open Ended clients send scalar edits. Their migrated
+        // one-response policy keeps that upsert contract; object payloads and
+        // unlimited former Brainstorm prompts still create separate responses.
+        if (typeof vote === 'string' && question.max_responses === 1) {
+          const existing = await client.query('SELECT id FROM votes WHERE question_id = $1 AND user_id = $2 ORDER BY id LIMIT 1', [questionId, userId]);
+          if (existing.rows.length) {
+            await client.query('UPDATE votes SET value = $1, pseudonym = $2 WHERE id = $3', [payload.text.trim(), pseudonym, existing.rows[0].id]);
+            return { added: false, updated: true };
+          }
         }
-        await client.query(
-          'INSERT INTO votes (question_id, user_id, value, pseudonym) VALUES ($1, $2, $3, $4)',
-          [questionId, userId, vote, pseudonym]
-        );
+        if (payload.responseId != null) {
+          const updated = await client.query('UPDATE votes SET value = $1 WHERE id = $2 AND question_id = $3 AND user_id = $4', [payload.text.trim(), payload.responseId, questionId, userId]);
+          return { added: false, updated: updated.rowCount > 0 };
+        }
+        if (payload.requestId) {
+          const previous = await client.query('SELECT id FROM votes WHERE question_id = $1 AND user_id = $2 AND request_id = $3', [questionId, userId, payload.requestId]);
+          if (previous.rows.length) return { added: false, repeated: true };
+        }
+        const count = await client.query('SELECT count(*)::int AS count FROM votes WHERE question_id = $1 AND user_id = $2', [questionId, userId]);
+        if (question.max_responses && count.rows[0].count >= question.max_responses) return { added: false, reason: 'limit' };
+        await client.query('INSERT INTO votes (question_id, user_id, value, pseudonym, request_id) VALUES ($1, $2, $3, $4, $5)', [questionId, userId, payload.text.trim(), pseudonym, payload.requestId || null]);
       } else {
         await lockPollVote(client, questionId, userId);
         const existing = await client.query(
@@ -121,10 +119,10 @@ function createVoteStore(pool) {
   // responses removed one at a time by id, never through this.
   function clearVote(questionId, userId) {
     return inTransaction(async client => {
-      const typeResult = await client.query('SELECT id, type FROM questions WHERE id = $1', [questionId]);
+      const typeResult = await client.query('SELECT id, type, max_responses FROM questions WHERE id = $1', [questionId]);
       const question = typeResult.rows[0];
       if (!question) throw new Error('Question not found');
-      if (question.type === 'Brainstorm') return;
+      if (['Open Ended', 'Brainstorm'].includes(question.type)) return;
       await lockPollVote(client, question.id, userId);
       await client.query('DELETE FROM votes WHERE question_id = $1 AND user_id = $2', [question.id, userId]);
     });

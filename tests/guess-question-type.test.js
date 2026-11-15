@@ -51,7 +51,7 @@ const CASES = {
     'Does it matter how much we spend?',
     'Is ',
   ],
-  Brainstorm: [
+  'Open Ended': [
     'What are some ways to improve onboarding?',
     'What are good names for the new product?',
     'What should we build next?',
@@ -66,8 +66,6 @@ const CASES = {
     'List some risks we have not discussed',
     'Name three things we should stop doing',
     'Brainstorm names for the mascot',
-  ],
-  'Open Ended': [
     'Why did the last launch slip?',
     'How do you feel about the reorg?',
     'How would you describe our culture?',

@@ -271,7 +271,7 @@ test('initialization upgrades legacy interaction flags once and preserves later 
     const discussionId = created.rows[0].id;
     await pool.query(
       `INSERT INTO questions (discussion_id, text, type, reactions_enabled, reactions_visible, comments_enabled)
-       VALUES ($1, 'Hidden ideas', 'Brainstorm', TRUE, FALSE, TRUE),
+       VALUES ($1, 'Hidden ideas', 'Open Ended', TRUE, FALSE, TRUE),
               ($1, 'Other prompt', 'Agreement', FALSE, TRUE, FALSE)`, [discussionId]
     );
     await pool.query(`ALTER TABLE discussions DROP COLUMN reactions_enabled,
@@ -311,7 +311,7 @@ test('opinion snapshots enforce moderator access and validate names and question
     assert.equal((await jsonRequest('POST', url, { name, adminToken })).status, 400);
   }
   assert.equal((await jsonRequest('POST', url, { name: 'Before', adminToken })).status, 400);
-  await pool.query("INSERT INTO questions (discussion_id, text, type) VALUES ($1, 'Ideas', 'Brainstorm')", [created.body.id]);
+  await pool.query("INSERT INTO questions (discussion_id, text, type) VALUES ($1, 'Ideas', 'Open Ended')", [created.body.id]);
   assert.equal((await jsonRequest('POST', url, { name: 'Before', adminToken })).status, 400);
   assert.equal((await jsonRequest('GET', '/api/discussions/nonexistent-snapshot-discussion/snapshots')).status, 404);
   assert.deepEqual((await jsonRequest('GET', `/api/discussions/${other.body.slug}/snapshots`)).body, { snapshots: [] });
@@ -614,10 +614,10 @@ test('a creator can list a discussion publicly; everything else stays unlisted',
 for (const { type, value, expected, equivalentIds } of [
   { type: 'Numerical', value: '42', expected: 1 },
   { type: 'Numerical', value: '42', expected: 1, equivalentIds: true },
-  { type: 'Open Ended', value: 'An answer', expected: 1 },
+  { type: 'Open Ended', value: 'An answer', expected: 10 },
   { type: 'Agreement', value: 'Agree', expected: 1 },
   { type: 'Yes/No', value: 'Yes', expected: 1 },
-  { type: 'Brainstorm', value: 'An idea', expected: 1 },
+  { type: 'Open Ended', value: 'An idea', expected: 10 },
 ]) {
   test(`concurrent ${type} submissions${equivalentIds ? ' with equivalent IDs' : ''} store one response per poll and distinct brainstorm idea`, async () => {
     const created = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('concurrent-votes') });
@@ -747,7 +747,7 @@ test('updating a poll repairs legacy duplicates without removing brainstorm idea
   const created = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('legacy-duplicates') });
   const questions = await pool.query(
     `INSERT INTO questions (discussion_id, text, type) VALUES
-     ($1, 'Estimate', 'Numerical'), ($1, 'Ideas', 'Brainstorm') RETURNING id`, [created.body.id]
+     ($1, 'Estimate', 'Numerical'), ($1, 'Ideas', 'Open Ended') RETURNING id`, [created.body.id]
   );
   const [poll, brainstorm] = questions.rows.map(row => row.id);
   await pool.query(
@@ -769,7 +769,7 @@ for (const { type, first, second } of [
     const created = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('legacy-undo') });
     const questions = await pool.query(
       `INSERT INTO questions (discussion_id, text, type) VALUES
-       ($1, 'Opinion', $2), ($1, 'Ideas', 'Brainstorm') RETURNING id`, [created.body.id, type]
+       ($1, 'Opinion', $2), ($1, 'Ideas', 'Open Ended') RETURNING id`, [created.body.id, type]
     );
     const [poll, brainstorm] = questions.rows.map(row => row.id);
     await pool.query(
@@ -1345,7 +1345,7 @@ function assertResultsHidden(question, label) {
   assert.equal(question.resultsHidden, true, `${label}: marked hidden`);
   assert.deepEqual(question.votes, [], `${label}: no votes on the wire`);
   assert.deepEqual(
-    Object.keys(question).filter(key => /vote|count|tally|result|average|response|distribution/i.test(key)).sort(),
+    Object.keys(question).filter(key => !['maxResponses', 'max_responses'].includes(key) && /vote|count|tally|result|average|response|distribution/i.test(key)).sort(),
     ['resultsHidden', 'resultsRevealed', 'votes'], `${label}: no other result fields`
   );
   assert.equal(question.resultsRevealed, false, `${label}: not revealed`);
@@ -1657,7 +1657,7 @@ test('REST endpoints withhold results the caller has not voted on', async () => 
     assert.doesNotMatch(report, /agree \/|Avg /, `${label} report: no agreement or numerical signal`);
     const csv = await text('/export.csv', headers);
     assert.equal(csv.match(/results hidden until you vote/g).length, hidden.length, `${label} csv`);
-    assert.doesNotMatch(csv, /Strongly|"Agree"|"Disagree"|"30"|"50"/, `${label} csv`);
+    assert.doesNotMatch(csv, /Strongly|"Agree"|"Disagree"/, `${label} csv`);
     assert.equal(/"Yes"|"No"/.test(csv), visible.length > 0, `${label} csv: yes/no rows`);
     assert.match(csv, /Because reasons/, 'Open Ended responses are unaffected');
 
@@ -1949,6 +1949,36 @@ test('rapid show and hide leave every screen matching the stored reveal state', 
   }
 });
 
+test('cleanup waits for a pending vote before deleting its rows', async () => {
+  const created = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('cleanup-vote-order') });
+  const question = (await pool.query("INSERT INTO questions (discussion_id, text, type) VALUES ($1, 'Pending vote', 'Agreement') RETURNING id", [created.body.id])).rows[0];
+  const vote = (await pool.query("INSERT INTO votes (question_id, user_id, value) VALUES ($1, 'pending-voter', 'Agree') RETURNING id", [question.id])).rows[0];
+  const writer = await pool.connect();
+  try {
+    await writer.query('BEGIN');
+    await writer.query('SELECT id FROM questions WHERE id = $1 FOR SHARE', [question.id]);
+    // Start cleanup while a writer already holds the production parent lock.
+    // Child-first cleanup takes the vote row then blocks on that parent,
+    // forming a cycle when the writer updates the vote below.
+    const cleaned = cleanupDiscussions(pool).then(() => ({ ok: true }), error => ({ ok: false, code: error.code }));
+    await waitForQuestionLockWait();
+    let written;
+    try {
+      await writer.query("UPDATE votes SET value = 'Disagree' WHERE id = $1", [vote.id]);
+      await writer.query('COMMIT');
+      written = { ok: true };
+    } catch (error) {
+      await writer.query('ROLLBACK');
+      written = { ok: false, code: error.code };
+    }
+    assert.deepEqual([written, await cleaned], [{ ok: true }, { ok: true }]);
+    assert.equal((await pool.query('SELECT count(*)::int AS n FROM discussions')).rows[0].n, 0);
+  } finally {
+    await writer.query('ROLLBACK');
+    writer.release();
+  }
+});
+
 test('a vote is acknowledged promptly while other votes keep arriving', async () => {
   const seed = await seedResultsDiscussion('busy-room');
   const { socket: busy } = await joinAs(seed.slug, 'busy-voter');
@@ -2083,7 +2113,7 @@ test('clearing a vote only applies to single-choice polls in an unlocked discuss
   const created = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('clear-scope') });
   const inserted = await pool.query(
     `INSERT INTO questions (discussion_id, text, type) VALUES
-     ($1, 'Opinion', 'Agreement'), ($1, 'Estimate', 'Numerical'), ($1, 'Ideas', 'Brainstorm') RETURNING id`,
+     ($1, 'Opinion', 'Agreement'), ($1, 'Estimate', 'Numerical'), ($1, 'Ideas', 'Open Ended') RETURNING id`,
     [created.body.id]
   );
   const [agreement, numerical, brainstorm] = inserted.rows.map(row => row.id);
@@ -2251,7 +2281,7 @@ test('Socket.IO sanitizes display names: anonymous stores null, long names are c
     );
     author.emit('addQuestion', topic, {
       text: 'Pick a name mode',
-      type: 'Brainstorm',
+      type: 'Open Ended',
       minValue: null,
       maxValue: null,
       options: [],
@@ -2365,6 +2395,7 @@ test('Socket.IO ownership tokens hide stable ids and differ per response', async
     assert.equal(vote2.ownerToken, tokenFor(vote2.id, 'same-browser'));
     assert.notEqual(vote1.ownerToken, vote2.ownerToken);
 
+    await pool.query('UPDATE discussions SET reactions_enabled = TRUE, reactions_visible = TRUE WHERE id = (SELECT discussion_id FROM questions WHERE id = $1)', [q1.id]);
     // Upvoter ids are likewise tokenized per response (and self-matchable).
     const upUpdate = waitForQuestions(
       author,
@@ -2395,7 +2426,7 @@ test("Socket.IO de-correlates one participant's multiple Brainstorm ideas", asyn
 
     const qUpdate = waitForQuestions(author, (qs) => qs.length === 1, 'brainstorm prompt');
     author.emit('addQuestion', topic, {
-      text: 'Brainstorm anything', type: 'Brainstorm', minValue: null, maxValue: null, options: [],
+      text: 'Brainstorm anything', type: 'Open Ended', minValue: null, maxValue: null, options: [],
     });
     const question = (await qUpdate)[0];
 
@@ -2437,7 +2468,7 @@ test("Socket.IO de-correlates one participant's multiple Brainstorm ideas", asyn
   }
 });
 
-test('a Brainstorm idea that repeats an existing one is rejected, ignoring case and whitespace', async () => {
+test('repeated responses are accepted from the same or different participants', async () => {
   const topic = uniqueTopic('brainstorm-duplicates');
   const first = await connectSocket();
   const second = await connectSocket();
@@ -2452,13 +2483,13 @@ test('a Brainstorm idea that repeats an existing one is rejected, ignoring case 
 
     assert.deepEqual(
       await vote(first, question.id, 'Internships and job shadowing', 'user-one'), { ok: true, added: true });
-    // Another participant, and the original author, repeating it are both refused.
+    // Another participant and the original author can both repeat an idea.
     assert.deepEqual(
       await vote(second, question.id, '  internships   and JOB\tshadowing ', 'user-two'),
-      { ok: false, added: false, reason: 'duplicate' });
+      { ok: true, added: true });
     assert.deepEqual(
       await vote(first, question.id, 'Internships and job shadowing', 'user-one'),
-      { ok: false, added: false, reason: 'duplicate' });
+      { ok: true, added: true });
     // A different idea, and the same idea on another prompt, are still accepted.
     assert.deepEqual(await vote(second, question.id, 'Internships', 'user-two'), { ok: true, added: true });
     assert.deepEqual(
@@ -2467,6 +2498,8 @@ test('a Brainstorm idea that repeats an existing one is rejected, ignoring case 
     const stored = await pool.query(
       'SELECT question_id, value FROM votes WHERE question_id = ANY($1) ORDER BY id', [[question.id, other.id]]);
     assert.deepEqual(stored.rows, [
+      { question_id: question.id, value: 'Internships and job shadowing' },
+      { question_id: question.id, value: 'internships   and JOB\tshadowing' },
       { question_id: question.id, value: 'Internships and job shadowing' },
       { question_id: question.id, value: 'Internships' },
       { question_id: other.id, value: 'Internships and job shadowing' },
@@ -3050,7 +3083,7 @@ test('a moderator who deleted their only response can still be removed', async (
 
     // The guest becomes a participant by posting a Brainstorm idea.
     const questionAdded = waitForQuestions(mod, (questions) => questions.length === 1, 'question added');
-    mod.emit('addQuestion', topic, { text: 'Ideas?', type: 'Brainstorm', minValue: null, maxValue: null, options: [] });
+    mod.emit('addQuestion', topic, { text: 'Ideas?', type: 'Open Ended', minValue: null, maxValue: null, options: [] });
     const questionId = (await questionAdded)[0].id;
 
     const ideaPosted = waitForQuestions(guest, (questions) => questions[0] && questions[0].votes.length === 1, 'idea posted');
@@ -3167,7 +3200,9 @@ test('Brainstorm ratings broadcast as aggregates without exposing who voted', as
       (questions) => questions[0] && questions[0].reactionsEnabled === true,
       'reactions enabled'
     );
-    mod.emit('setResponseRating', topic, responseId, 'quality', 1, 'user-early');
+    // Socket handlers run concurrently: finish the rejected rating before
+    // enabling feedback, so this checks disabled feedback rather than a race.
+    assert.deepEqual(await emitWithAck(mod, 'setResponseRating', topic, responseId, 'quality', 1, 'user-early'), { updated: false });
     mod.emit('setDiscussionFlags', topic, { reactions_enabled: true }, token);
     const afterEnable = (await enabledUpdate)[0].votes[0];
     assert.equal(afterEnable.qualityUp, 0, 'rating before enabling reactions must be rejected');
@@ -3548,6 +3583,81 @@ test('Brainstorm ratings, reactions, and comments are rejected once the discussi
   }
 });
 
+async function waitForFeedbackLockWait(fragment) {
+  const deadline = Date.now() + 1000;
+  while (Date.now() < deadline) {
+    const result = await pool.query("SELECT count(*)::int AS n FROM pg_stat_activity WHERE pid <> pg_backend_pid() AND datname = current_database() AND wait_event_type = 'Lock' AND query ILIKE $1", [`%${fragment}%`]);
+    if (result.rows[0].n) return true;
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  return false;
+}
+
+for (const action of ['quality', 'agreement', 'reaction', 'comment']) {
+  test(`a ${action} waiting for a moderator lock cannot write feedback`, async () => {
+    const created = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic(`feedback-lock-${action}`) });
+    await pool.query('UPDATE discussions SET reactions_enabled = TRUE, reactions_visible = TRUE, comments_enabled = TRUE WHERE id = $1', [created.body.id]);
+    const q = (await pool.query("INSERT INTO questions (discussion_id, text, type) VALUES ($1, 'Feedback', 'Open Ended') RETURNING id", [created.body.id])).rows[0];
+    const response = (await pool.query("INSERT INTO votes (question_id, user_id, value) VALUES ($1, 'author', 'A response') RETURNING id", [q.id])).rows[0];
+    const { socket } = await joinAs(created.body.slug, 'critic');
+    const blocker = await pool.connect();
+    try {
+      await blocker.query('BEGIN');
+      await blocker.query('UPDATE discussions SET locked = TRUE WHERE id = $1', [created.body.id]);
+      let comment;
+      if (action === 'comment') comment = emitWithAck(socket, 'addResponseComment', created.body.slug, response.id, 'A comment', 'critic', 'Critic', 'custom');
+      else if (action === 'reaction') socket.emit('toggleResponseReaction', created.body.slug, response.id, 'crux', 'critic');
+      else socket.emit('setResponseRating', created.body.slug, response.id, action, action === 'quality' ? 1 : 'Agree', 'critic');
+      const waited = await waitForFeedbackLockWait('FOR SHARE OF d');
+      await blocker.query('COMMIT');
+      if (comment) assert.equal((await comment).added, false);
+      await emitWithAck(socket, 'getBrainstormState', created.body.slug, 'critic');
+      for (const table of ['response_votes', 'response_ratings', 'response_reactions', 'response_comments']) {
+        assert.equal((await pool.query(`SELECT count(*)::int AS n FROM ${table} WHERE response_id = $1`, [response.id])).rows[0].n, 0, `${table} stays unchanged`);
+      }
+      assert.equal(waited, true, 'feedback validation waits for the moderator transaction');
+    } finally {
+      await blocker.query('ROLLBACK');
+      blocker.release();
+      socket.disconnect();
+    }
+  });
+}
+
+for (const [action, table] of [['quality', 'response_ratings'], ['reaction', 'response_reactions'], ['comment', 'response_comments']]) {
+  test(`a moderator lock waits for an in-progress ${action} write`, async () => {
+    const created = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic(`feedback-write-${action}`) });
+    await pool.query('UPDATE discussions SET reactions_enabled = TRUE, reactions_visible = TRUE, comments_enabled = TRUE WHERE id = $1', [created.body.id]);
+    const q = (await pool.query("INSERT INTO questions (discussion_id, text, type) VALUES ($1, 'Feedback', 'Open Ended') RETURNING id", [created.body.id])).rows[0];
+    const response = (await pool.query("INSERT INTO votes (question_id, user_id, value) VALUES ($1, 'author', 'A response') RETURNING id", [q.id])).rows[0];
+    const { socket } = await joinAs(created.body.slug, 'critic');
+    const blocker = await pool.connect();
+    try {
+      await blocker.query('BEGIN');
+      await blocker.query(`LOCK TABLE ${table} IN SHARE MODE`);
+      let comment;
+      if (action === 'comment') comment = emitWithAck(socket, 'addResponseComment', created.body.slug, response.id, 'A comment', 'critic', 'Critic', 'custom');
+      else if (action === 'reaction') socket.emit('toggleResponseReaction', created.body.slug, response.id, 'crux', 'critic');
+      else socket.emit('setResponseRating', created.body.slug, response.id, 'quality', 1, 'critic');
+      assert.equal(await waitForFeedbackLockWait(table), true, 'feedback write reached its transaction gate');
+      let locked = false;
+      const locking = pool.query('UPDATE discussions SET locked = TRUE WHERE id = $1', [created.body.id]).then(() => { locked = true; });
+      const waited = await waitForFeedbackLockWait('UPDATE discussions SET locked');
+      const committedEarly = locked;
+      await blocker.query('COMMIT');
+      await locking;
+      if (comment) assert.equal((await comment).added, true);
+      assert.equal(waited, true, 'moderator lock waits until the feedback write commits');
+      assert.equal(committedEarly, false);
+      assert.equal((await pool.query(`SELECT count(*)::int AS n FROM ${table} WHERE response_id = $1`, [response.id])).rows[0].n, 1);
+    } finally {
+      await blocker.query('ROLLBACK');
+      blocker.release();
+      socket.disconnect();
+    }
+  });
+}
+
 test('moderator-only mode lets only moderators add questions while voting stays open', async () => {
   const topic = uniqueTopic('mod-only-questions');
   const mod = await connectSocket();
@@ -3865,7 +3975,7 @@ test('Duplicating a discussion preserves brainstorm interaction flags', async ()
     const copy = await connectSocket();
     try {
       const copyQuestions = waitForQuestions(
-        copy, (qs) => qs.length === 1 && qs[0].type === 'Brainstorm', 'copy questions');
+        copy, (qs) => qs.length === 1 && qs[0].type === 'Open Ended', 'copy questions');
       const copyState = waitForEvent(copy, 'discussionState', (s) => Array.isArray(s.reactionKeys));
       copy.emit('joinDiscussion', dup.body.newTopic);
       const q = (await copyQuestions)[0];
@@ -4397,10 +4507,10 @@ function claimModerator(socket, topic) {
 async function addBrainstormQuestion(socket, topic, text) {
   const update = waitForQuestions(
     socket,
-    (questions) => questions.some((q) => q.text === text && q.type === 'Brainstorm'),
+    (questions) => questions.some((q) => q.text === text && q.type === 'Open Ended'),
     'brainstorm question added'
   );
-  socket.emit('addQuestion', topic, { text, type: 'Brainstorm', minValue: null, maxValue: null, options: [] });
+  socket.emit('addQuestion', topic, { text, type: 'Open Ended', minValue: null, maxValue: null, options: [] });
   const questions = await update;
   return questions.find((q) => q.text === text);
 }
@@ -4575,4 +4685,203 @@ function collectServerOutput(chunk) {
 
 function uniqueTopic(prefix) {
   return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+test('free-text limits serialize writes; retries, edits, and identical contributions remain independent', async () => {
+  const created = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('response-limits') });
+  const inserted = await pool.query("INSERT INTO questions (discussion_id, text, type, max_responses) VALUES ($1, 'Responses', 'Open Ended', 2) RETURNING id", [created.body.id]);
+  const id = inserted.rows[0].id;
+  const store = createVoteStore(pool);
+  const write = (requestId, user = 'author') => store.addVote(id, { text: 'Same text', requestId }, user, 'Author');
+  const results = await Promise.all(Array.from({ length: 8 }, (_, i) => write(`request-${i}`)));
+  assert.equal(results.filter(r => r.added).length, 2);
+  assert.equal(results.filter(r => r.reason === 'limit').length, 6);
+  const rows = (await pool.query('SELECT * FROM votes WHERE question_id = $1 ORDER BY id', [id])).rows;
+  assert.deepEqual(await write(rows[0].request_id), { added: false, repeated: true });
+  assert.deepEqual(await write('another-author', 'other'), { added: true });
+  assert.deepEqual(await store.addVote(id, { text: 'Edited', responseId: rows[0].id }, 'other', 'Other'), { added: false, updated: false });
+  assert.deepEqual(await store.addVote(id, { text: 'Edited', responseId: rows[0].id }, 'author', 'Author'), { added: false, updated: true });
+  assert.equal((await pool.query('SELECT value FROM votes WHERE id = $1', [rows[0].id])).rows[0].value, 'Edited');
+});
+
+test('response settings persist, copy, validate, and hide attribution on public payloads', async () => {
+  const created = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('response-settings') });
+  const { socket } = await joinAs(created.body.slug, 'settings-author');
+  try {
+    const payload = { text: 'Private authors', type: 'Open Ended', maxResponses: 3, showAttribution: false };
+    assert.equal((await emitWithAck(socket, 'addQuestion', created.body.slug, payload, false, created.body.adminToken)).added, true);
+    const question = (await pool.query('SELECT * FROM questions WHERE discussion_id = $1', [created.body.id])).rows[0];
+    assert.equal(question.max_responses, 3);
+    assert.equal(question.show_attribution, false);
+    const update = waitForQuestions(socket, qs => qs[0]?.votes.length === 1, 'anonymous response');
+    await emitWithAck(socket, 'vote', created.body.slug, question.id, { text: 'Response', requestId: 'one' }, 'settings-author', 'Secret author', 'custom');
+    const questions = await update;
+    assert.equal(questions[0].maxResponses, 3);
+    assert.equal(questions[0].showAttribution, false);
+    assert.equal(questions[0].votes[0].pseudonym, null);
+    const copy = await jsonRequest('POST', '/api/duplicate-discussion', { originalTopic: created.body.slug, newTopic: uniqueTopic('response-copy') });
+    const copied = (await pool.query('SELECT max_responses, show_attribution FROM questions WHERE discussion_id = $1', [(await pool.query('SELECT id FROM discussions WHERE slug = $1', [copy.body.newSlug])).rows[0].id])).rows[0];
+    assert.deepEqual(copied, { max_responses: 3, show_attribution: false });
+  } finally { socket.disconnect(); }
+});
+
+test('a legacy Brainstorm creation keeps response authors hidden on socket and CSV views', async () => {
+  const created = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('legacy-brainstorm-privacy') });
+  const { socket } = await joinAs(created.body.slug, 'legacy-author');
+  try {
+    assert.equal((await emitWithAck(socket, 'addQuestion', created.body.slug, { text: 'Legacy ideas', type: 'Brainstorm' }, false, created.body.adminToken)).added, true);
+    const question = (await pool.query('SELECT id, type, show_attribution FROM questions WHERE discussion_id = $1', [created.body.id])).rows[0];
+    assert.equal(question.type, 'Open Ended');
+    assert.equal(question.show_attribution, false);
+    const update = waitForQuestions(socket, qs => qs.some(q => q.id === question.id && q.votes.length === 1), 'legacy anonymous response');
+    await emitWithAck(socket, 'vote', created.body.slug, question.id, 'Legacy contribution', 'legacy-author', 'Legacy Secret Author', 'custom');
+    assert.equal((await update).find(q => q.id === question.id).votes[0].pseudonym, null);
+    const csv = await fetch(`${baseUrl}/api/discussions/${created.body.slug}/export.csv`);
+    assert.equal((await csv.text()).includes('Legacy Secret Author'), false);
+  } finally { socket.disconnect(); }
+});
+
+test('legacy scalar answers update single-response questions but keep unlimited response creation', async () => {
+  const created = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('legacy-scalar-update') });
+  const questions = (await pool.query("INSERT INTO questions (discussion_id, text, type, max_responses) VALUES ($1, 'Legacy written', 'Open Ended', 1), ($1, 'Former ideas', 'Open Ended', NULL) RETURNING id", [created.body.id])).rows;
+  const store = createVoteStore(pool);
+  await store.addVote(questions[0].id, 'Original', 'author', 'Author');
+  assert.deepEqual(await store.addVote(questions[0].id, 'Updated scalar', 'author', 'Author'), { added: false, updated: true });
+  assert.deepEqual((await pool.query('SELECT value FROM votes WHERE question_id = $1', [questions[0].id])).rows, [{ value: 'Updated scalar' }]);
+  assert.equal((await store.addVote(questions[0].id, { text: 'New object response', requestId: 'new-create' }, 'author', 'Author')).reason, 'limit');
+  await store.addVote(questions[1].id, 'First idea', 'author', 'Author');
+  await store.addVote(questions[1].id, 'Second idea', 'author', 'Author');
+  assert.equal((await pool.query('SELECT count(*)::int AS n FROM votes WHERE question_id = $1', [questions[1].id])).rows[0].n, 2);
+});
+
+test('a legacy upvote waiting for a moderator lock changes neither feedback store', async () => {
+  const created = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('legacy-lock-race') });
+  await pool.query('UPDATE discussions SET reactions_enabled = TRUE, reactions_visible = TRUE WHERE id = $1', [created.body.id]);
+  const q = (await pool.query("INSERT INTO questions (discussion_id, text, type) VALUES ($1, 'Locked feedback', 'Open Ended') RETURNING id", [created.body.id])).rows[0];
+  const vote = (await pool.query("INSERT INTO votes (question_id, user_id, value) VALUES ($1, 'author', 'Keep locked') RETURNING id", [q.id])).rows[0];
+  const { socket } = await joinAs(created.body.slug, 'legacy-voter');
+  const blocker = await pool.connect();
+  try {
+    await blocker.query('BEGIN');
+    await blocker.query('UPDATE discussions SET locked = TRUE WHERE id = $1', [created.body.id]);
+    const update = waitForQuestions(socket, qs => qs.find(question => question.id === q.id)?.votes[0]?.upvotes === 0, 'toggle after lock commits');
+    socket.emit('toggleResponseVote', created.body.slug, vote.id, 'legacy-voter');
+    await waitForQuestionLockWait();
+    await blocker.query('COMMIT');
+    await update;
+    for (const table of ['response_votes', 'response_ratings']) {
+      assert.equal((await pool.query(`SELECT count(*)::int AS n FROM ${table} WHERE response_id = $1`, [vote.id])).rows[0].n, 0);
+    }
+  } finally {
+    await blocker.query('ROLLBACK');
+    blocker.release();
+    socket.disconnect();
+  }
+});
+
+test('legacy upvote toggles and new quality ratings stay synchronized after migration', async () => {
+  const created = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('legacy-feedback-sync') });
+  await pool.query('UPDATE discussions SET reactions_enabled = TRUE, reactions_visible = TRUE WHERE id = $1', [created.body.id]);
+  const question = (await pool.query("INSERT INTO questions (discussion_id, text, type) VALUES ($1, 'Feedback', 'Open Ended') RETURNING id", [created.body.id])).rows[0];
+  const vote = (await pool.query("INSERT INTO votes (question_id, user_id, value) VALUES ($1, 'author', 'Keep feedback') RETURNING id", [question.id])).rows[0];
+  const { socket } = await joinAs(created.body.slug, 'legacy-voter');
+  const rating = async () => (await pool.query('SELECT quality, agreement FROM response_ratings WHERE response_id = $1 AND user_id = $2', [vote.id, 'legacy-voter'])).rows[0];
+  try {
+    let update = waitForQuestions(socket, qs => qs[0]?.votes[0]?.upvotes === 1, 'legacy upvote added');
+    socket.emit('toggleResponseVote', created.body.slug, vote.id, 'legacy-voter');
+    await update;
+    assert.equal((await rating())?.quality, 1);
+    await pool.query('UPDATE discussions SET reactions_enabled = TRUE, reactions_visible = TRUE WHERE id = $1', [created.body.id]);
+    update = waitForQuestions(socket, qs => qs[0]?.votes[0]?.qualityDown === 1, 'new quality downvote');
+    socket.emit('setResponseRating', created.body.slug, vote.id, 'quality', -1, 'legacy-voter');
+    assert.equal((await update)[0].votes[0].upvotes, 0);
+    await pool.query("UPDATE response_ratings SET agreement = 'Agree' WHERE response_id = $1", [vote.id]);
+    update = waitForQuestions(socket, qs => qs[0]?.votes[0]?.qualityUp === 1, 'legacy upvote after new rating');
+    socket.emit('toggleResponseVote', created.body.slug, vote.id, 'legacy-voter');
+    await update;
+    assert.deepEqual(await rating(), { quality: 1, agreement: 'Agree' });
+    update = waitForQuestions(socket, qs => qs[0]?.votes[0]?.upvotes === 0 && qs[0]?.votes[0]?.qualityUp === 0, 'legacy upvote removed');
+    socket.emit('toggleResponseVote', created.body.slug, vote.id, 'legacy-voter');
+    await update;
+    assert.deepEqual(await rating(), { quality: null, agreement: 'Agree' });
+    await pool.query('UPDATE discussions SET locked = TRUE WHERE id = $1', [created.body.id]);
+    update = waitForQuestions(socket, qs => qs[0]?.votes[0]?.upvotes === 0, 'locked legacy upvote rejected');
+    socket.emit('toggleResponseVote', created.body.slug, vote.id, 'legacy-voter');
+    await update;
+    assert.deepEqual(await rating(), { quality: null, agreement: 'Agree' });
+  } finally { socket.disconnect(); }
+});
+
+test('unified response migration preserves attribution, limits and upvotes without resetting later changes', async () => {
+  await stopServer();
+  try {
+    await pool.query('ALTER TABLE questions DROP COLUMN max_responses, DROP COLUMN show_attribution');
+    const d = (await pool.query("INSERT INTO discussions (topic, slug) VALUES ('Migration', 'migration') RETURNING id")).rows[0].id;
+    const qs = (await pool.query("INSERT INTO questions (discussion_id, text, type) VALUES ($1, 'Written', 'Open Ended'), ($1, 'Ideas', 'Brainstorm') RETURNING id", [d])).rows;
+    const v = (await pool.query("INSERT INTO votes (question_id, user_id, value) VALUES ($1, 'author', 'Keep me') RETURNING id", [qs[0].id])).rows[0].id;
+    await pool.query("INSERT INTO response_votes (response_id, user_id) VALUES ($1, 'voter')", [v]);
+    await pool.query("INSERT INTO response_votes (response_id, user_id) VALUES ($1, 'agreement-voter'), ($1, 'quality-voter')", [v]);
+    await pool.query("INSERT INTO response_ratings (response_id, user_id, quality, agreement) VALUES ($1, 'agreement-voter', NULL, 'Agree'), ($1, 'quality-voter', -1, 'Disagree')", [v]);
+    await initializeDatabase(pool);
+    const migrated = (await pool.query('SELECT type, max_responses, show_attribution FROM questions WHERE discussion_id = $1 ORDER BY id', [d])).rows;
+    assert.deepEqual(migrated, [{ type: 'Open Ended', max_responses: 1, show_attribution: true }, { type: 'Open Ended', max_responses: null, show_attribution: false }]);
+    assert.equal((await pool.query("SELECT quality FROM response_ratings WHERE response_id = $1 AND user_id = 'voter'", [v])).rows[0].quality, 1);
+    assert.deepEqual((await pool.query("SELECT user_id, quality, agreement FROM response_ratings WHERE response_id = $1 AND user_id <> 'voter' ORDER BY user_id", [v])).rows,
+      [{ user_id: 'agreement-voter', quality: 1, agreement: 'Agree' }, { user_id: 'quality-voter', quality: -1, agreement: 'Disagree' }]);
+    await pool.query('UPDATE questions SET max_responses = 4 WHERE id = $1', [qs[0].id]);
+    await initializeDatabase(pool);
+    assert.equal((await pool.query('SELECT max_responses FROM questions WHERE id = $1', [qs[0].id])).rows[0].max_responses, 4);
+  } finally { await startServer(); }
+});
+
+test('hidden feedback redacts legacy aliases of positive quality ratings', async () => {
+  const created = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('hidden-quality-alias') });
+  const question = (await pool.query("INSERT INTO questions (discussion_id, text, type) VALUES ($1, 'Feedback', 'Open Ended') RETURNING id", [created.body.id])).rows[0];
+  const vote = (await pool.query("INSERT INTO votes (question_id, user_id, value) VALUES ($1, 'author', 'Answer') RETURNING id", [question.id])).rows[0];
+  await pool.query('UPDATE discussions SET reactions_enabled = TRUE, reactions_visible = TRUE WHERE id = $1', [created.body.id]);
+  const { socket } = await joinAs(created.body.slug, 'critic');
+  try {
+    const rated = waitForQuestions(socket, qs => qs[0]?.votes[0]?.qualityUp === 1, 'quality rating recorded');
+    socket.emit('setResponseRating', created.body.slug, vote.id, 'quality', 1, 'critic');
+    const visible = (await rated)[0].votes[0];
+    assert.equal(visible.upvotes, 1);
+    assert.equal(visible.upvoterTokens.length, 1);
+    for (const enabled of [true, false]) {
+      await pool.query('UPDATE discussions SET reactions_visible = FALSE, reactions_enabled = $2 WHERE id = $1', [created.body.id, enabled]);
+      const visitor = await joinAs(created.body.slug, 'observer');
+      try {
+        const hidden = visitor.questions[0].votes[0];
+        assert.equal(hidden.upvotes, 0);
+        assert.deepEqual(hidden.upvoterTokens, []);
+        assert.equal(hidden.qualityUp, undefined);
+        assert.equal(hidden.upvoters, undefined);
+      } finally { visitor.socket.disconnect(); }
+    }
+    assert.equal((await pool.query('SELECT count(*)::int AS n FROM response_votes WHERE response_id = $1', [vote.id])).rows[0].n, 1);
+  } finally { socket.disconnect(); }
+});
+
+for (const [enabled, visible] of [[false, true], [true, false], [false, false]]) {
+  test(`legacy upvotes cannot add or remove feedback when enabled=${enabled}, visible=${visible}`, async () => {
+    const created = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('legacy-feedback-flags') });
+    const q = (await pool.query("INSERT INTO questions (discussion_id, text, type) VALUES ($1, 'Feedback', 'Open Ended') RETURNING id", [created.body.id])).rows[0];
+    const vote = (await pool.query("INSERT INTO votes (question_id, user_id, value) VALUES ($1, 'author', 'Answer') RETURNING id", [q.id])).rows[0];
+    await pool.query('UPDATE discussions SET reactions_enabled = $2, reactions_visible = $3 WHERE id = $1', [created.body.id, enabled, visible]);
+    const { socket } = await joinAs(created.body.slug, 'legacy-voter');
+    try {
+      for (const existing of [false, true]) {
+        if (existing) {
+          await pool.query("INSERT INTO response_votes (response_id, user_id) VALUES ($1, 'legacy-voter')", [vote.id]);
+          await pool.query("INSERT INTO response_ratings (response_id, user_id, quality, agreement) VALUES ($1, 'legacy-voter', 1, 'Agree')", [vote.id]);
+        }
+        // This handler always broadcasts after completing, including rejection.
+        const update = waitForQuestions(socket, qs => qs[0]?.id === q.id, 'legacy toggle completed');
+        socket.emit('toggleResponseVote', created.body.slug, vote.id, 'legacy-voter');
+        await update;
+        assert.equal((await pool.query('SELECT count(*)::int AS n FROM response_votes WHERE response_id = $1', [vote.id])).rows[0].n, existing ? 1 : 0);
+        assert.deepEqual((await pool.query('SELECT quality, agreement FROM response_ratings WHERE response_id = $1', [vote.id])).rows,
+          existing ? [{ quality: 1, agreement: 'Agree' }] : []);
+      }
+    } finally { socket.disconnect(); }
+  });
 }

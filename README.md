@@ -63,9 +63,8 @@ to discuss it.
 
 Moderators always see results. The setting also applies to the summary, opinion
 groups, opinion snapshots and exports: each leaves out the results of questions
-the person viewing has not answered and says how many were left out. Open Ended
-and Brainstorm questions are not affected. Their responses are the discussion
-itself, not a tally, and Brainstorm reactions keep their own moderator toggles.
+the person viewing has not answered and says how many were left out. Open Ended questions are not affected. Their responses are the discussion
+itself, not a tally, and response reactions keep their own moderator toggles.
 
 ## Room display
 
@@ -107,8 +106,8 @@ once. Anyone with the link can open the display, so a revealed question's
 results are shown to every participant too. **Hide results** takes them off the
 screen again.
 
-Open Ended and Brainstorm responses appear on the display as they do for
-participants. Brainstorm ratings and reactions appear only when the moderator has
+Open Ended responses appear on the display as they do for
+participants. Response ratings and reactions appear only when the moderator has
 made them visible.
 
 While the display is open and visible, it asks the browser to keep the screen
@@ -191,6 +190,18 @@ and Chromium interaction tests on Node 20.15 and the latest Node 20 release.
 [https://convora-e40a9ae358dc.herokuapp.com/](https://convora-e40a9ae358dc.herokuapp.com/)
 
 https://console.cloud.google.com/welcome?pli=1&inv=1&invt=Ab0Pdg&project=convora-7cba7
+
+## Free-text questions
+
+Open Ended supports multiple responses per participant, with no limit by default.
+Question creators can set a maximum number of responses per person and hide author
+pseudonyms; pseudonyms are shown by default. Participants can edit or delete their
+own responses. Identical responses are allowed, including from the same person.
+Moderators can enable quality votes, agreement ratings, reactions, and comments.
+
+Existing Brainstorm questions become Open Ended and retain hidden attribution.
+Existing Open Ended questions retain their one-response limit. Responses and
+feedback survive migration, with previous upvotes carried over as quality votes.
 
 ## Delete a discussion
 

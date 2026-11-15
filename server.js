@@ -720,15 +720,13 @@ io.on('connection', (socket) => {
         await emitQuestions(discussionSlug);
         return;
       }
-      if (result.reason === 'duplicate') {
-        // An identical Brainstorm idea is already listed. Tell the submitter
-        // (via the optional ack) so they can vote on that one instead.
-        reply(false, { added: false, reason: 'duplicate' });
-        socket.emit('error', { message: 'That idea has already been added.' });
+      if (result.reason === 'limit') {
+        reply(false, result);
+        socket.emit('error', { message: 'You have reached the response limit for this question.' });
         return;
       }
       await emitQuestions(discussionSlug);
-      reply(true, target.type === 'Brainstorm' ? { added: true } : {});
+      reply(result.updated !== false, ['Open Ended', 'Brainstorm'].includes(target.type) ? result : {});
     } catch (error) {
       logError('Error handling vote:', error);
       socket.emit('error', { message: 'Failed to handle vote' });
@@ -1191,7 +1189,7 @@ io.on('connection', (socket) => {
         if (responses.rows.length > 0) return 'has_responses';
         if (!normalizedUpdates) return 'invalid';
         await client.query(
-          `UPDATE questions SET text = $1, type = $2, min_value = $3, max_value = $4, options = $5
+          `UPDATE questions SET text = $1, type = $2, min_value = $3, max_value = $4, options = $5, max_responses = $7, show_attribution = $8
            WHERE id = $6`,
           [
             normalizedUpdates.text,
@@ -1200,6 +1198,8 @@ io.on('connection', (socket) => {
             normalizedUpdates.maxValue,
             JSON.stringify(normalizedUpdates.options),
             questionId,
+            normalizedUpdates.maxResponses,
+            normalizedUpdates.showAttribution,
           ]
         );
         return 'updated';
@@ -1236,23 +1236,26 @@ io.on('connection', (socket) => {
   // Set/clear one axis (quality or agreement) of a user's rating on a brainstorm
   // idea. Gated on the question being a Brainstorm with reactions currently
   // revealed, so a hidden/disabled phase can't be rated through a crafted event.
-  socket.on('setResponseRating', async (topic, responseId, axis, value, claimedUserId) => {
+  socket.on('setResponseRating', async (topic, responseId, axis, value, claimedUserId, ack) => {
     const discussionSlug = slugifyTopic(topic);
+    const reply = updated => { if (typeof ack === 'function') ack({ updated }); };
     const userId = bindSocketUser(socket, claimedUserId);
-    if (!userId) return;
+    if (!userId) { reply(false); return; }
     try {
-      if (axis !== 'quality' && axis !== 'agreement') return;
-      const ctx = await getResponseContext(topic, responseId);
-      // Locking closes voting; ratings are votes, so reject them just like the
-      // `vote` handler does. (Phasing uses reactionsVisible, not the lock.)
-      if (!ctx || ctx.locked || ctx.type !== 'Brainstorm' || !ctx.reactionsEnabled || !ctx.reactionsVisible) return;
-      // No self-rating: an author can't vote on their own idea, mirroring the
-      // self-upvote guard on toggleResponseVote, so they can't inflate it.
-      if (ctx.ownerId === userId) return;
-      await setResponseRating(responseId, userId, axis, value);
+      if (axis !== 'quality' && axis !== 'agreement') { reply(false); return; }
+      const changed = await withTransaction(async client => {
+        const ctx = await getResponseContext(topic, responseId, { client, lockDiscussion: true });
+        if (!ctx || ctx.locked || !['Open Ended', 'Brainstorm'].includes(ctx.type) || !ctx.reactionsEnabled || !ctx.reactionsVisible) return false;
+        if (ctx.ownerId === userId) return false;
+        await setResponseRating(client, responseId, userId, axis, value);
+        return true;
+      });
+      reply(changed);
+      if (!changed) return;
       await emitQuestions(discussionSlug);
     } catch (error) {
       logError('Error setting response rating:', error);
+      reply(false);
       socket.emit('error', { message: 'Failed to rate response' });
     }
   });
@@ -1262,13 +1265,14 @@ io.on('connection', (socket) => {
     const userId = bindSocketUser(socket, claimedUserId);
     if (!userId) return;
     try {
-      const ctx = await getResponseContext(topic, responseId);
-      if (!ctx || ctx.locked || ctx.type !== 'Brainstorm' || !ctx.reactionsEnabled || !ctx.reactionsVisible) return;
-      // Reject anything outside the set the creator has active for this session.
-      if (!ctx.reactionKeys.includes(reaction)) return;
-      // No self-reactions on your own idea, same rationale as ratings.
-      if (ctx.ownerId === userId) return;
-      await toggleResponseReaction(responseId, userId, reaction);
+      const changed = await withTransaction(async client => {
+        const ctx = await getResponseContext(topic, responseId, { client, lockDiscussion: true });
+        if (!ctx || ctx.locked || !['Open Ended', 'Brainstorm'].includes(ctx.type) || !ctx.reactionsEnabled || !ctx.reactionsVisible) return false;
+        if (!ctx.reactionKeys.includes(reaction) || ctx.ownerId === userId) return false;
+        await toggleResponseReaction(client, responseId, userId, reaction);
+        return true;
+      });
+      if (!changed) return;
       await emitQuestions(discussionSlug);
     } catch (error) {
       logError('Error toggling response reaction:', error);
@@ -1294,7 +1298,7 @@ io.on('connection', (socket) => {
     try {
       const ctx = await getResponseContext(topic, responseId);
       // A locked discussion has new statements closed; comments are statements.
-      if (!ctx || ctx.locked || ctx.type !== 'Brainstorm' || !ctx.commentsEnabled) {
+      if (!ctx || ctx.locked || !['Open Ended', 'Brainstorm'].includes(ctx.type) || !ctx.commentsEnabled) {
         reply({ added: false });
         return;
       }
@@ -1308,10 +1312,21 @@ io.on('connection', (socket) => {
       // Custom/Anonymous stay as sent. canonicalPseudonym also sanitizes (trim +
       // length cap) so a crafted oversized/whitespace name can't break the UI.
       const handle = await canonicalPseudonym(discussionSlug, ctx.discussionId, userId, mode, pseudonym);
-      await pool.query(
-        'INSERT INTO response_comments (response_id, user_id, pseudonym, body) VALUES ($1, $2, $3, $4)',
-        [responseId, userId, handle, text.slice(0, 2000)]
-      );
+      const added = await withTransaction(async client => {
+        // Resolve the pseudonym before taking this transaction's row lock, then
+        // recheck current authorization/flags while holding the lock through write.
+        const current = await getResponseContext(topic, responseId, { client, lockDiscussion: true });
+        if (!current || current.locked || !['Open Ended', 'Brainstorm'].includes(current.type) || !current.commentsEnabled) return false;
+        await client.query(
+          'INSERT INTO response_comments (response_id, user_id, pseudonym, body) VALUES ($1, $2, $3, $4)',
+          [responseId, userId, handle, text.slice(0, 2000)]
+        );
+        return true;
+      });
+      if (!added) {
+        reply({ added: false });
+        return;
+      }
       await emitQuestions(discussionSlug);
       reply({ added: true });
     } catch (error) {
@@ -1453,7 +1468,9 @@ io.on('connection', (socket) => {
     const userId = bindSocketUser(socket, claimedUserId);
     if (!userId) return;
     try {
-      await deleteVote(voteId, userId);
+      await pool.query(`DELETE FROM votes v USING questions q, discussions d
+        WHERE v.id = $1 AND v.user_id = $2 AND v.question_id = q.id AND q.discussion_id = d.id
+          AND d.slug = $3 AND NOT d.locked AND q.type IN ('Open Ended', 'Brainstorm')`, [voteId, userId, discussionSlug]);
       await emitQuestions(discussionSlug);
     } catch (error) {
       logError('Error deleting vote:', error);
@@ -1774,6 +1791,8 @@ async function getQuestions(topic, { includeUserIds = false, respondents = null 
       q.min_value,
       q.max_value,
       q.options,
+      q.max_responses,
+      q.show_attribution,
       q.created_at,
       q.pinned,
       q.results_revealed,
@@ -1809,6 +1828,8 @@ async function getQuestions(topic, { includeUserIds = false, respondents = null 
   }
   const questions = result.rows.map(({ results_revealed: revealed, ...row }) => ({
     ...row,
+    maxResponses: row.max_responses,
+    showAttribution: row.show_attribution,
     minValue: row.min_value,
     maxValue: row.max_value,
     reactionsEnabled: row.reactions_enabled === true,
@@ -1831,9 +1852,10 @@ async function getQuestions(topic, { includeUserIds = false, respondents = null 
       // Internal callers (e.g. getDiscussionSummary) opt into keeping the raw
       // stable user_id so they can count distinct participants correctly. This
       // path is SERVER-SIDE ONLY and must never feed a socket/API response.
-      if (includeUserIds) return { ...vote };
+      if (includeUserIds) return { ...vote, pseudonym: row.show_attribution === false ? null : vote.pseudonym };
       const tokenized = {
         ...vote,
+        pseudonym: row.show_attribution === false ? null : vote.pseudonym,
         ownerToken: ownerToken(vote.id, vote.userId),
         upvoterTokens: (Array.isArray(vote.upvoters) ? vote.upvoters : [])
           .map(uid => ownerToken(vote.id, uid)),
@@ -1886,7 +1908,7 @@ async function attachBrainstormInteractions(questions, { includeUserIds = false 
   const ratingIds = [];
   const commentIds = [];
   for (const q of questions) {
-    if (q.type !== 'Brainstorm') continue;
+    if (!['Open Ended', 'Brainstorm'].includes(q.type)) continue;
     const votes = q.votes || [];
     if (q.reactionsEnabled && q.reactionsVisible) {
       for (const v of votes) ratingIds.push(v.id);
@@ -1974,9 +1996,16 @@ async function attachBrainstormInteractions(questions, { includeUserIds = false 
   }
 
   for (const q of questions) {
-    if (q.type !== 'Brainstorm') continue;
+    if (!['Open Ended', 'Brainstorm'].includes(q.type)) continue;
     const reveal = q.reactionsEnabled && q.reactionsVisible;
     for (const v of q.votes || []) {
+      // Legacy upvotes and positive quality ratings share storage. Hiding
+      // feedback must also hide these aliases, even if reactions are disabled.
+      if (!q.reactionsVisible) {
+        v.upvotes = 0;
+        if ('upvoterTokens' in v) v.upvoterTokens = [];
+        if ('upvoters' in v) v.upvoters = [];
+      }
       if (reveal) {
         const rating = ratingsByResponse.get(v.id);
         v.qualityUp = rating ? rating.qualityUp : 0;
@@ -2046,7 +2075,7 @@ async function addQuestion(topic, question) {
 
     // Insert the question
     const questionResult = await client.query(
-      'INSERT INTO questions (discussion_id, text, type, min_value, max_value, options) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
+      'INSERT INTO questions (discussion_id, text, type, min_value, max_value, options, max_responses, show_attribution) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *',
       [
         discussionId,
         normalizedQuestion.text,
@@ -2054,6 +2083,8 @@ async function addQuestion(topic, question) {
         normalizedQuestion.minValue,
         normalizedQuestion.maxValue,
         optionsJson,
+        normalizedQuestion.maxResponses,
+        normalizedQuestion.showAttribution,
       ]
     );
 
@@ -2728,38 +2759,28 @@ async function assignPseudonym(slug, userId, preferred, { regenerate = false } =
 // Toggle a user's upvote on an open-ended response. Adds the upvote if absent,
 // removes it if already present.
 async function toggleResponseVote(topic, responseId, userId) {
-  // Confirm the response belongs to the room's discussion before mutating it.
-  // Without the topic join a client in one room could toggle a vote on a
-  // response id that lives in another discussion. Also fetch the owner so we
-  // can reject self-upvotes below.
   const slug = slugifyTopic(topic);
-  const ownerResult = await pool.query(
-    `SELECT v.user_id
-     FROM votes v
-     JOIN questions q ON v.question_id = q.id
-     JOIN discussions d ON q.discussion_id = d.id
-     WHERE v.id = $1 AND d.slug = $2`,
-    [responseId, slug]
-  );
-  if (ownerResult.rows.length === 0) {
-    return;
-  }
-  // Reject self-upvotes: the UI disables the button for your own response, but
-  // the event can still be emitted from the console, so enforce it server-side.
-  if (ownerResult.rows[0].user_id === userId) {
-    console.log('Ignoring self-upvote on response', responseId);
-    return;
-  }
-  // Serialize concurrent toggles from the same user (double-click, two tabs) on
-  // this response. A plain transaction is not enough under Read Committed: when
-  // no row exists yet, both toggles' DELETEs see 0 rows, both INSERT, and
-  // ON CONFLICT silently drops one — leaving the vote ON after two toggles that
-  // should cancel out. A transaction-scoped advisory lock keyed on
-  // (response, user) forces the second toggle to wait for the first to commit,
-  // then re-read the now-current state and flip it correctly.
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
+  return withTransaction(async client => {
+    // Hold the discussion row while checking the lock and writing feedback,
+    // so a waiting toggle sees committed lock and feedback-setting changes.
+    const ownerResult = await client.query(
+      `SELECT v.user_id
+       FROM votes v
+       JOIN questions q ON v.question_id = q.id
+       JOIN discussions d ON q.discussion_id = d.id
+       WHERE v.id = $1 AND d.slug = $2 AND NOT d.locked
+         AND d.reactions_enabled AND d.reactions_visible FOR SHARE OF d`,
+      [responseId, slug]
+    );
+    if (ownerResult.rows.length === 0) {
+      return;
+    }
+    // Reject self-upvotes: the UI disables the button for your own response, but
+    // the event can still be emitted from the console, so enforce it server-side.
+    if (ownerResult.rows[0].user_id === userId) {
+      console.log('Ignoring self-upvote on response', responseId);
+      return;
+    }
     await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`response_vote:${responseId}:${userId}`]);
     const deleteResult = await client.query(
       'DELETE FROM response_votes WHERE response_id = $1 AND user_id = $2',
@@ -2771,26 +2792,27 @@ async function toggleResponseVote(topic, responseId, userId) {
         [responseId, userId]
       );
     }
-    await client.query('COMMIT');
-  } catch (e) {
-    await client.query('ROLLBACK');
-    throw e;
-  } finally {
-    client.release();
-  }
+    // Old browsers can still toggle upvotes after migration. Keep the quality
+    // axis in sync in this transaction without touching the agreement axis.
+    await client.query(
+      `INSERT INTO response_ratings (response_id, user_id, quality) VALUES ($1, $2, $3)
+       ON CONFLICT (response_id, user_id) DO UPDATE SET quality = EXCLUDED.quality`,
+      [responseId, userId, deleteResult.rowCount === 0 ? 1 : null]
+    );
+  });
 }
 
 // Look up a brainstorm response within a topic and return its owner plus the
 // discussion's interaction flags. Returns null when the response doesn't
 // belong to the topic, so callers reject forged/cross-topic response ids.
-async function getResponseContext(topic, responseId) {
+async function getResponseContext(topic, responseId, { client = pool, lockDiscussion = false } = {}) {
   const slug = slugifyTopic(topic);
-  const result = await pool.query(
+  const result = await client.query(
     `SELECT v.user_id, q.discussion_id, q.type, d.reactions_enabled, d.reactions_visible, d.comments_enabled, d.locked, d.reaction_keys
      FROM votes v
      JOIN questions q ON v.question_id = q.id
      JOIN discussions d ON q.discussion_id = d.id
-     WHERE v.id = $1 AND d.slug = $2`,
+     WHERE v.id = $1 AND d.slug = $2${lockDiscussion ? ' FOR SHARE OF d' : ''}`,
     [responseId, slug]
   );
   if (result.rows.length === 0) return null;
@@ -2810,17 +2832,25 @@ async function getResponseContext(topic, responseId) {
 // Set or clear one axis of a user's rating on a brainstorm response. Upserts so
 // the two axes (quality, agreement) can be set independently; passing null
 // clears that axis (e.g. un-clicking the up arrow).
-async function setResponseRating(responseId, userId, axis, value) {
+async function setResponseRating(client, responseId, userId, axis, value) {
   if (axis === 'quality') {
     const quality = value === 1 || value === -1 ? value : null;
-    await pool.query(
+    // Share the legacy toggle lock so mixed old/new clients cannot leave
+    // the two representations at different states.
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`response_vote:${responseId}:${userId}`]);
+    await client.query(
       `INSERT INTO response_ratings (response_id, user_id, quality) VALUES ($1, $2, $3)
        ON CONFLICT (response_id, user_id) DO UPDATE SET quality = EXCLUDED.quality`,
       [responseId, userId, quality]
     );
+    if (quality === 1) {
+      await client.query('INSERT INTO response_votes (response_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [responseId, userId]);
+    } else {
+      await client.query('DELETE FROM response_votes WHERE response_id = $1 AND user_id = $2', [responseId, userId]);
+    }
   } else if (axis === 'agreement') {
     const agreement = AGREEMENT_OPTIONS.includes(value) ? value : null;
-    await pool.query(
+    await client.query(
       `INSERT INTO response_ratings (response_id, user_id, agreement) VALUES ($1, $2, $3)
        ON CONFLICT (response_id, user_id) DO UPDATE SET agreement = EXCLUDED.agreement`,
       [responseId, userId, agreement]
@@ -2830,30 +2860,20 @@ async function setResponseRating(responseId, userId, axis, value) {
 
 // Toggle a single epistemic reaction for a user on a response: remove it if
 // present, add it otherwise.
-async function toggleResponseReaction(responseId, userId, reaction) {
+async function toggleResponseReaction(client, responseId, userId, reaction) {
   // Serialize concurrent toggles of the same reaction (see toggleResponseVote);
   // the advisory lock is keyed on (response, user, reaction) so it also closes
   // the absent-row race a bare transaction leaves open.
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`response_reaction:${responseId}:${userId}:${reaction}`]);
-    const deleteResult = await client.query(
-      'DELETE FROM response_reactions WHERE response_id = $1 AND user_id = $2 AND reaction = $3',
+  await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`response_reaction:${responseId}:${userId}:${reaction}`]);
+  const deleteResult = await client.query(
+    'DELETE FROM response_reactions WHERE response_id = $1 AND user_id = $2 AND reaction = $3',
+    [responseId, userId, reaction]
+  );
+  if (deleteResult.rowCount === 0) {
+    await client.query(
+      'INSERT INTO response_reactions (response_id, user_id, reaction) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING',
       [responseId, userId, reaction]
     );
-    if (deleteResult.rowCount === 0) {
-      await client.query(
-        'INSERT INTO response_reactions (response_id, user_id, reaction) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING',
-        [responseId, userId, reaction]
-      );
-    }
-    await client.query('COMMIT');
-  } catch (e) {
-    await client.query('ROLLBACK');
-    throw e;
-  } finally {
-    client.release();
   }
 }
 
@@ -2894,15 +2914,6 @@ async function getMyBrainstormState(topic, userId) {
   }
 
   return { ratings, reactions };
-}
-
-// Removes a single vote (used for Brainstorm ideas). The user_id check ensures a
-// participant can only delete their own ideas.
-async function deleteVote(voteId, userId) {
-  await pool.query(
-    'DELETE FROM votes WHERE id = $1 AND user_id = $2',
-    [voteId, userId]
-  );
 }
 
 // Discussions are unlisted unless their moderator lists them: they are reachable
@@ -3305,8 +3316,8 @@ app.post('/api/duplicate-discussion', async (req, res) => {
     // Copy questions from original to new discussion. The interaction flags now
     // live on the discussion (copied above), not per question.
     await client.query(`
-      INSERT INTO questions (discussion_id, text, type, min_value, max_value, options)
-      SELECT $1, text, type, min_value, max_value, options
+      INSERT INTO questions (discussion_id, text, type, min_value, max_value, options, max_responses, show_attribution)
+      SELECT $1, text, type, min_value, max_value, options, max_responses, show_attribution
       FROM questions
       WHERE discussion_id = $2
     `, [newDiscussionId, originalDiscussionId]);

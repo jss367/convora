@@ -3,8 +3,7 @@ export const QuestionTypes = {
     YES_NO: 'Yes/No',
     MULTIPLE_CHOICE: 'Multiple Choice',
     NUMERICAL: 'Numerical',
-    OPEN_ENDED: 'Open Ended',
-    BRAINSTORM: 'Brainstorm'
+    OPEN_ENDED: 'Open Ended'
 };
 
 // Shown under the type picker so creators understand what each type does.
@@ -13,8 +12,7 @@ export const QuestionTypeDescriptions = {
     [QuestionTypes.YES_NO]: 'Each participant picks a simple Yes or No — a binary alternative to the five-point agreement scale.',
     [QuestionTypes.MULTIPLE_CHOICE]: 'Each participant picks one of the answers you write, such as Higher, Lower or About the same.',
     [QuestionTypes.NUMERICAL]: 'Each participant submits a single number on a slider between your min and max.',
-    [QuestionTypes.OPEN_ENDED]: 'Each participant gives one free-text response, which they can edit later. One answer per person.',
-    [QuestionTypes.BRAINSTORM]: 'Each participant can add as many separate ideas as they want, and remove their own. Many answers per person.'
+    [QuestionTypes.OPEN_ENDED]: 'Participants can add, edit, and delete multiple responses, with ratings, reactions, and comments.',
 };
 
 // Bounds on a Multiple Choice question's options. Mirror the

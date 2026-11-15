@@ -13,11 +13,11 @@ import OpinionSnapshots from './OpinionSnapshots';
 import ModeratorLinkPanel, { moderatorLinkPromptState, useModeratorLinkPrompt } from './ModeratorLinkPanel';
 import ModeratorPanel from './ModeratorPanel';
 import { downloadForViewer } from './viewer';
-import OpenEndedQuestion from './questions/OpenEndedQuestion';
+import ResponseSettings from './questions/ResponseSettings';
 import QuestionEditor from './questions/QuestionEditor';
 import { AgreementResults, YesNoResults, MultipleChoiceResults } from './questions/OpinionResults';
 import ChoiceOptionsEditor from './questions/ChoiceOptionsEditor';
-import BrainstormQuestion from './questions/BrainstormQuestion';
+import OpenEndedQuestion from './questions/OpenEndedQuestion';
 import NumericalResults from './questions/NumericalResults';
 import { clampNumericalValue, sortQuestionsMostRecent, validateChoiceOptions } from './questions/questionHelpers.mjs';
 import { guessQuestionType } from './questions/guessQuestionType.mjs';
@@ -173,7 +173,7 @@ const DiscussionPage = () => {
     const closeParticipants = useCallback(() => setShowParticipants(false), []);
     const {
         identity, userId, displayName, effectivePseudonym, pseudonymReserved,
-        shufflePending, selfHandle, ownedVoteIds, upvotedVoteIds, ownedCommentIds,
+        shufflePending, selfHandle, ownedVoteIds, ownedCommentIds,
         isMyVote, handlePseudonymSync, handleRegeneratePseudonym,
         handleSelectNameMode, handleCustomNameChange,
     } = useParticipantIdentity(socket, { topic, discussionSlug, discussionId: discussion?.id, questions });
@@ -765,6 +765,8 @@ const DiscussionPage = () => {
             text: newQuestion.trim(),
             type: questionType,
             timestamp: Date.now(),
+            maxResponses: questionDraft.maxResponses,
+            showAttribution: questionDraft.showAttribution,
         };
 
         // Handle numerical questions
@@ -815,6 +817,9 @@ const DiscussionPage = () => {
                         if (current !== submittedDraft
                             || current.text.trim() !== question.text
                             || current.type !== question.type
+                            || (question.type === QuestionTypes.OPEN_ENDED
+                                && ((Number(current.maxResponses) || null) !== (Number(question.maxResponses) || null)
+                                    || (current.showAttribution !== false) !== (question.showAttribution !== false)))
                             || (question.type === QuestionTypes.NUMERICAL
                                 && (current.minValue !== question.minValue || current.maxValue !== question.maxValue))
                             || (question.type === QuestionTypes.MULTIPLE_CHOICE
@@ -841,7 +846,7 @@ const DiscussionPage = () => {
     };
 
     // onResult is optional. The server acks a stored vote with { added: true }
-    // and a repeated Brainstorm idea with { added: false, reason: 'duplicate' }.
+    // and free-text limits with { added: false, reason: 'limit' }.
     const handleVote = (questionId, value, onResult) => {
         // Send the name mode too: in pseudonym mode the server persists our
         // reserved handle instead of this possibly-pre-reservation displayName,
@@ -879,10 +884,6 @@ const DiscussionPage = () => {
         setSliderValues(prev => ({ ...prev, [questionId]: value }));
     };
 
-    const handleResponseVote = (responseId) => {
-        socket.emit('toggleResponseVote', discussionSlug, responseId, userId);
-    };
-
     // Set/clear one axis of this user's rating on a brainstorm idea. Toggles off
     // when the same value is re-selected. Updates local "mine" state optimistically
     // (no other actor can change this user's own rating) and tells the server.
@@ -905,10 +906,11 @@ const DiscussionPage = () => {
         socket.emit('toggleResponseReaction', topic, responseId, reaction, userId);
     };
 
-    const handleAddComment = (responseId, body) => {
+    const handleAddComment = (responseId, body, onResult) => {
         // Pass the name mode so pseudonym-mode comments persist under our reserved
         // handle rather than a pre-reservation local pick (#57); see handleVote.
-        socket.emit('addResponseComment', topic, responseId, body, userId, displayName, getEffectiveNameMode(identity));
+        socket.timeout(10000).emit('addResponseComment', topic, responseId, body, userId, displayName, getEffectiveNameMode(identity),
+            (error, result) => onResult?.(!error && result?.added === true));
     };
 
     const handleDeleteComment = (commentId) => {
@@ -1150,10 +1152,7 @@ const DiscussionPage = () => {
                 );
             }
             case QuestionTypes.OPEN_ENDED: {
-                return <OpenEndedQuestion question={question} userVote={userVote} handleVote={handleVote} pending={votePending} ownedVoteIds={ownedVoteIds} upvotedVoteIds={upvotedVoteIds} handleResponseVote={handleResponseVote} locked={locked} isAdmin={isAdmin} onModeratorDeleteVote={handleModeratorDeleteVote} />;
-            }
-            case QuestionTypes.BRAINSTORM: {
-                return <BrainstormQuestion
+                return <OpenEndedQuestion
                     question={question}
                     ownedVoteIds={ownedVoteIds}
                     ownedCommentIds={ownedCommentIds}
@@ -1872,6 +1871,9 @@ const DiscussionPage = () => {
                         value={questionType}
                         onPointerDown={() => setQuestionDraft(current => ({ ...current, typeChosen: true }))}
                         onKeyDown={(event) => {
+                            // Confirming this picker must not submit the question
+                            // if the native menu has already consumed its close.
+                            if (event.key === 'Enter') event.preventDefault();
                             if (['Enter', ' ', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) {
                                 setQuestionDraft(current => ({ ...current, typeChosen: true }));
                             }
@@ -1894,6 +1896,7 @@ const DiscussionPage = () => {
                         <p className="mt-2 text-sm text-gray-500">{QuestionTypeDescriptions[questionType]}</p>
                     )}
                 </div>
+                {questionType === QuestionTypes.OPEN_ENDED && <ResponseSettings maxResponses={questionDraft.maxResponses} showAttribution={questionDraft.showAttribution} onChange={chooseQuestionSetting} />}
                 {questionType === QuestionTypes.MULTIPLE_CHOICE && (
                     <ChoiceOptionsEditor
                         options={choiceOptions}

@@ -250,13 +250,13 @@ const ModeratorPanel = ({
                         />
                     </Group>
 
-                    {/* Discussion-wide brainstorm phasing: these apply to every
-                        brainstorm prompt at once (read silently, then open
+                    {/* Discussion-wide response feedback: these apply to every
+                        Open Ended prompt at once (read silently, then open
                         reactions, then open comments). */}
-                    <Group title="Brainstorms">
+                    <Group title="Response feedback">
                         <Switch
                             label="Reactions"
-                            hint="Participants can react to ideas"
+                            hint="Participants can react to responses"
                             checked={!!state.reactionsEnabled}
                             onChange={(on) => onSetFlags({ reactions_enabled: on })}
                         />
@@ -270,7 +270,7 @@ const ModeratorPanel = ({
                         )}
                         <Switch
                             label="Comments"
-                            hint="Participants can comment on ideas"
+                            hint="Participants can comment on responses"
                             checked={!!state.commentsEnabled}
                             onChange={(on) => onSetFlags({ comments_enabled: on })}
                         />

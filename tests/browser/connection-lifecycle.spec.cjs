@@ -13,10 +13,10 @@ test('a dropped connection rejoins the room without losing identity or a draft',
     await observer.goto(`http://127.0.0.1:4173/discussion/${room.slug}`);
     await page.goto(`/discussion/${room.slug}`);
     await expect(page.getByText('2 people here now', { exact: true })).toBeVisible();
-    const answer = page.getByPlaceholder('Enter your response here');
+    const answer = page.getByPlaceholder('Enter a response');
     await answer.fill('My saved answer');
-    await page.getByRole('button', { name: 'Submit Response', exact: true }).click();
-    await expect(page.getByRole('button', { name: 'Update Response', exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Add Response', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Add Response', exact: true })).toBeVisible();
     await answer.fill('My unfinished draft');
     const identity = await page.evaluate(() => {
       window.lifecycleMarker = 'same-page';
@@ -28,11 +28,11 @@ test('a dropped connection rejoins the room without losing identity or a draft',
     await expect.poll(() => connections.length).toBeGreaterThan(1);
     await expect(page.getByText('2 people here now', { exact: true })).toBeVisible();
     await expect(observer.getByText('2 people here now', { exact: true })).toBeVisible();
-    await observer.getByPlaceholder('Enter your response here').fill('Answer received after reconnect');
-    await observer.getByRole('button', { name: 'Submit Response', exact: true }).click();
+    await observer.getByPlaceholder('Enter a response').fill('Answer received after reconnect');
+    await observer.getByRole('button', { name: 'Add Response', exact: true }).click();
     await expect(page.getByRole('listitem').getByText('Answer received after reconnect', { exact: true })).toBeVisible();
     await expect(answer).toHaveValue('My unfinished draft');
-    await expect(page.getByRole('button', { name: 'Update Response', exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Add Response', exact: true })).toBeVisible();
     expect(await page.evaluate(() => localStorage.getItem('convora_identity'))).toBe(identity);
     expect(await page.evaluate(() => window.lifecycleMarker)).toBe('same-page');
   } finally {
@@ -60,9 +60,9 @@ test('switching discussions leaves the previous room and keeps responses isolate
     await observer.goto(`http://127.0.0.1:4173/discussion/${original.slug}`);
     await page.goto(`/discussion/${original.slug}?admin=${original.adminToken}`);
     await expect(page.getByText('2 people here now', { exact: true })).toBeVisible();
-    await page.getByPlaceholder('Enter your response here').fill('Original room answer');
-    await page.getByRole('button', { name: 'Submit Response', exact: true }).click();
-    await expect(page.getByRole('button', { name: 'Update Response', exact: true })).toBeVisible();
+    await page.getByPlaceholder('Enter a response').fill('Original room answer');
+    await page.getByRole('button', { name: 'Add Response', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Add Response', exact: true })).toBeVisible();
     await expect.poll(() => upgraded).toBe(true);
     const identity = await page.evaluate(() => localStorage.getItem('convora_identity'));
     await page.getByRole('button', { name: 'More ▾', exact: true }).click();
@@ -85,11 +85,11 @@ test('switching discussions leaves the previous room and keeps responses isolate
     expect(await page.evaluate(slug => localStorage.getItem(`convora_admin_${slug}`), original.slug)).toBe(original.adminToken);
     expect(await page.evaluate(slug => localStorage.getItem(`convora_admin_${slug}`), result.newSlug)).toBe(result.adminToken);
     await expect(page.getByRole('listitem').getByText('Original room answer', { exact: true })).toHaveCount(0);
-    await page.getByPlaceholder('Enter your response here').fill('New room answer');
-    await page.getByRole('button', { name: 'Submit Response', exact: true }).click();
+    await page.getByPlaceholder('Enter a response').fill('New room answer');
+    await page.getByRole('button', { name: 'Add Response', exact: true }).click();
     await expect(page.getByRole('listitem').getByText('New room answer', { exact: true })).toBeVisible();
-    await observer.getByPlaceholder('Enter your response here').fill('Later original-room answer');
-    await observer.getByRole('button', { name: 'Submit Response', exact: true }).click();
+    await observer.getByPlaceholder('Enter a response').fill('Later original-room answer');
+    await observer.getByRole('button', { name: 'Add Response', exact: true }).click();
     await expect(observer.getByRole('listitem').getByText('Later original-room answer', { exact: true })).toBeVisible();
     await expect(page.getByRole('listitem').getByText('Later original-room answer', { exact: true })).toHaveCount(0);
     await expect(page.getByRole('listitem').getByText('New room answer', { exact: true })).toBeVisible();
@@ -107,12 +107,12 @@ test('switching discussions leaves the previous room and keeps responses isolate
     // ownership state must not survive the room transition.
     await page.goBack();
     await expect(page).toHaveURL(new RegExp(`/discussion/${original.slug}$`));
-    await expect(page.getByPlaceholder('Enter your response here')).toHaveValue('Original room answer');
+    await expect(page.getByRole('listitem').getByText('Original room answer', { exact: true })).toBeVisible();
     await expect(observer.getByText('2 people here now', { exact: true })).toBeVisible();
     await expect(page.getByRole('listitem').getByText('New room answer', { exact: true })).toHaveCount(0);
     await page.goForward();
     await expect(page).toHaveURL(new RegExp(`/discussion/${result.newSlug}$`));
-    await expect(page.getByPlaceholder('Enter your response here')).toHaveValue('New room answer');
+    await expect(page.getByRole('listitem').getByText('New room answer', { exact: true })).toBeVisible();
     await expect(page.getByText('1 person here now', { exact: true })).toBeVisible();
     await expect(observer.getByText('1 person here now', { exact: true })).toBeVisible();
     expect(moderatorChecks.filter(check => check.token !== credentials[check.slug]).map(check => check.slug)).toEqual([]);
@@ -131,8 +131,8 @@ test('a moderator grant and revocation update controls and stored access live', 
     await page.goto(`/discussion/${room.slug}?admin=${room.adminToken}`);
     await participant.goto(`http://127.0.0.1:4173/discussion/${room.slug}`);
     await expect(page.getByText('2 people here now', { exact: true })).toBeVisible();
-    await participant.getByPlaceholder('Enter your response here').fill('Participant present');
-    await participant.getByRole('button', { name: 'Submit Response', exact: true }).click();
+    await participant.getByPlaceholder('Enter a response').fill('Participant present');
+    await participant.getByRole('button', { name: 'Add Response', exact: true }).click();
     await expect(page.getByRole('listitem').getByText('Participant present', { exact: true })).toBeVisible();
     await page.getByRole('switch', { name: 'Only moderators add questions', exact: true }).click();
     await expect(participant.getByRole('button', { name: 'Add Question', exact: true })).toHaveCount(0);
@@ -152,8 +152,8 @@ test('a moderator grant and revocation update controls and stored access live', 
     await participant.reload();
     await expect(participant.getByText('2 people here now', { exact: true })).toBeVisible();
     await expect(participant.getByRole('switch', { name: 'Locked', exact: true })).toHaveCount(0);
-    await participant.getByPlaceholder('Enter your response here').fill('Still allowed to answer');
-    await participant.getByRole('button', { name: 'Update Response', exact: true }).click();
+    await participant.getByPlaceholder('Enter a response').fill('Still allowed to answer');
+    await participant.getByRole('button', { name: 'Add Response', exact: true }).click();
     await expect(page.getByRole('listitem').getByText('Still allowed to answer', { exact: true })).toBeVisible();
   } finally {
     await participantContext.close();
