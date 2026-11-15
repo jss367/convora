@@ -17,6 +17,7 @@ import { AgreementResults, YesNoResults } from './questions/OpinionResults';
 import BrainstormQuestion from './questions/BrainstormQuestion';
 import NumericalResults from './questions/NumericalResults';
 import { clampNumericalValue, sortQuestionsMostRecent } from './questions/questionHelpers.mjs';
+import { guessQuestionType } from './questions/guessQuestionType.mjs';
 import {
     QuestionTypes, QuestionTypeDescriptions, VoteOptions, YesNoOptions,
     EPISTEMIC_REACTIONS, ALL_REACTION_KEYS,
@@ -59,6 +60,13 @@ const SortOptions = {
     MOST_CONTROVERSIAL: 'Most Controversial',
 };
 
+// A blank Add Question form. `typeChosen` records that the author set the type
+// or the numerical range by hand, which stops the type from following the
+// wording (see guessQuestionType).
+const emptyQuestionDraft = () => ({
+    text: '', type: QuestionTypes.AGREEMENT, minValue: 0, maxValue: 100, typeChosen: false,
+});
+
 const DiscussionPage = () => {
     const { topic } = useParams();
     const navigate = useNavigate();
@@ -68,11 +76,19 @@ const DiscussionPage = () => {
     const [pendingVotes, sendVote] = usePendingVotes(socket);
     const [discussion, setDiscussion] = useState(null);
     const [questions, setQuestions] = useState([]);
-    const [questionDraft, setQuestionDraft] = useState({
-        text: '', type: QuestionTypes.AGREEMENT, minValue: 0, maxValue: 100,
-    });
+    const [questionDraft, setQuestionDraft] = useState(emptyQuestionDraft);
     const { text: newQuestion, type: questionType, minValue, maxValue } = questionDraft;
-    const updateQuestionDraft = (field, value) => setQuestionDraft(current => ({ ...current, [field]: value }));
+    // Until the author picks a type themselves, the type follows the wording:
+    // the guess when there is one, otherwise the default.
+    const updateQuestionText = (text) => setQuestionDraft(current => ({
+        ...current,
+        text,
+        type: current.typeChosen ? current.type : guessQuestionType(text) ?? QuestionTypes.AGREEMENT,
+    }));
+    // Changing the type or the numerical range by hand is a deliberate choice,
+    // so later edits to the wording leave it alone.
+    const chooseQuestionSetting = (field, value) => setQuestionDraft(current => ({ ...current, [field]: value, typeChosen: true }));
+    const typeGuessed = !questionDraft.typeChosen && guessQuestionType(newQuestion) !== null;
     const [sliderValues, setSliderValues] = useState({});
     const [sortOption, setSortOption] = useState(SortOptions.MOST_RECENT);
     const [showUnansweredOnly, setShowUnansweredOnly] = useState(false);
@@ -749,7 +765,7 @@ const DiscussionPage = () => {
                             || current.type !== question.type
                             || (question.type === QuestionTypes.NUMERICAL
                                 && (current.minValue !== question.minValue || current.maxValue !== question.maxValue))) return current;
-                        return { text: '', type: QuestionTypes.AGREEMENT, minValue: 0, maxValue: 100 };
+                        return emptyQuestionDraft();
                     });
                 } else if (resp && resp.reason === 'moderator_only') {
                     setError('Only the moderator can add questions right now.');
@@ -1896,7 +1912,7 @@ const DiscussionPage = () => {
                     ref={questionInputRef}
                     type="text"
                     value={newQuestion}
-                    onChange={(e) => updateQuestionDraft('text', e.target.value)}
+                    onChange={(e) => updateQuestionText(e.target.value)}
                     // Holding Enter auto-repeats; submit once per key press.
                     onKeyDown={(e) => { if (e.key === 'Enter' && e.repeat) e.preventDefault(); }}
                     placeholder="Enter a new question or statement"
@@ -1906,13 +1922,20 @@ const DiscussionPage = () => {
                     <label className="block mb-2">Question Type:</label>
                     <select
                         value={questionType}
-                        onChange={(e) => updateQuestionDraft('type', e.target.value)}
+                        onChange={(e) => chooseQuestionSetting('type', e.target.value)}
                         className="w-full p-3 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary"
                     >
                         {Object.values(QuestionTypes).map(type => (
                             <option key={type} value={type}>{type}</option>
                         ))}
                     </select>
+                    {/* A status, so screen readers hear the type change while
+                        the author is still in the text box. */}
+                    {typeGuessed && (
+                        <p role="status" className="mt-2 text-sm text-primary">
+                            Set to {questionType} based on your wording. Pick another type if that is not what you meant.
+                        </p>
+                    )}
                     {QuestionTypeDescriptions[questionType] && (
                         <p className="mt-2 text-sm text-gray-500">{QuestionTypeDescriptions[questionType]}</p>
                     )}
@@ -1924,7 +1947,7 @@ const DiscussionPage = () => {
                             <input
                                 type="number"
                                 value={minValue}
-                                onChange={(e) => updateQuestionDraft('minValue', parseInt(e.target.value))}
+                                onChange={(e) => chooseQuestionSetting('minValue', parseInt(e.target.value))}
                                 className="w-full p-3 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary"
                             />
                         </div>
@@ -1933,7 +1956,7 @@ const DiscussionPage = () => {
                             <input
                                 type="number"
                                 value={maxValue}
-                                onChange={(e) => updateQuestionDraft('maxValue', parseInt(e.target.value))}
+                                onChange={(e) => chooseQuestionSetting('maxValue', parseInt(e.target.value))}
                                 className="w-full p-3 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary"
                             />
                         </div>
