@@ -8,6 +8,9 @@ const HomePage = () => {
     // opened (see knownDiscussions.js), never a server-wide list.
     const [discussions, setDiscussions] = useState(getKnownDiscussions);
     const [newDiscussion, setNewDiscussion] = useState('');
+    const [listPublicly, setListPublicly] = useState(false);
+    // Discussions their moderators chose to list; null until loaded.
+    const [publicDiscussions, setPublicDiscussions] = useState(null);
     // True while a create request is in flight, so a repeated Enter or a
     // double click can't create the discussion twice.
     const creatingRef = useRef(false);
@@ -41,6 +44,21 @@ const HomePage = () => {
         };
     }, []);
 
+    useEffect(() => {
+        let cancelled = false;
+        fetch('/api/discussions/public')
+            .then(response => {
+                if (!response.ok) throw new Error('Failed to fetch public discussions');
+                return response.json();
+            })
+            .then(found => { if (!cancelled) setPublicDiscussions(Array.isArray(found) ? found : []); })
+            .catch(error => {
+                console.error('Error fetching public discussions:', error);
+                if (!cancelled) setPublicDiscussions([]);
+            });
+        return () => { cancelled = true; };
+    }, []);
+
     const handleCreateDiscussion = async (event) => {
         // Submitted from the form (Enter or the Create button); stop the
         // browser's native submit from reloading the page.
@@ -54,7 +72,7 @@ const HomePage = () => {
                     headers: {
                         'Content-Type': 'application/json',
                     },
-                    body: JSON.stringify({ topic }),
+                    body: JSON.stringify({ topic, listed: listPublicly }),
                 });
                 if (!response.ok) {
                     throw new Error('Failed to create discussion');
@@ -84,7 +102,24 @@ const HomePage = () => {
 
     // Entries seeded from a stored moderator token have no title until the
     // server confirms them.
-    const listedDiscussions = discussions.filter(discussion => discussion.topic);
+    const namedDiscussions = discussions.filter(discussion => discussion.topic);
+
+    const renderDiscussionLinks = list => (
+        <div className="grid gap-6">
+            {list.map(discussion => (
+                <Link
+                    key={discussion.slug}
+                    to={`/discussion/${discussion.slug}`}
+                    className="bg-white shadow-lg rounded-lg p-6 hover:shadow-xl transition duration-300"
+                >
+                    <h3 className="text-xl font-semibold mb-2">{discussion.topic}</h3>
+                    {discussion.created_at && (
+                        <p className="text-gray-600">Created: {new Date(discussion.created_at).toLocaleString()}</p>
+                    )}
+                </Link>
+            ))}
+        </div>
+    );
 
     return (
         <div className="max-w-4xl mx-auto mt-10">
@@ -102,30 +137,31 @@ const HomePage = () => {
                     />
                     <button type="submit" className="px-4 py-2 bg-primary text-white rounded hover:bg-opacity-90 transition duration-300">Create</button>
                 </form>
+                <label className="mt-2 flex items-center gap-2 text-gray-700">
+                    <input
+                        type="checkbox"
+                        checked={listPublicly}
+                        onChange={(e) => setListPublicly(e.target.checked)}
+                    />
+                    List publicly on this page
+                    <span className="text-sm text-gray-500">(otherwise only people with the link can find it)</span>
+                </label>
             </div>
 
             <h2 className="text-2xl font-bold mb-4">Your Discussions</h2>
-            {listedDiscussions.length === 0 ? (
+            {namedDiscussions.length === 0 ? (
                 <p className="text-gray-600">
                     Discussions you create or open in this browser will appear here.
-                    Discussions are unlisted: only people with the link can find them.
+                    Discussions are unlisted unless their moderator lists them publicly.
                 </p>
-            ) : (
-                <div className="grid gap-6">
-                    {listedDiscussions.map(discussion => (
-                        <Link
-                            key={discussion.slug}
-                            to={`/discussion/${discussion.slug}`}
-                            className="bg-white shadow-lg rounded-lg p-6 hover:shadow-xl transition duration-300"
-                        >
-                            <h2 className="text-xl font-semibold mb-2">{discussion.topic}</h2>
-                            {discussion.created_at && (
-                                <p className="text-gray-600">Created: {new Date(discussion.created_at).toLocaleString()}</p>
-                            )}
-                        </Link>
-                    ))}
-                </div>
-            )}
+            ) : renderDiscussionLinks(namedDiscussions)}
+
+            <h2 className="text-2xl font-bold mt-10 mb-4">Public Discussions</h2>
+            {publicDiscussions === null ? (
+                <p className="text-gray-500">Loading…</p>
+            ) : publicDiscussions.length === 0 ? (
+                <p className="text-gray-600">No discussions are listed publicly yet.</p>
+            ) : renderDiscussionLinks(publicDiscussions)}
         </div>
     );
 };

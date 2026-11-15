@@ -379,6 +379,10 @@ const DiscussionPage = () => {
         socket.emit('setLocked', discussionSlug, !locked, adminToken);
     };
 
+    const handleToggleListed = () => {
+        socket.emit('setListed', discussionSlug, !discussionState.listed, adminToken);
+    };
+
     const handleToggleModeratorOnly = () => {
         socket.emit('setModeratorOnly', discussionSlug, !moderatorOnly, adminToken);
     };
@@ -1527,6 +1531,16 @@ const DiscussionPage = () => {
                                 : 'Only you can add questions; everyone can still vote'}
                         >
                             {moderatorOnly ? 'Open questions to everyone' : 'Only I can add questions'}
+                        </button>
+                        <button
+                            onClick={handleToggleListed}
+                            aria-pressed={discussionState.listed === true}
+                            className="px-3 py-1 rounded bg-white border border-indigo-300 text-indigo-700 hover:bg-indigo-100"
+                            title={discussionState.listed
+                                ? 'Listed on the Convora home page for anyone to find'
+                                : 'Only people with the link can find this discussion'}
+                        >
+                            {discussionState.listed ? 'Listed publicly' : 'List publicly'}
                         </button>
                         <label className="flex items-center gap-1.5 font-medium text-indigo-800">
                             Results

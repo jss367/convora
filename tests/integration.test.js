@@ -344,6 +344,63 @@ test('discussions are unlisted: the listing endpoint returns only slugs the call
   }
 });
 
+test('a creator can list a discussion publicly; everything else stays unlisted', async () => {
+  const publicSlugs = async () => {
+    const response = await jsonRequest('GET', '/api/discussions/public');
+    assert.equal(response.status, 200);
+    return response.body.map(row => row.slug);
+  };
+
+  // Unlisted by default, and ignored unless it is exactly true.
+  const quiet = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('listing-default') });
+  const sneaky = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('listing-truthy'), listed: 'yes' });
+  assert.deepEqual(await publicSlugs(), []);
+
+  // Listed at creation: shown with only its title, slug and creation time.
+  const listed = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('listing-public'), listed: true });
+  const list = (await jsonRequest('GET', '/api/discussions/public')).body;
+  assert.deepEqual(list.map(row => row.slug), [listed.body.slug]);
+  assert.deepEqual(Object.keys(list[0]).sort(), ['created_at', 'slug', 'topic']);
+  assert.equal(list[0].topic, listed.body.topic);
+
+  // Typing an existing title joins that discussion and must not change its listing.
+  const rejoin = await jsonRequest('POST', '/api/discussions', { topic: quiet.body.topic, listed: true });
+  assert.equal(rejoin.body.slug, quiet.body.slug);
+  assert.equal(rejoin.body.adminToken, null);
+  const unlistAttempt = await jsonRequest('POST', '/api/discussions', { topic: listed.body.topic, listed: false });
+  assert.equal(unlistAttempt.body.adminToken, null);
+  assert.deepEqual(await publicSlugs(), [listed.body.slug]);
+
+  // Only a moderator can change it, and everyone in the room hears the change.
+  const { socket: participant } = await joinAs(quiet.body.slug, 'listing-participant');
+  const mod = await connectSocket();
+  try {
+    const refused = waitForEvent(participant, 'error', error => /not authorized/i.test(error.message));
+    participant.emit('setListed', quiet.body.slug, true, 'not-the-token');
+    await refused;
+    assert.deepEqual(await publicSlugs(), [listed.body.slug]);
+
+    const shown = waitForEvent(participant, 'discussionState', state => state.listed === true);
+    mod.emit('setListed', quiet.body.slug, true, quiet.body.adminToken);
+    await shown;
+    assert.deepEqual((await publicSlugs()).sort(), [listed.body.slug, quiet.body.slug].sort());
+
+    const hidden = waitForEvent(participant, 'discussionState', state => state.listed === false);
+    mod.emit('setListed', quiet.body.slug, false, quiet.body.adminToken);
+    await hidden;
+    assert.deepEqual(await publicSlugs(), [listed.body.slug]);
+  } finally {
+    participant.disconnect();
+    mod.disconnect();
+  }
+
+  // A duplicate starts unlisted, whatever the original was.
+  const copy = await jsonRequest('POST', '/api/duplicate-discussion', { originalTopic: listed.body.slug, newTopic: uniqueTopic('listing-copy') });
+  assert.equal(copy.status, 200);
+  assert.deepEqual(await publicSlugs(), [listed.body.slug]);
+  assert.equal((await publicSlugs()).includes(sneaky.body.slug), false);
+});
+
 for (const { type, value, expected, equivalentIds } of [
   { type: 'Numerical', value: '42', expected: 1 },
   { type: 'Numerical', value: '42', expected: 1, equivalentIds: true },
