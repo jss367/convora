@@ -174,6 +174,8 @@ test('the room display keeps the screen awake, and asks again after the tab was 
 
   await page.evaluate(() => window.__wakeLock.setVisibility('hidden'));
   expect(await page.evaluate(() => window.__wakeLock.held())).toBe(0);
+  // A hidden display doesn't keep the screen on through the video either.
+  expect(await keepAwakeVideoPlaying(page)).toBe('paused');
   await page.evaluate(() => window.__wakeLock.setVisibility('visible'));
   await expect.poll(() => page.evaluate(() => window.__wakeLock.held())).toBe(1);
   expect(await page.evaluate(() => window.__wakeLock.requests)).toBe(2);
@@ -197,11 +199,9 @@ for (const api of ['missing', 'refused']) {
 
     // Paused while hidden, it plays again when the tab is shown; there is only
     // ever one video.
-    await page.evaluate(() => {
-      document.querySelector('[data-testid="keep-awake-video"]').pause();
-      window.__wakeLock.setVisibility('hidden');
-      window.__wakeLock.setVisibility('visible');
-    });
+    await page.evaluate(() => window.__wakeLock.setVisibility('hidden'));
+    expect(await keepAwakeVideoPlaying(page)).toBe('paused');
+    await page.evaluate(() => window.__wakeLock.setVisibility('visible'));
     await expect.poll(() => keepAwakeVideoPlaying(page)).toBe('playing');
     expect(await page.locator('[data-testid="keep-awake-video"]').count()).toBe(1);
 

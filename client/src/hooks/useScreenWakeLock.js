@@ -70,10 +70,14 @@ export default function useScreenWakeLock() {
             if (active && granted?.released && document.visibilityState === 'visible') requestLock();
         };
 
-        // The browser may pause the video and drops the lock while the tab is
-        // hidden, so both are resumed when it is shown.
+        // The browser drops the lock while the tab is hidden; the video is
+        // paused then too, so a hidden display never keeps the screen on. Both
+        // are resumed when it is shown.
         const onVisible = () => {
-            if (document.visibilityState !== 'visible') return;
+            if (document.visibilityState !== 'visible') {
+                video.pause();
+                return;
+            }
             playVideo();
             requestLock();
         };
