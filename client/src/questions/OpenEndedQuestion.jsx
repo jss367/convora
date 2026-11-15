@@ -19,6 +19,8 @@ const WrittenResponse = ({
     const draftRef = useRef(draft);
     draftRef.current = draft;
     const [comment, setComment] = useState('');
+    const [commentPending, setCommentPending] = useState(false);
+    const commentPendingRef = useRef(false);
     const net = (vote.qualityUp || 0) - (vote.qualityDown || 0);
     const comments = vote.comments || [];
     // You can't rate/react to your own response (the server rejects it too), so
@@ -28,9 +30,13 @@ const WrittenResponse = ({
 
     const submitComment = () => {
         const trimmed = comment.trim();
-        if (trimmed === '') return;
+        if (trimmed === '' || commentPendingRef.current) return;
+        commentPendingRef.current = true;
+        setCommentPending(true);
         onAddComment(vote.id, trimmed, (added) => {
             if (added) setComment(current => current === comment ? '' : current);
+            commentPendingRef.current = false;
+            setCommentPending(false);
         });
     };
 
@@ -173,7 +179,8 @@ const WrittenResponse = ({
                                     />
                                     <button
                                         onClick={submitComment}
-                                        disabled={comment.trim() === ''}
+                                        disabled={commentPending || comment.trim() === ''}
+                                        aria-busy={commentPending}
                                         className="shrink-0 px-3 py-1 text-sm bg-primary text-white rounded hover:bg-opacity-90 disabled:opacity-50"
                                     >
                                         Post
