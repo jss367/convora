@@ -10,7 +10,8 @@ import { useModalDialog } from './hooks/useModalDialog';
 import { slugifyTopic } from './slugs';
 import { forgetDiscussion } from './knownDiscussions';
 import OpinionSnapshots from './OpinionSnapshots';
-import ModeratorLinkPanel, { ModeratorLinkUnsavedMark, moderatorLinkPromptState, useModeratorLinkPrompt } from './ModeratorLinkPanel';
+import ModeratorLinkPanel, { moderatorLinkPromptState, useModeratorLinkPrompt } from './ModeratorLinkPanel';
+import ModeratorPanel from './ModeratorPanel';
 import { downloadForViewer } from './viewer';
 import ResponseSettings from './questions/ResponseSettings';
 import QuestionEditor from './questions/QuestionEditor';
@@ -22,7 +23,7 @@ import { clampNumericalValue, sortQuestionsMostRecent, validateChoiceOptions } f
 import { guessQuestionType } from './questions/guessQuestionType.mjs';
 import {
     QuestionTypes, QuestionTypeDescriptions, VoteOptions, YesNoOptions,
-    EPISTEMIC_REACTIONS, ALL_REACTION_KEYS, MULTIPLE_CHOICE_LIMITS,
+    ALL_REACTION_KEYS, MULTIPLE_CHOICE_LIMITS,
 } from './questions/config';
 
 // A blank Add Question form. Multiple Choice starts with two empty options, the
@@ -109,6 +110,14 @@ const DiscussionPage = () => {
     // in-progress edit; editingTitle swaps the <h1> for the editor.
     const [editingTitle, setEditingTitle] = useState(false);
     const [titleDraft, setTitleDraft] = useState('');
+    // The rename button is replaced by the editor while renaming, so hand
+    // focus back to it when the editor closes.
+    const renameButtonRef = useRef(null);
+    const wasEditingTitle = useRef(false);
+    useEffect(() => {
+        if (wasEditingTitle.current && !editingTitle) renameButtonRef.current?.focus();
+        wasEditingTitle.current = editingTitle;
+    }, [editingTitle]);
     const [showDeleteModal, setShowDeleteModal] = useState(false);
     const [deleting, setDeleting] = useState(false);
     const [deleteError, setDeleteError] = useState('');
@@ -404,18 +413,6 @@ const DiscussionPage = () => {
         });
     };
 
-    const handleToggleLock = () => {
-        socket.emit('setLocked', discussionSlug, !locked, adminToken);
-    };
-
-    const handleToggleListed = () => {
-        socket.emit('setListed', discussionSlug, !discussionState.listed, adminToken);
-    };
-
-    const handleToggleModeratorOnly = () => {
-        socket.emit('setModeratorOnly', discussionSlug, !moderatorOnly, adminToken);
-    };
-
     const handleSetTheme = (themeKey) => {
         socket.emit('setTheme', discussionSlug, themeKey, adminToken);
     };
@@ -576,7 +573,7 @@ const DiscussionPage = () => {
     // Open the inline title editor, seeding it with the loaded discussion's
     // actual title. Guard until the discussion has loaded so we never seed the
     // editor from the route slug (or a previous room) and then save THAT as the
-    // new title; the Rename button is also disabled until then.
+    // new title; the rename button is also disabled until then.
     const handleStartRename = () => {
         if (!discussion?.topic) return;
         setTitleDraft(discussion.topic);
@@ -1233,7 +1230,26 @@ const DiscussionPage = () => {
             ) : (
                 // Phones drop the "Discussion:" prefix visually; it stays in the
                 // heading's accessible name.
-                <h1 className="text-2xl sm:text-4xl font-bold mb-2 text-center text-gray-800"><span className="sr-only sm:not-sr-only">Discussion: </span>{discussionTitle}</h1>
+                // The rename button sits beside the heading, not inside it, so it
+                // stays out of the heading's accessible name.
+                <div className="mb-2 flex items-center justify-center gap-2">
+                    <h1 className="min-w-0 text-2xl sm:text-4xl font-bold text-center text-gray-800"><span className="sr-only sm:not-sr-only">Discussion: </span>{discussionTitle}</h1>
+                    {isAdmin && (
+                        <button
+                            type="button"
+                            ref={renameButtonRef}
+                            onClick={handleStartRename}
+                            disabled={!discussion?.topic}
+                            aria-label="Rename discussion"
+                            title="Rename discussion"
+                            className="shrink-0 rounded p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-700 disabled:opacity-50"
+                        >
+                            <svg aria-hidden="true" viewBox="0 0 20 20" fill="currentColor" className="h-5 w-5">
+                                <path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z" />
+                            </svg>
+                        </button>
+                    )}
+                </div>
             )}
 
             {/* Participant identity + live presence */}
@@ -1625,198 +1641,96 @@ const DiscussionPage = () => {
                 </div>
             )}
 
-            {/* Moderator bar */}
+            {/* Moderator controls */}
             <div className="mb-6">
                 {isAdmin && <ModeratorLinkPanel prompt={moderatorLink} adminUrl={adminUrl} onCopy={handleCopyAdminLink} />}
                 {isAdmin ? (
-                    <div className="flex flex-wrap items-center gap-3 bg-indigo-50 border border-indigo-100 rounded-md p-3 text-sm">
-                        <span className="font-semibold text-indigo-800">You&apos;re the moderator</span>
-                        <button
-                            onClick={handleStartRename}
-                            disabled={editingTitle || !discussion?.topic}
-                            className="px-3 py-1 rounded bg-white border border-indigo-300 text-indigo-700 hover:bg-indigo-100 disabled:opacity-50"
-                            title="Change the discussion's name"
-                        >
-                            Rename discussion
-                        </button>
-                        <button
-                            onClick={handleToggleLock}
-                            className="px-3 py-1 rounded bg-white border border-indigo-300 text-indigo-700 hover:bg-indigo-100"
-                        >
-                            {locked ? 'Unlock discussion' : 'Lock discussion'}
-                        </button>
-                        <button
-                            onClick={handleToggleModeratorOnly}
-                            className="px-3 py-1 rounded bg-white border border-indigo-300 text-indigo-700 hover:bg-indigo-100"
-                            title={moderatorOnly
-                                ? 'Anyone can add questions'
-                                : 'Only you can add questions; everyone can still vote'}
-                        >
-                            {moderatorOnly ? 'Open questions to everyone' : 'Only I can add questions'}
-                        </button>
-                        <button
-                            onClick={handleToggleListed}
-                            aria-pressed={discussionState.listed === true}
-                            className="px-3 py-1 rounded bg-white border border-indigo-300 text-indigo-700 hover:bg-indigo-100"
-                            title={discussionState.listed
-                                ? 'Listed on the Convora home page for anyone to find'
-                                : 'Only people with the link can find this discussion'}
-                        >
-                            {discussionState.listed ? 'Listed publicly' : 'List publicly'}
-                        </button>
-                        <label className="flex items-center gap-1.5 font-medium text-indigo-800">
-                            Results
-                            <select
-                                value={discussionState.resultsVisibility === 'always' ? 'always' : 'after_vote'}
-                                onChange={(e) => socket.emit('setResultsVisibility', discussionSlug, e.target.value, adminToken)}
-                                title="When participants see the results of agreement, yes/no and numerical questions. Moderators always see them."
-                                className="px-2 py-1 rounded bg-white border border-indigo-300 text-indigo-700 font-normal"
-                            >
-                                <option value="after_vote">Show results after you vote</option>
-                                <option value="always">Always show results</option>
-                            </select>
-                        </label>
-                        <button
-                            ref={moderatorLink.toolbarButtonRef}
-                            onClick={handleCopyAdminLink}
-                            className="px-3 py-1 rounded bg-white border border-indigo-300 text-indigo-700 hover:bg-indigo-100"
-                            title="Anyone with this link becomes a moderator"
-                        >
-                            {adminLinkCopied ? 'Link copied!' : 'Copy moderator link'}
-                            {!moderatorLink.saved && <ModeratorLinkUnsavedMark />}
-                        </button>
-                        <button
-                            onClick={handleToggleParticipants}
-                            className="px-3 py-1 rounded bg-white border border-indigo-300 text-indigo-700 hover:bg-indigo-100"
-                        >
-                            {showParticipants ? 'Hide participants' : 'Manage participants'}
-                        </button>
-                        <button
-                            onClick={handleToggleJoinQr}
-                            className="px-3 py-1 rounded bg-white border border-indigo-300 text-indigo-700 hover:bg-indigo-100"
-                        >
-                            {showJoinQr ? 'Hide join QR' : 'Show join QR'}
-                        </button>
-                        {/* A read-only page for the room's shared screen. It carries
-                            no moderator token, so projecting it shows only what
-                            the results setting lets everyone see. */}
-                        <a
-                            href={`/discussion/${encodeURIComponent(discussionSlug)}/display`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="px-3 py-1 rounded bg-white border border-indigo-300 text-indigo-700 hover:bg-indigo-100"
-                            title="A read-only page for a shared TV or projector: join QR code, questions and live counts"
-                        >
-                            Open room display
-                        </a>
-                        {/* How the room display presents itself. Set here, so
-                            nobody has to walk up to the shared screen. */}
-                        <label className="flex items-center gap-1.5 font-medium text-indigo-800">
-                            Display QR
-                            <select
-                                value={discussionState.displayQr || 'full'}
-                                onChange={(e) => socket.emit('setDisplaySettings', discussionSlug, { qr: e.target.value }, adminToken)}
-                                title="How the room display shows the join QR code"
-                                className="px-2 py-1 rounded bg-white border border-indigo-300 text-indigo-700 font-normal"
-                            >
-                                <option value="full">Large</option>
-                                <option value="corner">Small, in a corner</option>
-                                <option value="hidden">Hidden</option>
-                            </select>
-                        </label>
-                        <label className="flex items-center gap-1.5 font-medium text-indigo-800">
-                            Display shows
-                            <select
-                                value={discussionState.displayLayout || 'all'}
-                                onChange={(e) => socket.emit('setDisplaySettings', discussionSlug, { layout: e.target.value }, adminToken)}
-                                title="One question shows the first pinned question, or the newest one when nothing is pinned"
-                                className="px-2 py-1 rounded bg-white border border-indigo-300 text-indigo-700 font-normal"
-                            >
-                                <option value="all">All questions</option>
-                                <option value="focus">One question</option>
-                            </select>
-                        </label>
-                        {/* Color theme picker: clicking a swatch recolors the
-                            discussion for everyone in the room. */}
-                        <div className="flex items-center gap-1.5 pl-1" role="group" aria-label="Color theme">
-                            <span className="font-medium text-indigo-800">Theme</span>
-                            {THEMES.map((t) => (
+                    <ModeratorPanel
+                        discussionSlug={discussionSlug}
+                        state={discussionState}
+                        theme={theme}
+                        themes={THEMES}
+                        activeReactionKeys={activeReactionKeys}
+                        onSetLocked={(on) => socket.emit('setLocked', discussionSlug, on, adminToken)}
+                        onSetModeratorOnly={(on) => socket.emit('setModeratorOnly', discussionSlug, on, adminToken)}
+                        onSetListed={(on) => socket.emit('setListed', discussionSlug, on, adminToken)}
+                        onSetResultsVisibility={(value) => socket.emit('setResultsVisibility', discussionSlug, value, adminToken)}
+                        onSetDisplaySettings={(settings) => socket.emit('setDisplaySettings', discussionSlug, settings, adminToken)}
+                        onSetTheme={handleSetTheme}
+                        onSetFlags={handleSetDiscussionFlags}
+                        onSetReactionKeys={handleSetReactionKeys}
+                        linkPrompt={moderatorLink}
+                        linkCopied={adminLinkCopied}
+                        onCopyLink={handleCopyAdminLink}
+                        showJoinQr={showJoinQr}
+                        onToggleJoinQr={handleToggleJoinQr}
+                        showParticipants={showParticipants}
+                        onToggleParticipants={handleToggleParticipants}
+                    >
+                        {/* Participant management: promote a participant to
+                            moderator. Only people who have voted or responded
+                            appear here — the server can't name silent viewers. */}
+                        <div className="bg-white border border-indigo-100 rounded-md p-4 text-sm">
+                            <div className="flex items-center justify-between mb-3">
+                                <span className="font-semibold text-gray-700">Participants</span>
                                 <button
-                                    key={t.key}
-                                    type="button"
-                                    onClick={() => handleSetTheme(t.key)}
-                                    title={t.label}
-                                    aria-label={`${t.label} theme`}
-                                    aria-pressed={theme === t.key}
-                                    className={`h-6 w-6 rounded-full border border-white shadow-sm transition ${
-                                        theme === t.key
-                                            ? 'ring-2 ring-offset-1 ring-gray-700'
-                                            : 'hover:scale-110'
-                                    }`}
-                                    style={{ backgroundColor: t.swatch }}
-                                />
-                            ))}
-                        </div>
-                        {/* Discussion-wide brainstorm phasing: these apply to
-                            every brainstorm prompt at once (read silently, then
-                            open reactions, then open comments). */}
-                        <span className="w-px self-stretch bg-indigo-200" aria-hidden="true" />
-                        <span className="text-indigo-700">Response feedback:</span>
-                        <button
-                            onClick={() => handleSetDiscussionFlags({ reactions_enabled: !discussionState.reactionsEnabled })}
-                            className="px-3 py-1 rounded bg-white border border-indigo-300 text-indigo-700 hover:bg-indigo-100"
-                        >
-                            {discussionState.reactionsEnabled ? 'Disable reactions' : 'Enable reactions'}
-                        </button>
-                        {discussionState.reactionsEnabled && (
-                            <button
-                                onClick={() => handleSetDiscussionFlags({ reactions_visible: !discussionState.reactionsVisible })}
-                                className="px-3 py-1 rounded bg-white border border-indigo-300 text-indigo-700 hover:bg-indigo-100"
-                            >
-                                {discussionState.reactionsVisible ? 'Hide reactions' : 'Show reactions'}
-                            </button>
-                        )}
-                        <button
-                            onClick={() => handleSetDiscussionFlags({ comments_enabled: !discussionState.commentsEnabled })}
-                            className="px-3 py-1 rounded bg-white border border-indigo-300 text-indigo-700 hover:bg-indigo-100"
-                        >
-                            {discussionState.commentsEnabled ? 'Disable comments' : 'Enable comments'}
-                        </button>
-                        {/* Creator-configurable reaction set (whole session): which
-                            epistemic reactions participants may use. Discussion-wide,
-                            so it lives here alongside the other brainstorm toggles. */}
-                        {discussionState.reactionsEnabled && (
-                            <div className="w-full flex flex-wrap items-center gap-1 mt-1 border-t border-indigo-200 pt-2 text-xs">
-                                <span className="text-indigo-700">Reaction set (whole session):</span>
-                                {EPISTEMIC_REACTIONS.map(r => {
-                                    const on = activeReactionKeys.includes(r.key);
-                                    return (
-                                        <button
-                                            key={r.key}
-                                            type="button"
-                                            // Toggling rebuilds the active list in catalog order; the
-                                            // last remaining reaction can't be removed (the server
-                                            // ignores an empty set, so guard the UI to match).
-                                            onClick={() => {
-                                                const next = on
-                                                    ? activeReactionKeys.filter(k => k !== r.key)
-                                                    : EPISTEMIC_REACTIONS.map(c => c.key)
-                                                        .filter(k => k === r.key || activeReactionKeys.includes(k));
-                                                if (next.length === 0) return;
-                                                handleSetReactionKeys(next);
-                                            }}
-                                            title={on ? `Hide "${r.label}"` : `Show "${r.label}"`}
-                                            className={`px-2 py-0.5 rounded-full border ${on
-                                                ? 'bg-indigo-100 border-indigo-400 text-indigo-800'
-                                                : 'bg-white border-gray-300 text-gray-400 line-through'}`}
-                                        >
-                                            <span className="mr-1">{r.emoji}</span>{r.label}
-                                        </button>
-                                    );
-                                })}
+                                    onClick={refreshParticipants}
+                                    className="text-xs text-indigo-600 underline hover:text-indigo-800"
+                                >
+                                    Refresh
+                                </button>
                             </div>
-                        )}
-                    </div>
+                            {participants.length === 0 ? (
+                                <p className="text-gray-500">
+                                    No participants yet. People show up here once they vote or post a response.
+                                </p>
+                            ) : (
+                                <ul className="divide-y divide-gray-100">
+                                    {participants.map((participant) => (
+                                        <li key={participant.id} className="flex items-center justify-between py-2">
+                                            <span className="text-gray-800">
+                                                {participant.pseudonym}
+                                                {participant.id === selfHandle && (
+                                                    <span className="text-gray-400"> (you)</span>
+                                                )}
+                                            </span>
+                                            {/* Never offer promote/remove on your own row: self-promote or
+                                                self-remove tangles the creator's admin_token with a per-user
+                                                grant. Show only the Moderator badge if applicable. */}
+                                            {participant.id === selfHandle ? (
+                                                participant.isModerator ? (
+                                                    <span className="text-xs font-medium text-indigo-700 bg-indigo-50 px-2 py-1 rounded">
+                                                        Moderator
+                                                    </span>
+                                                ) : null
+                                            ) : participant.isModerator ? (
+                                                <div className="flex items-center gap-2">
+                                                    <span className="text-xs font-medium text-indigo-700 bg-indigo-50 px-2 py-1 rounded">
+                                                        Moderator
+                                                    </span>
+                                                    {canDemote && (
+                                                        <button
+                                                            onClick={() => handleDemoteParticipant(participant.id)}
+                                                            className="text-xs px-2 py-1 rounded bg-white border border-red-300 text-red-600 hover:bg-red-50"
+                                                        >
+                                                            Remove
+                                                        </button>
+                                                    )}
+                                                </div>
+                                            ) : (
+                                                <button
+                                                    onClick={() => handlePromoteParticipant(participant.id)}
+                                                    className="text-xs px-2 py-1 rounded bg-indigo-600 text-white hover:bg-indigo-700"
+                                                >
+                                                    Make moderator
+                                                </button>
+                                            )}
+                                        </li>
+                                    ))}
+                                </ul>
+                            )}
+                        </div>
+                    </ModeratorPanel>
                 ) : !discussionState.hasModerator ? (
                     <button
                         onClick={handleClaimModerator}
@@ -1826,72 +1740,6 @@ const DiscussionPage = () => {
                     </button>
                 ) : null}
             </div>
-
-            {/* Participant management (moderator-only): promote a participant to
-                moderator. Only people who have voted or responded appear here —
-                the server can't name silent viewers. */}
-            {isAdmin && showParticipants && (
-                <div className="mb-6 bg-white border border-indigo-100 rounded-md p-4 text-sm">
-                    <div className="flex items-center justify-between mb-3">
-                        <span className="font-semibold text-gray-700">Participants</span>
-                        <button
-                            onClick={refreshParticipants}
-                            className="text-xs text-indigo-600 underline hover:text-indigo-800"
-                        >
-                            Refresh
-                        </button>
-                    </div>
-                    {participants.length === 0 ? (
-                        <p className="text-gray-500">
-                            No participants yet. People show up here once they vote or post a response.
-                        </p>
-                    ) : (
-                        <ul className="divide-y divide-gray-100">
-                            {participants.map((participant) => (
-                                <li key={participant.id} className="flex items-center justify-between py-2">
-                                    <span className="text-gray-800">
-                                        {participant.pseudonym}
-                                        {participant.id === selfHandle && (
-                                            <span className="text-gray-400"> (you)</span>
-                                        )}
-                                    </span>
-                                    {/* Never offer promote/remove on your own row: self-promote or
-                                        self-remove tangles the creator's admin_token with a per-user
-                                        grant. Show only the Moderator badge if applicable. */}
-                                    {participant.id === selfHandle ? (
-                                        participant.isModerator ? (
-                                            <span className="text-xs font-medium text-indigo-700 bg-indigo-50 px-2 py-1 rounded">
-                                                Moderator
-                                            </span>
-                                        ) : null
-                                    ) : participant.isModerator ? (
-                                        <div className="flex items-center gap-2">
-                                            <span className="text-xs font-medium text-indigo-700 bg-indigo-50 px-2 py-1 rounded">
-                                                Moderator
-                                            </span>
-                                            {canDemote && (
-                                                <button
-                                                    onClick={() => handleDemoteParticipant(participant.id)}
-                                                    className="text-xs px-2 py-1 rounded bg-white border border-red-300 text-red-600 hover:bg-red-50"
-                                                >
-                                                    Remove
-                                                </button>
-                                            )}
-                                        </div>
-                                    ) : (
-                                        <button
-                                            onClick={() => handlePromoteParticipant(participant.id)}
-                                            className="text-xs px-2 py-1 rounded bg-indigo-600 text-white hover:bg-indigo-700"
-                                        >
-                                            Make moderator
-                                        </button>
-                                    )}
-                                </li>
-                            ))}
-                        </ul>
-                    )}
-                </div>
-            )}
 
             {/* Locked banner */}
             {locked && (

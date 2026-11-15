@@ -24,6 +24,9 @@ editor, answer components, result charts, and their shared display configuration
 and room subscriptions live in `client/src/hooks/useDiscussionRoom.js`; participant
 identity and ownership live in `useParticipantIdentity.js`, and moderator token
 adoption, verification, and revocation live in `useModeratorAccess.js`.
+The moderator's controls are `client/src/ModeratorPanel.jsx`: grouped settings,
+with a switch for each one that is either on or off, collapsible to a one-line
+summary.
 `database.js` applies the schema and startup migrations before the server listens,
 preserving their required order and independent parallel group; `discussion-names.js`
 shares canonical slug and display-title rules between migrations and live requests.
