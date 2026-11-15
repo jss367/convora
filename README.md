@@ -68,6 +68,12 @@ Open Ended and Brainstorm responses appear on the display as they do for
 participants. Brainstorm ratings and reactions appear only when the moderator has
 made them visible.
 
+While the display is open and visible, it asks the browser to keep the screen
+awake, as a video player does, so the TV or laptop doesn't dim or go to sleep
+partway through a discussion. This uses the Screen Wake Lock API, which current
+Chrome, Edge, Safari and Firefox support on HTTPS pages. Older browsers sleep as
+usual.
+
 ## Compare opinions before and after discussion
 
 Open **Opinion Snapshots** in a discussion. A moderator can save named snapshots

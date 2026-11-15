@@ -3,6 +3,7 @@ import { QRCodeSVG } from 'qrcode.react';
 import React, { useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { useConnectionLost, useDiscussionSocket } from './hooks/useDiscussionRoom';
+import useScreenWakeLock from './hooks/useScreenWakeLock';
 import NumericalResults from './questions/NumericalResults';
 import { AgreementResults, YesNoResults } from './questions/OpinionResults';
 import { EPISTEMIC_REACTIONS, QuestionTypes } from './questions/config';
@@ -126,6 +127,8 @@ const DisplayPage = () => {
     const discussionSlug = slugifyTopic(topic);
     const socket = useDiscussionSocket();
     const connectionLost = useConnectionLost(socket);
+    // Nobody touches the shared screen, so keep it from going to sleep.
+    useScreenWakeLock();
     // undefined while loading, null when the discussion does not exist.
     const [discussion, setDiscussion] = useState(undefined);
     // null until the server has sent the questions at least once.
