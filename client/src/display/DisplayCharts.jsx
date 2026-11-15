@@ -38,7 +38,7 @@ const BarRows = ({ rows, total, focus }) => {
                 const share = pct(row.count, total);
                 return (
                     <li key={row.key} className="flex items-center gap-4" aria-label={`${row.label}: ${row.count}, ${share}%`}>
-                        <span className={`${s.label} w-[40%] max-w-[18rem] shrink-0 font-medium text-gray-800`}>{row.label}</span>
+                        <span className={`${s.label} w-[40%] max-w-[18rem] shrink-0 break-words font-medium text-gray-800`}>{row.label}</span>
                         <span className={`${s.bar} relative flex-1 overflow-hidden rounded-md bg-gray-100`}>
                             <span
                                 className={`absolute inset-y-0 left-0 rounded-md ${row.bar} transition-[width] duration-500`}
@@ -68,7 +68,7 @@ BarRows.propTypes = {
 
 const Headline = ({ children, badge, focus }) => (
     <div className="mb-5 flex flex-wrap items-center gap-4">
-        <p className={`${sizes(focus).headline} font-bold text-gray-900`}>{children}</p>
+        <p className={`${sizes(focus).headline} min-w-0 max-w-full break-words font-bold text-gray-900`}>{children}</p>
         {badge}
     </div>
 );

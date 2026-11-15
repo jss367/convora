@@ -459,3 +459,36 @@ test('the room display lists Multiple Choice options while results are hidden, t
     await context.close();
   }
 });
+
+for (const layout of ['all', 'focus']) {
+  test('long choice labels wrap within their display column in ' + layout + ' layout', async ({ page, rooms }) => {
+    await page.setViewportSize({ width: 1920, height: 1080 });
+    const room = await rooms.create('Long display choices', 'Multiple Choice');
+    const longOption = 'X'.repeat(100);
+    await rooms.pool.query('UPDATE questions SET options = $1 WHERE discussion_id = $2',
+      [JSON.stringify([longOption, 'Short']), room.id]);
+    await rooms.pool.query("UPDATE discussions SET results_visibility = 'always', display_layout = $1 WHERE id = $2",
+      [layout, room.id]);
+    await rooms.pool.query(
+      "INSERT INTO votes (question_id, value, user_id) SELECT id, 'Short', 'wrap-voter' FROM questions WHERE discussion_id = $1",
+      [room.id]
+    );
+    await page.goto(`/discussion/${room.slug}/display`);
+    const label = page.getByTestId('display-chart').getByText(longOption, { exact: true });
+    await expect(label).toBeVisible();
+    const fits = await label.evaluate(element => {
+      const column = element.getBoundingClientRect();
+      const range = document.createRange();
+      range.selectNodeContents(element);
+      return Array.from(range.getClientRects()).every(rect => rect.left >= column.left - 1 && rect.right <= column.right + 1);
+    });
+    expect(fits).toBe(true);
+
+    // The same option must also fit when it becomes the chart's headline.
+    await rooms.pool.query('UPDATE votes SET value = $1 WHERE question_id IN (SELECT id FROM questions WHERE discussion_id = $2)',
+      [longOption, room.id]);
+    await page.reload();
+    await expect(page.getByTestId('display-chart')).toBeVisible();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  });
+}
