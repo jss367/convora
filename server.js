@@ -176,7 +176,7 @@ const DEFAULT_THEME = 'indigo';
 async function getDiscussionState(topic) {
   const slug = slugifyTopic(topic);
   const result = await pool.query(
-    `SELECT locked, moderator_only_questions, theme, reaction_keys, results_visibility,
+    `SELECT locked, moderator_only_questions, theme, reaction_keys, results_visibility, listed,
             admin_token IS NOT NULL AS has_moderator,
             reactions_enabled, reactions_visible, comments_enabled
        FROM discussions WHERE slug = $1`,
@@ -188,6 +188,7 @@ async function getDiscussionState(topic) {
       reactionsEnabled: false, reactionsVisible: true, commentsEnabled: false,
       reactionKeys: [...DEFAULT_REACTION_KEYS],
       resultsVisibility: DEFAULT_RESULTS_VISIBILITY,
+      listed: false,
     };
   }
   const row = result.rows[0];
@@ -201,6 +202,7 @@ async function getDiscussionState(topic) {
     commentsEnabled: row.comments_enabled === true,
     reactionKeys: resolveReactionKeys(row.reaction_keys),
     resultsVisibility: resolveResultsVisibility(row.results_visibility),
+    listed: row.listed === true,
   };
 }
 
@@ -858,6 +860,24 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Moderator-only: list the discussion publicly on the home page, or take it
+  // off the list. Unlisted is the default; the link works either way.
+  socket.on('setListed', async (topic, listed, token) => {
+    const discussionSlug = slugifyTopic(topic);
+    try {
+      const discussionId = await verifyAdmin(discussionSlug, token);
+      if (!discussionId) {
+        socket.emit('error', { message: 'Not authorized to moderate this discussion.' });
+        return;
+      }
+      await pool.query('UPDATE discussions SET listed = $1 WHERE id = $2', [listed === true, discussionId]);
+      await emitDiscussionState(discussionSlug);
+    } catch (error) {
+      logError('Error setting listed state:', error);
+      socket.emit('error', { message: 'Failed to update discussion' });
+    }
+  });
+
   socket.on('setLocked', async (topic, locked, token) => {
     const discussionSlug = slugifyTopic(topic);
     try {
@@ -1441,13 +1461,13 @@ io.on('connection', (socket) => {
 
 // HTTP routes
 app.post('/api/discussions', async (req, res) => {
-  const { topic } = req.body;
+  const { topic, listed } = req.body;
   try {
     // The creator becomes the moderator: createDiscussion mints an admin token
     // and returns it when (and only when) this caller is the one establishing
     // the discussion's moderator. The client persists it so the person who made
     // the session lands as its moderator instead of racing others for the role.
-    const discussion = await createDiscussion(topic);
+    const discussion = await createDiscussion(topic, { listed: listed === true });
     res.json({ success: true, ...discussion });
   } catch (err) {
     logError('Request failed:', err);
@@ -1853,7 +1873,10 @@ async function verifyCreator(topic, token) {
 // topic can't hand its controls to whoever re-submits it.
 // Shares claimModerator()'s advisory-lock + COALESCE upsert so the create-time
 // claim is race-safe against concurrent creates and lazy (question-post) creation.
-async function createDiscussion(topic) {
+// `listed` applies only when this caller becomes the moderator. Creating a
+// discussion whose title already exists joins it, and joining must not change
+// how a discussion someone else moderates is listed.
+async function createDiscussion(topic, { listed = false } = {}) {
   const displayTopic = formatTopicTitle(topic);
   const baseSlug = slugifyTopic(displayTopic);
   const token = crypto.randomBytes(16).toString('hex');
@@ -1869,10 +1892,11 @@ async function createDiscussion(topic) {
     if (existing.rows.length > 0) {
       const updated = await client.query(
         `UPDATE discussions
-            SET admin_token = COALESCE(admin_token, $2)
+            SET listed = CASE WHEN admin_token IS NULL THEN $3 ELSE listed END,
+                admin_token = COALESCE(admin_token, $2)
           WHERE id = $1
           RETURNING id, topic, slug, admin_token`,
-        [existing.rows[0].id, token]
+        [existing.rows[0].id, token, listed]
       );
       await client.query('COMMIT');
       const row = updated.rows[0];
@@ -1888,11 +1912,11 @@ async function createDiscussion(topic) {
     for (let suffix = 1; suffix <= 1000; suffix += 1) {
       const slug = suffixSlug(baseSlug, suffix);
       const result = await client.query(
-        `INSERT INTO discussions (topic, slug, admin_token)
-         VALUES ($1, $2, $3)
+        `INSERT INTO discussions (topic, slug, admin_token, listed)
+         VALUES ($1, $2, $3, $4)
          ON CONFLICT (slug) DO NOTHING
          RETURNING id, topic, slug, admin_token`,
-        [displayTopic, slug, token]
+        [displayTopic, slug, token, listed]
       );
 
       if (result.rows.length > 0) {
@@ -2632,11 +2656,32 @@ async function deleteVote(voteId, userId) {
   );
 }
 
-// Discussions are unlisted: they are reachable by link or short link only, so
-// there is deliberately no endpoint that enumerates them. This lookup returns
+// Discussions are unlisted unless their moderator lists them: they are reachable
+// by link or short link only, so no endpoint enumerates them (the public list
+// above holds only discussions a moderator chose to list). This lookup returns
 // only the discussions whose exact slugs the caller already knows (the browser
 // remembers the ones it created or opened) and nothing when no slugs are sent.
 const MAX_KNOWN_SLUGS = 50;
+
+// The discussions their moderators chose to list publicly, newest first. Only
+// what the home page shows: title, slug and creation time.
+const MAX_PUBLIC_DISCUSSIONS = 100;
+
+app.get('/api/discussions/public', async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT topic, slug, created_at FROM discussions
+        WHERE listed = TRUE
+        ORDER BY created_at DESC, id DESC
+        LIMIT $1`,
+      [MAX_PUBLIC_DISCUSSIONS]
+    );
+    res.json(result.rows);
+  } catch (err) {
+    logError('Request failed:', err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
 
 app.get('/api/discussions', async (req, res) => {
   try {

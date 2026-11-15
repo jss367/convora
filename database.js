@@ -331,6 +331,9 @@ async function initializeDatabase(pool) {
     // once they have answered, the default for existing discussions too) or
     // 'always'. See RESULTS_VISIBILITY_MODES in server.js.
     await pool.query("ALTER TABLE discussions ADD COLUMN IF NOT EXISTS results_visibility TEXT NOT NULL DEFAULT 'after_vote'");
+    // Whether the discussion is listed publicly on the home page. Discussions are
+    // unlisted unless their moderator chooses otherwise, existing ones included.
+    await pool.query('ALTER TABLE discussions ADD COLUMN IF NOT EXISTS listed BOOLEAN NOT NULL DEFAULT FALSE');
 
     try {
       await pool.query('CREATE EXTENSION IF NOT EXISTS pg_trgm');
