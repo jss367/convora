@@ -1245,9 +1245,17 @@ test('a moderator sets how the room display shows the QR code and questions', as
     assert.equal(state.displayQr, 'full');
     assert.equal(state.displayLayout, 'all');
 
-    const refused = waitForEvent(display, 'error', error => /not authorized/i.test(error.message));
-    display.emit('setDisplaySettings', slug, { qr: 'hidden' }, 'not-the-token');
-    await refused;
+    const outsider = await connectSocket();
+    try {
+      const refused = waitForEvent(outsider, 'error', error => /not authorized/i.test(error.message));
+      outsider.emit('setDisplaySettings', slug, { qr: 'hidden' }, 'not-the-token');
+      await refused;
+    } finally {
+      outsider.disconnect();
+    }
+    // The display itself is read-only, even holding the moderator token: the
+    // request is dropped, so the next change below starts from the default.
+    display.emit('setDisplaySettings', slug, { layout: 'focus' }, adminToken);
 
     const rejected = waitForEvent(mod, 'error', error => /room display setting/i.test(error.message));
     mod.emit('setDisplaySettings', slug, { qr: 'huge' }, adminToken);
