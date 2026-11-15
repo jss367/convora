@@ -75,3 +75,23 @@ test('questions with hidden results are listed but contribute to no count, ranki
   assert.equal(html.match(/Hidden until you vote/g).length, 2);
   assert.doesNotMatch(html, /NaN|Infinity|undefined/);
 });
+
+test('Multiple Choice summaries count each option in order and stay out of the opinion rankings', () => {
+  const question = {
+    id: 1, text: 'p(doom) over the last year?', type: 'Multiple Choice',
+    options: ['Higher', 'Lower', 'About the same'],
+    votes: [vote(1, 'a', 'Higher'), vote(2, 'b', 'Lower'), vote(3, 'c', 'Lower'), vote(4, 'd', 'Not an option')],
+  };
+  const summary = buildSummary(discussion, [question]);
+  const [summarized] = summary.questions;
+  assert.deepEqual(summarized.options, ['Higher', 'Lower', 'About the same']);
+  assert.deepEqual(summarized.optionCounts, { Higher: 1, Lower: 2, 'About the same': 0 });
+  assert.deepEqual(summarized.leadingOptions, ['Lower']);
+  assert.deepEqual(summary.topDivisive, []);
+  assert.deepEqual(summary.facilitatorDashboard.mostDivisiveStatements, []);
+  assert.match(renderReportHtml(summary), /Higher: 1 \/ Lower: 2 \/ About the same: 0/);
+
+  const tied = buildSummary(discussion, [{ ...question, votes: [vote(1, 'a', 'Higher'), vote(2, 'b', 'Lower')] }]);
+  assert.deepEqual(tied.questions[0].leadingOptions, ['Higher', 'Lower']);
+  assert.deepEqual(buildSummary(discussion, [{ ...question, votes: [] }]).questions[0].leadingOptions, []);
+});

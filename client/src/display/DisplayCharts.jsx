@@ -121,6 +121,35 @@ export const YesNoChart = ({ question, focus }) => {
 };
 YesNoChart.propTypes = { question: PropTypes.object.isRequired, focus: PropTypes.bool };
 
+// One bar per option, in the author's order. The options are categories, not a
+// scale, so they share one color and there is no consensus/divisive badge; the
+// headline names the most-chosen option, or says which options are tied.
+export const MultipleChoiceChart = ({ question, focus }) => {
+    const votes = question.votes || [];
+    const total = votes.length;
+    if (total === 0) return <NoResponses focus={focus} />;
+    const options = Array.isArray(question.options) ? question.options : [];
+    const rows = options.map(option => ({
+        key: option,
+        label: option,
+        count: votes.filter(v => v.value === option).length,
+        bar: 'bg-primary',
+    }));
+    const top = Math.max(0, ...rows.map(row => row.count));
+    const leaders = rows.filter(row => row.count === top);
+    return (
+        <div>
+            <Headline focus={focus}>
+                {leaders.length === 1
+                    ? `${pct(top, total)}% ${leaders[0].label}`
+                    : `Tied: ${leaders.map(row => row.label).join(' · ')}`}
+            </Headline>
+            <BarRows rows={rows} total={total} focus={focus} />
+        </div>
+    );
+};
+MultipleChoiceChart.propTypes = { question: PropTypes.object.isRequired, focus: PropTypes.bool };
+
 const formatNumber = n => (Number.isInteger(n) ? String(n) : n.toFixed(1));
 
 // Bins match the phone view's NumericalResults: up to 10 across [min, max].
@@ -219,7 +248,7 @@ NumericalChart.propTypes = {
 
 // Under "show results after you vote" the server sends only how many have
 // answered, so that is the whole chart.
-export const ResponseCountOnly = ({ count, focus }) => (
+export const ResponseCountOnly = ({ count, options, focus }) => (
     <div data-testid="display-results-hidden">
         <p className="flex flex-col items-start">
             <span className={`${focus ? 'text-[9rem]' : 'text-7xl'} font-bold leading-none tabular-nums text-primary`}>{count}</span>
@@ -229,6 +258,19 @@ export const ResponseCountOnly = ({ count, focus }) => (
             </span>
         </p>
         <p className={`${focus ? 'text-2xl' : 'text-lg'} mt-3 text-gray-500`}>Vote on your phone. The moderator will show the results here.</p>
+        {Array.isArray(options) && options.length > 0 && (
+            <ul className="mt-4 flex flex-wrap gap-3" data-testid="display-choice-options">
+                {options.map(option => (
+                    <li key={option} className={`${focus ? 'text-3xl px-5 py-2' : 'text-xl px-4 py-1.5'} rounded-full bg-gray-100 text-gray-800`}>
+                        {option}
+                    </li>
+                ))}
+            </ul>
+        )}
     </div>
 );
-ResponseCountOnly.propTypes = { count: PropTypes.number.isRequired, focus: PropTypes.bool };
+ResponseCountOnly.propTypes = {
+    count: PropTypes.number.isRequired,
+    options: PropTypes.arrayOf(PropTypes.string),
+    focus: PropTypes.bool,
+};

@@ -7,6 +7,25 @@ You can create a discussion, which generates its own URL. For example, if the ap
 
 From there, users can submit questions and people can vote on how much they agree with them. For example, someone could say, "The biggest risk of AI is through AI weapons" and each person can vote that they strongly agree, agree, are unsure, disagree, or strongly disagree. The app would show the aggregates. That way you could find which statement most people disagree with.
 
+## Multiple choice questions
+
+Choose **Multiple Choice** as the question type to write your own answers, for
+example "In the last year, did your p(doom) get higher or lower?" with
+**Higher**, **Lower** and **About the same**. Each participant picks one answer,
+and can change or undo it like an Agreement or Yes/No vote.
+
+- A question has 2 to 6 options of up to 100 characters each. Options must be
+  different from each other, ignoring case and extra spaces.
+- Results show one bar per option, in the order you wrote them, with each
+  option's count and share of the vote.
+- Like every question, a moderator can edit it only until someone answers, so
+  the options can't change under people who already voted. To change them after
+  that, delete the question and ask it again.
+- Multiple choice answers are categories, not a scale, so they aren't counted
+  in the agreement sorts, the consensus and divisive rankings, or opinion
+  groups. They do appear in the summary, exports, the room display and opinion
+  snapshots.
+
 ## Discussions are unlisted unless you list them
 
 A new discussion is unlisted: it's reachable only through its link or short
@@ -27,7 +46,7 @@ who has or guesses a link can read and take part.
 
 ## Results appear after you vote
 
-For Agreement, Yes/No and Numerical questions, a participant sees the tallies,
+For Agreement, Yes/No, Multiple Choice and Numerical questions, a participant sees the tallies,
 percentages and histogram only for questions they have answered. Seeing the
 room's answer first pulls people toward it, and it would spoil the "before"
 half of an opinion snapshot. Undoing a vote hides that question's results again.
@@ -109,7 +128,8 @@ Collect initial answers, save the first snapshot, then invite people to update
 their answers after discussing and save the second snapshot.
 
 Choose an earlier and later snapshot to compare response counts, distributions,
-and numerical averages. Agreement and yes/no questions are included too. Everyone
+and numerical averages. Agreement, yes/no, and multiple choice questions are
+included too. Everyone
 can view the saved results; only moderators can save snapshots, including after
 voting closes. Use **Refresh** to load snapshots saved by another moderator.
 
@@ -117,7 +137,7 @@ Snapshots preserve aggregate results even when answers are updated or questions
 are edited or deleted. They do not retain participant identities or individual
 answer histories. Comparisons describe the group at each point in time;
 participants may differ between snapshots. Questions with changed wording,
-types, or scales are flagged and shown separately.
+types, scales, or answer options are flagged and shown separately.
 
 
 ## Tech notes:

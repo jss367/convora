@@ -182,3 +182,55 @@ test('"Most Recent" shows the newest question first for someone who joins later'
     await pool.end();
   }
 });
+
+test('a Multiple Choice question is written with its own options, validated, voted on, and undone', async ({ page, request }) => {
+  const response = await request.post('/api/discussions', { data: { topic: `Multiple choice ${Date.now()}` } });
+  expect(response.ok()).toBeTruthy();
+  const discussion = await response.json();
+  const pool = new Pool({
+    connectionString: process.env.DATABASE_URL || 'postgresql://convora:convora@127.0.0.1:54330/convora_test',
+  });
+  try {
+    await page.goto(`/discussion/${discussion.slug}`);
+    const question = 'In the last year, did your p(doom) get higher or lower?';
+    await page.getByPlaceholder('Enter a new question or statement').fill(question);
+    await page.getByRole('combobox').filter({ has: page.locator('option[value="Multiple Choice"]') })
+      .selectOption('Multiple Choice');
+
+    // Two empty options to start; blanks and repeats are caught before sending.
+    const addQuestion = page.getByRole('button', { name: 'Add Question', exact: true });
+    await addQuestion.click();
+    await expect(page.getByText('Fill in every answer option, or remove the empty ones.', { exact: true })).toBeVisible();
+    await page.getByRole('textbox', { name: 'Answer option 1' }).fill('Higher');
+    await page.getByRole('textbox', { name: 'Answer option 2' }).fill(' higher ');
+    await addQuestion.click();
+    await expect(page.getByText('Each answer option must be different.', { exact: true })).toBeVisible();
+    await page.getByRole('textbox', { name: 'Answer option 2' }).fill('Lower');
+    await page.getByRole('button', { name: '+ Add option' }).click();
+    await page.getByRole('textbox', { name: 'Answer option 3' }).fill('About the same');
+    await addQuestion.click();
+    await expect(page.getByRole('heading', { name: question, exact: true })).toBeVisible();
+    // The composer resets to a blank form with two empty options.
+    await expect(page.getByPlaceholder('Enter a new question or statement').first()).toHaveValue('');
+
+    // Results stay hidden until this participant answers.
+    await expect(page.getByTestId('results-hidden')).toBeVisible();
+    const lower = page.getByRole('button', { name: `Vote Lower on "${question}"` });
+    await lower.click();
+    await expect(lower).toHaveAttribute('aria-pressed', 'true');
+    const results = page.getByTestId('choice-results');
+    await expect(results).toContainText('1 vote');
+    await expect(results).toContainText('1 · 100%');
+    await expect(results).toContainText('0 · 0%');
+
+    // Undo clears the vote and hides the results again.
+    await lower.click();
+    await expect(lower).toHaveAttribute('aria-pressed', 'false');
+    await expect(page.getByTestId('results-hidden')).toBeVisible();
+  } finally {
+    await pool.query('DELETE FROM votes WHERE question_id IN (SELECT id FROM questions WHERE discussion_id = $1)', [discussion.id]);
+    await pool.query('DELETE FROM questions WHERE discussion_id = $1', [discussion.id]);
+    await pool.query('DELETE FROM discussions WHERE id = $1', [discussion.id]);
+    await pool.end();
+  }
+});

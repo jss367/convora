@@ -14,8 +14,8 @@ const { initializeDatabase } = require('./database');
 const { slugifyTopic, formatTopicTitle, titleFromSlug, suffixSlug, MAX_TOPIC_LENGTH } = require('./discussion-names');
 const { buildSummary, renderReportHtml } = require('./reports');
 const {
-  AGREEMENT_OPTIONS, YES_NO_OPTIONS, parseOptions, parseStoredVoteValue,
-  getQuestionRange, normalizeQuestionPayload,
+  AGREEMENT_OPTIONS, parseOptions, parseStoredVoteValue,
+  getQuestionRange, normalizeQuestionPayload, choiceOptionsFor,
 } = require('./question-data');
 
 const app = express();
@@ -223,8 +223,8 @@ async function emitDiscussionState(topic) {
   audience(topic).emit('discussionState', await getDiscussionState(topic));
 }
 
-// When participants may see the results of Agreement, Yes/No and Numerical
-// questions (the tallied types, OPINION_TYPES). 'after_vote' is the default:
+// When participants may see the results of Agreement, Yes/No, Multiple Choice
+// and Numerical questions (the tallied types, OPINION_TYPES). 'after_vote' is the default:
 // seeing the room's answer first pulls people toward it, so a participant gets a
 // question's results only once they have answered it. 'always' shows results to
 // everyone. Moderators see results in both modes. Open Ended and Brainstorm
@@ -686,12 +686,9 @@ io.on('connection', (socket) => {
       // this, a crafted socket message could store an arbitrary string as an
       // Agreement/Yes-No vote, skewing the results bars and the cluster
       // analysis (which scores votes by their agreement label).
-      if (target.type === 'Agreement' && !AGREEMENT_OPTIONS.includes(vote)) {
-        socket.emit('error', { message: 'Invalid vote.' });
-        reply(false);
-        return;
-      }
-      if (target.type === 'Yes/No' && !YES_NO_OPTIONS.includes(vote)) {
+      // Multiple Choice checks against the question's own stored options.
+      const choices = choiceOptionsFor(target);
+      if (choices && !choices.includes(vote)) {
         socket.emit('error', { message: 'Invalid vote.' });
         reply(false);
         return;
@@ -750,7 +747,7 @@ io.on('connection', (socket) => {
     }
     try {
       const target = await getQuestionForTopic(discussionSlug, questionId);
-      if (!target || !['Agreement', 'Yes/No'].includes(target.type)) {
+      if (!target || !choiceOptionsFor(target)) {
         socket.emit('error', { message: 'Invalid question for this discussion.' });
         reply(false);
         return;
@@ -1198,7 +1195,7 @@ io.on('connection', (socket) => {
       // this write: if a vote landed in between, no row is updated and we report
       // it as having responses rather than silently editing an answered question.
       const result = await pool.query(
-        `UPDATE questions SET text = $1, type = $2, min_value = $3, max_value = $4
+        `UPDATE questions SET text = $1, type = $2, min_value = $3, max_value = $4, options = $7
          WHERE id = $5 AND discussion_id = $6
            AND NOT EXISTS (SELECT 1 FROM votes WHERE question_id = $5)`,
         [
@@ -1208,6 +1205,7 @@ io.on('connection', (socket) => {
           normalizedUpdates.maxValue,
           questionId,
           discussionId,
+          JSON.stringify(normalizedUpdates.options),
         ]
       );
       if (result.rowCount === 0) {
@@ -2346,7 +2344,7 @@ async function isModeratorOnlyQuestions(topic) {
 async function getQuestionForTopic(topic, questionId) {
   const slug = slugifyTopic(topic);
   const result = await pool.query(
-    `SELECT q.id, q.type, q.discussion_id, q.min_value, q.max_value, d.locked
+    `SELECT q.id, q.type, q.discussion_id, q.min_value, q.max_value, q.options, d.locked
      FROM questions q
      JOIN discussions d ON q.discussion_id = d.id
      WHERE d.slug = $1 AND q.id = $2`,
@@ -2359,6 +2357,7 @@ async function getQuestionForTopic(topic, questionId) {
     discussionId: result.rows[0].discussion_id,
     minValue: result.rows[0].min_value,
     maxValue: result.rows[0].max_value,
+    options: parseOptions(result.rows[0].options),
     locked: result.rows[0].locked === true,
   };
 }
@@ -2925,13 +2924,13 @@ app.post('/api/discussions/:topic/snapshots', async (req, res) => {
     // voting. Saving never closes voting or changes anyone's current response.
     await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ');
     const questions = await client.query(
-      `SELECT id, text, type, min_value, max_value FROM questions
+      `SELECT id, text, type, min_value, max_value, options FROM questions
        WHERE discussion_id = $1 AND type = ANY($2::text[]) ORDER BY id`,
       [discussionId, OPINION_TYPES]
     );
     if (!questions.rows.length) {
       await client.query('ROLLBACK');
-      return res.status(400).json({ error: 'Add a numerical, agreement, or yes/no question before saving a snapshot.' });
+      return res.status(400).json({ error: 'Add a numerical, agreement, yes/no, or multiple choice question before saving a snapshot.' });
     }
     const votes = await client.query(
       `SELECT v.id, v.question_id, v.value, v.user_id FROM votes v

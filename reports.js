@@ -1,5 +1,7 @@
 // Pure discussion analysis and printable reports; no database or HTTP access.
-const { AGREEMENT_OPTIONS, YES_NO_OPTIONS, getQuestionRange, parseStoredVoteValue } = require('./question-data');
+const {
+  AGREEMENT_OPTIONS, YES_NO_OPTIONS, choiceOptionsFor, getQuestionRange, parseStoredVoteValue,
+} = require('./question-data');
 
 function roundMetric(value, digits = 2) {
   if (!Number.isFinite(value)) {
@@ -308,6 +310,22 @@ function buildSummary(discussion, questions) {
       };
     }
 
+    // Multiple Choice options are unordered, so there is no agree/disagree axis
+    // and it stays out of the consensus and divisiveness rankings. The summary
+    // reports each option's count and the most-chosen option(s).
+    if (question.type === 'Multiple Choice') {
+      const options = choiceOptionsFor(question);
+      const optionCounts = Object.fromEntries(options.map(option => [option, votes.filter(vote => vote.value === option).length]));
+      const topCount = Math.max(0, ...Object.values(optionCounts));
+      const leadingOptions = topCount > 0 ? options.filter(option => optionCounts[option] === topCount) : [];
+      return {
+        ...base,
+        options,
+        optionCounts,
+        leadingOptions,
+      };
+    }
+
     if (question.type === 'Numerical') {
       const values = votes
         .map(vote => Number.parseFloat(vote.value))
@@ -403,6 +421,8 @@ function renderReportHtml(summary) {
       ? `${question.agreeCount || 0} agree / ${question.disagreeCount || 0} disagree / ${question.unsureCount || 0} unsure`
       : question.type === 'Yes/No'
         ? `${question.agreeCount || 0} yes / ${question.disagreeCount || 0} no`
+        : question.type === 'Multiple Choice'
+          ? (question.options || []).map(option => `${option}: ${question.optionCounts?.[option] || 0}`).join(' / ')
         : question.type === 'Numerical'
           ? `Avg ${question.average === null ? '-' : roundMetric(question.average, 1)} | Low ${question.minResponse ?? '-'} | High ${question.maxResponse ?? '-'}`
           : `${question.responseCount} written ${question.responseCount === 1 ? 'response' : 'responses'}`;

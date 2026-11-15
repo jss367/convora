@@ -16,8 +16,10 @@ const OPINION_OPTIONS = {
 function distributionRows(question) {
     if (!question) return [];
     if (question.type !== 'Numerical') {
-        // JSONB does not preserve object-key order; use the semantic scale.
-        return OPINION_OPTIONS[question.type].map(label => ({ label, count: question.optionCounts[label] || 0 }));
+        // JSONB does not preserve object-key order; use the semantic scale, or
+        // for Multiple Choice the options in the order the snapshot saved them.
+        const options = question.type === 'Multiple Choice' ? (question.options || []) : OPINION_OPTIONS[question.type];
+        return options.map(label => ({ label, count: question.optionCounts[label] || 0 }));
     }
     return question.distribution.map((bin, index, bins) => ({
         label: `${formatNumber(bin.min)} to ${index < bins.length - 1 ? '<' : ''}${formatNumber(bin.max)}`,
@@ -55,7 +57,8 @@ export function QuestionComparison({ before, after, comparing, beforeName, after
         );
     }
     const changed = before && after && (before.text !== after.text || before.type !== after.type
-        || before.minValue !== after.minValue || before.maxValue !== after.maxValue);
+        || before.minValue !== after.minValue || before.maxValue !== after.maxValue
+        || JSON.stringify(before.options ?? null) !== JSON.stringify(after.options ?? null));
     const beforeRows = distributionRows(before);
     const afterRows = distributionRows(after);
     const delta = !changed && before?.average != null && after?.average != null
@@ -103,7 +106,7 @@ export function QuestionComparison({ before, after, comparing, beforeName, after
             )}
             {changed ? (
                 <>
-                    <p className="text-sm text-amber-800 mb-3">The question wording, type, or scale changed. Results are shown separately; no change is calculated.</p>
+                    <p className="text-sm text-amber-800 mb-3">The question wording, type, scale, or answer options changed. Results are shown separately; no change is calculated.</p>
                     <p className="text-sm mb-2">Earlier wording: {before.text}</p>
                     {renderTable(beforeRows, before, null, ' (earlier scale)')}
                     {renderTable(afterRows, null, after, ' (later scale)')}
