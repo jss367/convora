@@ -32,7 +32,8 @@ test('the room display shows response counts but no results until the moderator 
     await expect(display.getByText('1 person here now', { exact: true })).toBeVisible();
     await expect(page.getByText('1 person here now', { exact: true })).toBeVisible();
     // It is read-only: nothing to vote with, no tally, and none sent to it.
-    await expect(display.getByRole('button')).toHaveCount(0);
+    // Its only control is the full-screen button.
+    await expect(display.getByRole('button')).toHaveText(['Full screen']);
     await expect(display.getByText(/: \d+$/)).toHaveCount(0);
     await expect(display.getByText(/% agree/)).toHaveCount(0);
     await expect.poll(() => payloads.length).toBeGreaterThan(0);
@@ -370,4 +371,33 @@ test('the room display asks again when a request is refused after the tab flippe
   await page.evaluate(() => window.__wakeLock.grant());
   await expect.poll(() => page.evaluate(() => window.__wakeLock.held())).toBe(1);
   expect(await page.evaluate(() => window.__wakeLock.requests)).toBe(2);
+});
+
+test('the room display goes full screen and hides its controls and the cursor when idle', async ({ page, rooms }) => {
+  const room = await rooms.create('Full screen room', 'Agreement');
+  await page.clock.install();
+  await page.goto(`/discussion/${room.slug}/display`);
+  await expect(page.getByTestId('display-question')).toBeVisible();
+
+  const enter = page.getByTestId('display-header').getByRole('button', { name: 'Full screen', exact: true });
+  await enter.click();
+  await expect.poll(() => page.evaluate(() => document.fullscreenElement === document.documentElement)).toBe(true);
+  const exit = page.getByRole('button', { name: 'Exit full screen', exact: true });
+  await expect(exit).toBeVisible();
+
+  // Nobody touches the mouse: the button and the cursor fade out.
+  const main = page.getByRole('main', { name: 'Room display' });
+  await page.clock.runFor(3500);
+  await expect(exit).toHaveCSS('opacity', '0');
+  await expect(main).toHaveCSS('cursor', 'none');
+
+  // Moving the mouse brings them back.
+  await page.mouse.move(200, 200);
+  await page.mouse.move(220, 210);
+  await expect(exit).toHaveCSS('opacity', '1');
+  await expect(main).not.toHaveCSS('cursor', 'none');
+
+  await exit.click();
+  await expect.poll(() => page.evaluate(() => document.fullscreenElement)).toBe(null);
+  await expect(enter).toBeVisible();
 });
