@@ -431,6 +431,19 @@ test('the room display lists Multiple Choice options while results are hidden, t
     await expect(chart.getByLabel('About the same: 0, 0%')).toBeVisible();
     await expect(question.getByText('67% Higher', { exact: true })).toBeVisible();
     await expect(display.getByTestId('display-choice-options')).toHaveCount(0);
+
+    // Back to results after voting, with this one question revealed by the
+    // moderator and the display showing one question at a time: the chart
+    // fills the screen.
+    await rooms.pool.query(
+      "UPDATE discussions SET results_visibility = 'after_vote', display_layout = 'focus' WHERE id = $1", [room.id]
+    );
+    await rooms.pool.query('UPDATE questions SET results_revealed = TRUE WHERE discussion_id = $1', [room.id]);
+    await display.reload();
+    const focused = display.getByTestId('display-question');
+    await expect(focused.getByTestId('display-chart').getByLabel('Higher: 2, 67%')).toBeVisible();
+    await expect(focused.getByText('67% Higher', { exact: true })).toHaveClass(/text-6xl/);
+    await expect(display.getByTestId('display-results-hidden')).toHaveCount(0);
   } finally {
     await context.close();
   }
