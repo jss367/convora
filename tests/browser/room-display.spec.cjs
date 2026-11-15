@@ -401,3 +401,124 @@ test('the room display goes full screen and hides its controls and the cursor wh
   await expect.poll(() => page.evaluate(() => document.fullscreenElement)).toBe(null);
   await expect(enter).toBeVisible();
 });
+
+test('the room display lists Multiple Choice options while results are hidden, then charts them', async ({ browser, rooms }) => {
+  const room = await rooms.create('Choice display', 'Multiple Choice');
+  await rooms.pool.query('UPDATE questions SET options = $1 WHERE discussion_id = $2',
+    [JSON.stringify(['Higher', 'Lower', 'About the same']), room.id]);
+  const context = await browser.newContext();
+  try {
+    const display = await context.newPage();
+    const question = display.getByTestId('display-question');
+
+    // Results always shown but nobody has voted yet: the choices are still on
+    // screen, each at zero, so the room knows what it is choosing between.
+    await rooms.pool.query("UPDATE discussions SET results_visibility = 'always' WHERE id = $1", [room.id]);
+    await display.goto(`/discussion/${room.slug}/display`);
+    await expect(question.getByText('No responses yet', { exact: true })).toBeVisible();
+    await expect(question.getByTestId('display-chart').getByLabel('Higher: 0, 0%')).toBeVisible();
+    await expect(question.getByTestId('display-chart').getByLabel('Lower: 0, 0%')).toBeVisible();
+    await expect(question.getByTestId('display-chart').getByLabel('About the same: 0, 0%')).toBeVisible();
+
+    await rooms.pool.query("UPDATE discussions SET results_visibility = 'after_vote' WHERE id = $1", [room.id]);
+    await rooms.pool.query(
+      `INSERT INTO votes (question_id, value, user_id)
+       SELECT id, v.value, v.user_id FROM questions,
+         (VALUES ('Higher', 'seed-a'), ('Higher', 'seed-b'), ('Lower', 'seed-c')) AS v(value, user_id)
+       WHERE discussion_id = $1`, [room.id]
+    );
+    await display.reload();
+    await expect(question.getByTestId('display-results-hidden')).toContainText('3');
+    await expect(question.getByTestId('display-choice-options').getByRole('listitem'))
+      .toHaveText(['Higher', 'Lower', 'About the same']);
+    await expect(question.getByTestId('display-chart')).toHaveCount(0);
+
+    await rooms.pool.query("UPDATE discussions SET results_visibility = 'always' WHERE id = $1", [room.id]);
+    await display.reload();
+    const chart = question.getByTestId('display-chart');
+    await expect(chart.getByRole('listitem')).toHaveCount(3);
+    await expect(chart.getByLabel('Higher: 2, 67%')).toBeVisible();
+    await expect(chart.getByLabel('Lower: 1, 33%')).toBeVisible();
+    await expect(chart.getByLabel('About the same: 0, 0%')).toBeVisible();
+    await expect(question.getByText('67% Higher', { exact: true })).toBeVisible();
+    await expect(display.getByTestId('display-choice-options')).toHaveCount(0);
+
+    // Back to results after voting, with this one question revealed by the
+    // moderator and the display showing one question at a time: the chart
+    // fills the screen.
+    await rooms.pool.query(
+      "UPDATE discussions SET results_visibility = 'after_vote', display_layout = 'focus' WHERE id = $1", [room.id]
+    );
+    await rooms.pool.query('UPDATE questions SET results_revealed = TRUE WHERE discussion_id = $1', [room.id]);
+    await display.reload();
+    const focused = display.getByTestId('display-question');
+    await expect(focused.getByTestId('display-chart').getByLabel('Higher: 2, 67%')).toBeVisible();
+    await expect(focused.getByText('67% Higher', { exact: true })).toHaveClass(/text-6xl/);
+    await expect(display.getByTestId('display-results-hidden')).toHaveCount(0);
+  } finally {
+    await context.close();
+  }
+});
+
+for (const layout of ['all', 'focus']) {
+  test('long choice labels wrap within their display column in ' + layout + ' layout', async ({ page, rooms }) => {
+    await page.setViewportSize({ width: 1920, height: 1080 });
+    const room = await rooms.create('Long display choices', 'Multiple Choice');
+    const longOption = 'X'.repeat(100);
+    await rooms.pool.query('UPDATE questions SET options = $1 WHERE discussion_id = $2',
+      [JSON.stringify([longOption, 'Short']), room.id]);
+    await rooms.pool.query("UPDATE discussions SET results_visibility = 'always', display_layout = $1 WHERE id = $2",
+      [layout, room.id]);
+    await rooms.pool.query(
+      "INSERT INTO votes (question_id, value, user_id) SELECT id, 'Short', 'wrap-voter' FROM questions WHERE discussion_id = $1",
+      [room.id]
+    );
+    await page.goto(`/discussion/${room.slug}/display`);
+    const label = page.getByTestId('display-chart').getByText(longOption, { exact: true });
+    await expect(label).toBeVisible();
+    const fits = await label.evaluate(element => {
+      const column = element.getBoundingClientRect();
+      const range = document.createRange();
+      range.selectNodeContents(element);
+      return Array.from(range.getClientRects()).every(rect => rect.left >= column.left - 1 && rect.right <= column.right + 1);
+    });
+    expect(fits).toBe(true);
+
+    // The same option must also fit when it becomes the chart's headline.
+    await rooms.pool.query('UPDATE votes SET value = $1 WHERE question_id IN (SELECT id FROM questions WHERE discussion_id = $2)',
+      [longOption, room.id]);
+    await page.reload();
+    await expect(page.getByTestId('display-chart')).toBeVisible();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  });
+}
+
+for (const layout of ['all', 'focus']) {
+  test('long choice labels wrap inside the hidden-results option list in ' + layout + ' layout', async ({ page, rooms }) => {
+    await page.setViewportSize({ width: 1920, height: 1080 });
+    const room = await rooms.create('Long hidden choices', 'Multiple Choice');
+    const longOption = 'Y'.repeat(100);
+    await rooms.pool.query('UPDATE questions SET options = $1 WHERE discussion_id = $2',
+      [JSON.stringify([longOption, 'Short']), room.id]);
+    // Results only after voting, with one response: the display shows the count
+    // and the options, not the chart.
+    await rooms.pool.query("UPDATE discussions SET results_visibility = 'after_vote', display_layout = $1 WHERE id = $2",
+      [layout, room.id]);
+    await rooms.pool.query(
+      "INSERT INTO votes (question_id, value, user_id) SELECT id, 'Short', 'wrap-voter' FROM questions WHERE discussion_id = $1",
+      [room.id]
+    );
+    await page.goto(`/discussion/${room.slug}/display`);
+    const card = page.getByTestId('display-question');
+    const pill = card.getByTestId('display-choice-options').getByText(longOption, { exact: true });
+    await expect(pill).toBeVisible();
+    const fits = await pill.evaluate(element => {
+      const cardBox = element.closest('[data-testid="display-question"]').getBoundingClientRect();
+      const range = document.createRange();
+      range.selectNodeContents(element);
+      return Array.from(range.getClientRects()).every(rect => rect.left >= cardBox.left - 1 && rect.right <= cardBox.right + 1);
+    });
+    expect(fits).toBe(true);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  });
+}

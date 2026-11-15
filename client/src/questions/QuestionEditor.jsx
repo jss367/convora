@@ -1,6 +1,8 @@
 import PropTypes from 'prop-types';
 import React, { useState } from 'react';
-import { QuestionTypes, QuestionTypeDescriptions } from './config';
+import { MULTIPLE_CHOICE_LIMITS, QuestionTypes, QuestionTypeDescriptions } from './config';
+import ChoiceOptionsEditor from './ChoiceOptionsEditor';
+import { validateChoiceOptions } from './questionHelpers.mjs';
 
 // Inline moderator editor for a question's wording/type, mirroring the fields of
 // the "add question" form. Only mounted for questions with no responses yet; the
@@ -10,6 +12,11 @@ const QuestionEditor = ({ question, onSave, onCancel }) => {
     const [type, setType] = useState(question.type);
     const [minValue, setMinValue] = useState(question.minValue ?? 0);
     const [maxValue, setMaxValue] = useState(question.maxValue ?? 100);
+    const [options, setOptions] = useState(
+        Array.isArray(question.options) && question.options.length >= MULTIPLE_CHOICE_LIMITS.MIN_OPTIONS
+            ? question.options
+            : ['', '']
+    );
     const [error, setError] = useState(null);
     const [saving, setSaving] = useState(false);
 
@@ -29,6 +36,14 @@ const QuestionEditor = ({ question, onSave, onCancel }) => {
             }
             updates.minValue = min;
             updates.maxValue = max;
+        }
+        if (type === QuestionTypes.MULTIPLE_CHOICE) {
+            const result = validateChoiceOptions(options, MULTIPLE_CHOICE_LIMITS);
+            if (result.error) {
+                setError(result.error);
+                return;
+            }
+            updates.options = result.options;
         }
         setError(null);
         setSaving(true);
@@ -69,6 +84,9 @@ const QuestionEditor = ({ question, onSave, onCancel }) => {
                     <p className="mt-2 text-sm text-gray-500">{QuestionTypeDescriptions[type]}</p>
                 )}
             </div>
+            {type === QuestionTypes.MULTIPLE_CHOICE && (
+                <ChoiceOptionsEditor options={options} onChange={setOptions} />
+            )}
             {type === QuestionTypes.NUMERICAL && (
                 <div className="mb-4 flex space-x-4">
                     <div className="flex-1">

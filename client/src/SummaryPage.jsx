@@ -589,6 +589,37 @@ YesNoBar.propTypes = {
     total: PropTypes.number.isRequired,
 };
 
+// One bar per option, in the author's order, for a Multiple Choice question.
+// Options are categories rather than a scale, so the bars share one color. The
+// options are part of the question, so they are listed even before anyone has
+// answered, each at zero (formatPercent reads 0/0 as 0%), and while the results
+// are hidden from this viewer, as labels over empty bars with no numbers.
+const ChoiceBars = ({ options, optionCounts = {}, total = 0, hidden = false }) => (
+    <div className="mt-3 space-y-1.5" data-testid={hidden ? 'summary-choice-options' : 'summary-choice-bars'}>
+        {options.map(option => {
+            const count = hidden ? 0 : optionCounts[option] || 0;
+            return (
+                <div key={option}>
+                    <div className="flex justify-between gap-2 text-xs text-gray-600">
+                        <span className="break-words min-w-0">{option}</span>
+                        {!hidden && <span className="shrink-0">{count} · {formatPercent(count / total)}</span>}
+                    </div>
+                    <div className="w-full h-2.5 rounded-full overflow-hidden bg-gray-200">
+                        {count > 0 && <div className="h-full bg-primary" style={{ width: `${(count / total) * 100}%` }} />}
+                    </div>
+                </div>
+            );
+        })}
+    </div>
+);
+
+ChoiceBars.propTypes = {
+    options: PropTypes.arrayOf(PropTypes.string).isRequired,
+    optionCounts: PropTypes.objectOf(PropTypes.number),
+    total: PropTypes.number,
+    hidden: PropTypes.bool,
+};
+
 const QuestionSummary = ({ question }) => (
     <article className="bg-white shadow rounded-lg p-5">
         <div className="flex flex-wrap items-start justify-between gap-3 mb-3">
@@ -612,6 +643,12 @@ const QuestionSummary = ({ question }) => (
         {question.type === 'Yes/No' && !question.resultsHidden && (
             <YesNoBar optionCounts={question.optionCounts} total={question.responseCount} />
         )}
+
+        {question.type === 'Multiple Choice' && (question.resultsHidden ? (
+            <ChoiceBars options={question.options || []} hidden />
+        ) : (
+            <ChoiceBars options={question.options || []} optionCounts={question.optionCounts || {}} total={question.responseCount} />
+        ))}
 
         {question.type === 'Numerical' && !question.resultsHidden && (
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm text-gray-700">
@@ -644,6 +681,7 @@ QuestionSummary.propTypes = {
         resultsHidden: PropTypes.bool,
         label: PropTypes.string,
         optionCounts: PropTypes.objectOf(PropTypes.number),
+        options: PropTypes.arrayOf(PropTypes.string),
         average: PropTypes.number,
         minResponse: PropTypes.number,
         maxResponse: PropTypes.number,
