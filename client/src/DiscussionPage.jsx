@@ -229,6 +229,12 @@ const DiscussionPage = () => {
         const resolveRoute = async () => {
             try {
                 const response = await fetch(`/api/discussions/resolve/${encodeURIComponent(topic)}`);
+                if (response.status === 410) {
+                    if (!cancelled) {
+                        navigate('/', { replace: true, state: { discussionDeleted: true } });
+                    }
+                    return;
+                }
                 if (response.ok) {
                     const data = await response.json();
                     if (!cancelled && data?.slug) {

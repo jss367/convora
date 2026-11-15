@@ -18,6 +18,10 @@ CREATE TABLE IF NOT EXISTS deleted_discussion_slugs (
   slug TEXT PRIMARY KEY
 );
 
+CREATE TABLE IF NOT EXISTS deleted_discussion_aliases (
+  topic TEXT PRIMARY KEY
+);
+
 -- discussions.topic is made unique by migrateUniqueDiscussionTopics() after
 -- any duplicate rows from older deployments have been collapsed.
 -- discussions.slug is populated and made unique by migrateDiscussionSlugs().

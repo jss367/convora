@@ -68,6 +68,56 @@ test('server startup creates schema and applies the pseudonym migration', async 
   assert.deepEqual(columns.rows.map((row) => row.column_name), ['short_code', 'pseudonym']);
 });
 
+test('deleting rooms with swapped title aliases does not invert lifecycle locks', async () => {
+  const a = (await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('swap-a') })).body;
+  const b = (await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('swap-b') })).body;
+  const socket = await connectSocket();
+  try {
+    assert.equal((await emitWithAck(socket, 'setTopic', a.slug, b.topic + '!', a.adminToken)).updated, true);
+    assert.equal((await emitWithAck(socket, 'setTopic', b.slug, a.topic + '!', b.adminToken)).updated, true);
+    const results = await withTimeout(Promise.all([
+      jsonRequest('DELETE', `/api/discussions/${a.slug}`, { adminToken: a.adminToken }),
+      jsonRequest('DELETE', `/api/discussions/${b.slug}`, { adminToken: b.adminToken }),
+      jsonRequest('POST', '/api/discussions', { topic: a.topic }),
+    ]), 5000, 'Concurrent alias deletion/creation deadlocked');
+    assert.deepEqual(results.map(result => result.status), [200, 200, 200]);
+  } finally { socket.disconnect(); }
+});
+
+test('deletion reserves renamed title aliases without hiding another live canonical room', async () => {
+  const created = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('old-title') });
+  const title = uniqueTopic('Renamed Title');
+  const alias = title.toLowerCase().replace(/\s+/g, '-');
+  const { socket } = await joinAs(created.body.slug, 'alias-visitor');
+  try {
+    assert.equal((await emitWithAck(socket, 'setTopic', created.body.slug, title, created.body.adminToken)).updated, true);
+    assert.equal((await jsonRequest('DELETE', `/api/discussions/${created.body.slug}`, { adminToken: created.body.adminToken })).status, 200);
+    assert.equal((await jsonRequest('GET', `/api/discussions/resolve/${encodeURIComponent(title)}`)).status, 410);
+    const missing = waitForEvent(socket, 'discussionDeleted');
+    socket.emit('joinDiscussion', alias);
+    assert.deepEqual(await missing, { slug: alias });
+    assert.equal((await emitWithAck(socket, 'claimModerator', alias)).success, false);
+    assert.equal((await emitWithAck(socket, 'addQuestion', alias, { text: 'Stale alias submission', type: 'Agreement' }, true)).added, false);
+    const live = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('Collision Room') });
+    const original = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('collision-original') });
+    const collidingTitle = live.body.topic + '!';
+    assert.equal((await emitWithAck(socket, 'setTopic', original.body.slug, collidingTitle, original.body.adminToken)).updated, true);
+    assert.equal((await jsonRequest('DELETE', `/api/discussions/${original.body.slug}`, { adminToken: original.body.adminToken })).status, 200);
+    assert.equal((await jsonRequest('GET', `/api/discussions/resolve/${encodeURIComponent(collidingTitle)}`)).status, 410);
+    assert.equal((await jsonRequest('GET', `/api/discussions/resolve/${live.body.slug}`)).body.id, live.body.id);
+    const exactAlias = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('exact-alias-original') });
+    assert.equal((await emitWithAck(socket, 'setTopic', exactAlias.body.slug, live.body.slug, exactAlias.body.adminToken)).updated, true);
+    assert.equal((await jsonRequest('DELETE', `/api/discussions/${exactAlias.body.slug}`, { adminToken: exactAlias.body.adminToken })).status, 200);
+    // Even an exact deleted title equal to another room's canonical slug must
+    // not mask that live route in the resolver.
+    assert.equal((await jsonRequest('GET', `/api/discussions/resolve/${live.body.slug}`)).body.id, live.body.id);
+    assert.equal((await emitWithAck(socket, 'addQuestion', live.body.slug, { text: 'The other room stays usable', type: 'Agreement' }, true)).added, true);
+    await stopServer();
+    await startServer();
+    assert.equal((await jsonRequest('GET', `/api/discussions/resolve/${encodeURIComponent(title)}`)).status, 410);
+  } finally { socket.disconnect(); }
+});
+
 test('deletion rejects queued and stale question submissions without reusing the deleted slug', async () => {
   const topic = uniqueTopic('delete-race');
   const created = await jsonRequest('POST', '/api/discussions', { topic });

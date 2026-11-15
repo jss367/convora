@@ -30,6 +30,37 @@ test('a participant who missed deletion while offline leaves the room on reconne
   await expect(page.getByRole('status')).toHaveText('The discussion was deleted.');
 });
 
+test('deleted renamed title URLs stay gone while a colliding live canonical route stays usable', async ({ page, request }) => {
+  const pool = new Pool({ connectionString: databaseUrl });
+  const created = await (await request.post('/api/discussions', { data: { topic: `Old title ${Date.now()}` } })).json();
+  const title = `Current title ${Date.now()}`;
+  const live = await (await request.post('/api/discussions', { data: { topic: `Live collision ${Date.now()}` } })).json();
+  const renamed = await (await request.post('/api/discussions', { data: { topic: `Collision original ${Date.now()}` } })).json();
+  try {
+    await pool.query('UPDATE discussions SET topic = $1 WHERE id = $2', [title, created.id]);
+    expect((await request.delete(`/api/discussions/${created.slug}`, { data: { adminToken: created.adminToken } })).ok()).toBeTruthy();
+    for (const route of [title, title.toLowerCase().replace(/\s+/g, '-')]) {
+      await page.goto(`/discussion/${encodeURIComponent(route)}`);
+      await expect(page).toHaveURL('/');
+      await expect(page.getByRole('status')).toHaveText('The discussion was deleted.');
+    }
+    const alias = live.topic + '!';
+    await pool.query('UPDATE discussions SET topic = $1 WHERE id = $2', [alias, renamed.id]);
+    expect((await request.delete(`/api/discussions/${renamed.slug}`, { data: { adminToken: renamed.adminToken } })).ok()).toBeTruthy();
+    await page.goto(`/discussion/${live.slug}`);
+    await expect(page.getByRole('heading', { name: `Discussion: ${live.topic}`, exact: true })).toBeVisible();
+    await page.goto(`/discussion/${encodeURIComponent(alias)}`);
+    await expect(page).toHaveURL('/');
+    await expect(page.getByRole('status')).toHaveText('The discussion was deleted.');
+    await expect(page.getByRole('link').filter({ has: page.getByRole('heading', { name: live.topic, exact: true }) })).toBeVisible();
+    await page.goto(`/discussion/${live.slug}`);
+    await expect(page.getByRole('heading', { name: `Discussion: ${live.topic}`, exact: true })).toBeVisible();
+  } finally {
+    await pool.query('DELETE FROM discussions WHERE id = ANY($1::int[])', [[created.id, live.id, renamed.id]]);
+    await pool.end();
+  }
+});
+
 test('a never-created route still supports lazy question creation', async ({ page }) => {
   const slug = `never-deleted-${Date.now()}`;
   await page.goto(`/discussion/${slug}`);

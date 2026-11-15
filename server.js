@@ -1611,6 +1611,9 @@ app.post('/api/discussions', async (req, res) => {
 app.get('/api/discussions/resolve/:topic', async (req, res) => {
   try {
     const discussion = await resolveDiscussionRoute(req.params.topic);
+    if (discussion?.deleted) {
+      return res.status(410).json({ error: 'Discussion was deleted', deleted: true });
+    }
     if (!discussion) {
       return res.status(404).json({ error: 'Discussion not found' });
     }
@@ -1634,9 +1637,12 @@ app.delete('/api/discussions/:topic', async (req, res) => {
   try {
     client = await pool.connect();
     await client.query('BEGIN');
+    // Deletion reserves several related routes. Exclude lifecycle writers
+    // before taking any slug/row lock so aliases cannot invert their order.
+    await client.query("SELECT pg_advisory_xact_lock(hashtext('discussion_routes'))");
     await lockDiscussionSlug(client, slug);
     const result = await client.query(
-      'SELECT id FROM discussions WHERE slug = $1 AND admin_token = $2 FOR UPDATE',
+      'SELECT id, topic FROM discussions WHERE slug = $1 AND admin_token = $2 FOR UPDATE',
       [slug, token]
     );
     if (!result.rows.length) {
@@ -1644,6 +1650,14 @@ app.delete('/api/discussions/:topic', async (req, res) => {
       return res.status(403).json({ error: 'Only the creator can delete this discussion.' });
     }
     const id = result.rows[0].id;
+    const title = result.rows[0].topic;
+    const alias = slugifyTopic(title);
+    await lockDiscussionSlug(client, alias);
+    const otherOwner = await client.query('SELECT id FROM discussions WHERE slug = $1 AND id <> $2', [alias, id]);
+    if (!otherOwner.rows.length) {
+      await client.query('INSERT INTO deleted_discussion_slugs (slug) VALUES ($1) ON CONFLICT DO NOTHING', [alias]);
+    }
+    await client.query('INSERT INTO deleted_discussion_aliases (topic) VALUES ($1) ON CONFLICT DO NOTHING', [title]);
     await client.query('SELECT id FROM questions WHERE discussion_id = $1 ORDER BY id FOR UPDATE', [id]);
     await client.query('DELETE FROM votes WHERE question_id IN (SELECT id FROM questions WHERE discussion_id = $1)', [id]);
     await client.query('DELETE FROM questions WHERE discussion_id = $1', [id]);
@@ -1695,6 +1709,15 @@ app.post('/api/discussions/:topic/short-link', async (req, res) => {
 async function resolveDiscussionRoute(routeTopic) {
   const displayTopic = formatTopicTitle(routeTopic);
   const slug = slugifyTopic(routeTopic);
+  // A live canonical route wins over a deleted room's colliding title alias.
+  if (displayTopic === slug) {
+    const canonical = await pool.query('SELECT id, topic, slug, created_at FROM discussions WHERE slug = $1', [slug]);
+    if (canonical.rows.length) return canonical.rows[0];
+    const deletedCanonical = await pool.query('SELECT 1 FROM deleted_discussion_slugs WHERE slug = $1', [slug]);
+    if (deletedCanonical.rows.length) return null;
+  }
+  const alias = await pool.query('SELECT 1 FROM deleted_discussion_aliases WHERE topic = $1', [displayTopic]);
+  if (alias.rows.length) return { deleted: true };
   // A reused title gets a new route; old deleted links must not redirect to it.
   const deleted = await pool.query('SELECT 1 FROM deleted_discussion_slugs WHERE slug = $1', [slug]);
   if (deleted.rows.length) return null;
@@ -1712,6 +1735,9 @@ async function resolveDiscussionRoute(routeTopic) {
 // All creation and deletion paths serialize on the same slug, including the
 // absent-row case that row locks cannot protect. Tombstones survive restarts.
 async function lockDiscussionSlug(db, slug) {
+  // Ordinary writers remain concurrent. Deletion takes this lock exclusively
+  // first, before acquiring its canonical/title slug locks and discussion row.
+  await db.query("SELECT pg_advisory_xact_lock_shared(hashtext('discussion_routes'))");
   await db.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`discussion_lifecycle:${slug}`]);
   const deleted = await db.query('SELECT 1 FROM deleted_discussion_slugs WHERE slug = $1', [slug]);
   return deleted.rows.length > 0;
