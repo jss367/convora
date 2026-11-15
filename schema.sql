@@ -13,6 +13,15 @@ CREATE TABLE IF NOT EXISTS discussions (
   created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
 );
 
+-- Reserve deleted routes so an old client cannot recreate a removed room.
+CREATE TABLE IF NOT EXISTS deleted_discussion_slugs (
+  slug TEXT PRIMARY KEY
+);
+
+CREATE TABLE IF NOT EXISTS deleted_discussion_aliases (
+  topic TEXT PRIMARY KEY
+);
+
 -- discussions.topic is made unique by migrateUniqueDiscussionTopics() after
 -- any duplicate rows from older deployments have been collapsed.
 -- discussions.slug is populated and made unique by migrateDiscussionSlugs().

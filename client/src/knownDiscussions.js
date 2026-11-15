@@ -103,3 +103,13 @@ export function reconcileKnownDiscussions(queriedSlugs, found) {
     writeStored(next);
     return next;
 }
+
+// Remove a deleted room and its credential from this browser's home-page list.
+export function forgetDiscussion(slug) {
+    writeStored(readStored().filter(entry => entry.slug !== slug));
+    try {
+        localStorage.removeItem(`${ADMIN_TOKEN_PREFIX}${slug}`);
+    } catch (error) {
+        console.warn('Failed to clear deleted discussion credential:', error);
+    }
+}

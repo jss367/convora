@@ -192,3 +192,13 @@ and Chromium interaction tests on Node 20.15 and the latest Node 20 release.
 [https://convora-e40a9ae358dc.herokuapp.com/](https://convora-e40a9ae358dc.herokuapp.com/)
 
 https://console.cloud.google.com/welcome?pli=1&inv=1&invt=Ab0Pdg&project=convora-7cba7
+
+## Delete a discussion
+
+The creator can choose **More → Delete discussion** and confirm permanent deletion.
+This removes the discussion and all its questions, responses, comments, and saved
+snapshots for everyone. Connected participants return to the home page and room
+displays show that the discussion is gone. Deleted discussion routes stay reserved;
+creating the same title later gives it a new link. Promoted
+moderators cannot delete discussions. As with other creator controls, anyone with
+the creator's saved moderator link has the same authority.

@@ -538,6 +538,18 @@ io.on('connection', (socket) => {
     emitPresence(discussionSlug);
 
     try {
+      // A late visitor or reconnect may have missed the deletion broadcast.
+      // Null discussion data alone also means a never-created lazy route, so
+      // distinguish a permanently deleted route using its durable tombstone.
+      const deleted = await pool.query('SELECT 1 FROM deleted_discussion_slugs WHERE slug = $1', [discussionSlug]);
+      if (socket.data.topic !== discussionSlug) return;
+      if (deleted.rows.length) {
+        socket.leave(discussionSlug);
+        socket.data.topic = null;
+        emitPresence(discussionSlug);
+        socket.emit('discussionDeleted', { slug: discussionSlug });
+        return;
+      }
       socket.emit('discussion', await getDiscussionBySlug(discussionSlug));
       await emitQuestions(discussionSlug, socket);
       socket.emit('discussionState', await getDiscussionState(discussionSlug));
@@ -1069,21 +1081,24 @@ io.on('connection', (socket) => {
     const discussionSlug = slugifyTopic(topic);
     const reply = (result) => { if (typeof ack === 'function') ack(result); };
     try {
-      const discussionId = await verifyAdmin(discussionSlug, token);
-      if (!discussionId) {
-        socket.emit('error', { message: 'Not authorized to moderate this discussion.' });
-        reply({ updated: false, reason: 'not_authorized' });
+      const outcome = await withTransaction(async client => {
+        // Take the shared route lock and canonical slug lock before any row
+        // access. Deletion either waits for this committed title, or wins and
+        // the rename must report failure rather than updating a vanished row.
+        if (await lockDiscussionSlug(client, discussionSlug)) return 'not_found';
+        const discussionId = await verifyAdmin(discussionSlug, token, client);
+        if (!discussionId) return 'not_authorized';
+        // formatTopicTitle substitutes a placeholder for blank input.
+        const title = formatTopicTitle(newTopic);
+        if (!String(newTopic || '').trim() || title.length > MAX_TOPIC_LENGTH) return 'invalid';
+        const updated = await client.query('UPDATE discussions SET topic = $1 WHERE id = $2', [title, discussionId]);
+        return updated.rowCount === 1 ? 'updated' : 'not_found';
+      });
+      if (outcome !== 'updated') {
+        if (outcome === 'not_authorized') socket.emit('error', { message: 'Not authorized to moderate this discussion.' });
+        reply({ updated: false, reason: outcome });
         return;
       }
-      // formatTopicTitle substitutes 'Discussion' for blank input, so guard on
-      // the raw value first: a blank submission is invalid, not a silent rename
-      // to the placeholder. Also bound the length to match the client input.
-      const title = formatTopicTitle(newTopic);
-      if (!String(newTopic || '').trim() || title.length > MAX_TOPIC_LENGTH) {
-        reply({ updated: false, reason: 'invalid' });
-        return;
-      }
-      await pool.query('UPDATE discussions SET topic = $1 WHERE id = $2', [title, discussionId]);
       audience(discussionSlug).emit('discussion', await getDiscussionBySlug(discussionSlug));
       reply({ updated: true });
     } catch (error) {
@@ -1599,6 +1614,9 @@ app.post('/api/discussions', async (req, res) => {
 app.get('/api/discussions/resolve/:topic', async (req, res) => {
   try {
     const discussion = await resolveDiscussionRoute(req.params.topic);
+    if (discussion?.deleted) {
+      return res.status(410).json({ error: 'Discussion was deleted', deleted: true });
+    }
     if (!discussion) {
       return res.status(404).json({ error: 'Discussion not found' });
     }
@@ -1606,6 +1624,59 @@ app.get('/api/discussions/resolve/:topic', async (req, res) => {
   } catch (err) {
     logError('Request failed:', err);
     res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Only the creator credential can permanently delete a discussion. Lock the
+// parent and questions before removing children so concurrent inserts cannot
+// slip between the deletes. All other dependent tables cascade automatically.
+app.delete('/api/discussions/:topic', async (req, res) => {
+  const token = req.body?.adminToken;
+  if (typeof token !== 'string' || !token) {
+    return res.status(403).json({ error: 'Only the creator can delete this discussion.' });
+  }
+  const slug = slugifyTopic(req.params.topic);
+  let client;
+  try {
+    client = await pool.connect();
+    await client.query('BEGIN');
+    // Deletion reserves several related routes. Exclude lifecycle writers
+    // before taking any slug/row lock so aliases cannot invert their order.
+    await client.query("SELECT pg_advisory_xact_lock(hashtext('discussion_routes'))");
+    await lockDiscussionSlug(client, slug);
+    const result = await client.query(
+      'SELECT id, topic FROM discussions WHERE slug = $1 AND admin_token = $2 FOR UPDATE',
+      [slug, token]
+    );
+    if (!result.rows.length) {
+      await client.query('ROLLBACK');
+      return res.status(403).json({ error: 'Only the creator can delete this discussion.' });
+    }
+    const id = result.rows[0].id;
+    const title = result.rows[0].topic;
+    const alias = slugifyTopic(title);
+    await lockDiscussionSlug(client, alias);
+    const otherOwner = await client.query('SELECT id FROM discussions WHERE slug = $1 AND id <> $2', [alias, id]);
+    if (!otherOwner.rows.length) {
+      await client.query('INSERT INTO deleted_discussion_slugs (slug) VALUES ($1) ON CONFLICT DO NOTHING', [alias]);
+    }
+    await client.query('INSERT INTO deleted_discussion_aliases (topic) VALUES ($1) ON CONFLICT DO NOTHING', [title]);
+    await client.query('SELECT id FROM questions WHERE discussion_id = $1 ORDER BY id FOR UPDATE', [id]);
+    await client.query('DELETE FROM votes WHERE question_id IN (SELECT id FROM questions WHERE discussion_id = $1)', [id]);
+    await client.query('DELETE FROM questions WHERE discussion_id = $1', [id]);
+    await client.query('INSERT INTO deleted_discussion_slugs (slug) VALUES ($1) ON CONFLICT DO NOTHING', [slug]);
+    await client.query('DELETE FROM discussions WHERE id = $1', [id]);
+    await client.query('COMMIT');
+    audience(slug).emit('discussionDeleted', { slug });
+    audience(slug).emit('discussion', null);
+    audience(slug).emit('questions', []);
+    res.json({ deleted: true });
+  } catch (error) {
+    if (client) await client.query('ROLLBACK');
+    logError('Error deleting discussion:', error);
+    res.status(500).json({ error: 'Could not delete the discussion. Please try again.' });
+  } finally {
+    if (client) client.release();
   }
 });
 
@@ -1641,6 +1712,18 @@ app.post('/api/discussions/:topic/short-link', async (req, res) => {
 async function resolveDiscussionRoute(routeTopic) {
   const displayTopic = formatTopicTitle(routeTopic);
   const slug = slugifyTopic(routeTopic);
+  // A live canonical route wins over a deleted room's colliding title alias.
+  if (displayTopic === slug) {
+    const canonical = await pool.query('SELECT id, topic, slug, created_at FROM discussions WHERE slug = $1', [slug]);
+    if (canonical.rows.length) return canonical.rows[0];
+    const deletedCanonical = await pool.query('SELECT 1 FROM deleted_discussion_slugs WHERE slug = $1', [slug]);
+    if (deletedCanonical.rows.length) return null;
+  }
+  const alias = await pool.query('SELECT 1 FROM deleted_discussion_aliases WHERE topic = $1', [displayTopic]);
+  if (alias.rows.length) return { deleted: true };
+  // A reused title gets a new route; old deleted links must not redirect to it.
+  const deleted = await pool.query('SELECT 1 FROM deleted_discussion_slugs WHERE slug = $1', [slug]);
+  if (deleted.rows.length) return null;
   const result = await pool.query(
     `SELECT id, topic, slug, created_at
        FROM discussions
@@ -1652,8 +1735,20 @@ async function resolveDiscussionRoute(routeTopic) {
   return result.rows[0] || null;
 }
 
+// All creation and deletion paths serialize on the same slug, including the
+// absent-row case that row locks cannot protect. Tombstones survive restarts.
+async function lockDiscussionSlug(db, slug) {
+  // Ordinary writers remain concurrent. Deletion takes this lock exclusively
+  // first, before acquiring its canonical/title slug locks and discussion row.
+  await db.query("SELECT pg_advisory_xact_lock_shared(hashtext('discussion_routes'))");
+  await db.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`discussion_lifecycle:${slug}`]);
+  const deleted = await db.query('SELECT 1 FROM deleted_discussion_slugs WHERE slug = $1', [slug]);
+  return deleted.rows.length > 0;
+}
+
 async function getOrCreateDiscussionForSlug(db, slug) {
   const canonicalSlug = slugifyTopic(slug);
+  if (await lockDiscussionSlug(db, canonicalSlug)) throw new Error('Discussion has been deleted');
   const result = await db.query(
     `INSERT INTO discussions (topic, slug)
      VALUES ($1, $2)
@@ -1980,10 +2075,10 @@ async function addQuestion(topic, question) {
 // is valid if it's the discussion's creator admin_token OR a per-user token
 // granted to a promoted moderator (discussion_moderators). Returns the
 // discussion id when valid, or null otherwise.
-async function verifyAdmin(topic, token) {
+async function verifyAdmin(topic, token, db = pool) {
   if (!token) return null;
   const slug = slugifyTopic(topic);
-  const result = await pool.query(
+  const result = await db.query(
     `SELECT d.id
        FROM discussions d
       WHERE d.slug = $1
@@ -2037,7 +2132,7 @@ async function createDiscussion(topic, { listed = false } = {}) {
       'SELECT id, topic, slug, admin_token FROM discussions WHERE topic = $1 LIMIT 1',
       [displayTopic]
     );
-    if (existing.rows.length > 0) {
+    if (existing.rows.length > 0 && !await lockDiscussionSlug(client, existing.rows[0].slug)) {
       const updated = await client.query(
         `UPDATE discussions
             SET listed = CASE WHEN admin_token IS NULL THEN $3 ELSE listed END,
@@ -2059,6 +2154,7 @@ async function createDiscussion(topic, { listed = false } = {}) {
     let row = null;
     for (let suffix = 1; suffix <= 1000; suffix += 1) {
       const slug = suffixSlug(baseSlug, suffix);
+      if (await lockDiscussionSlug(client, slug)) continue;
       const result = await client.query(
         `INSERT INTO discussions (topic, slug, admin_token, listed)
          VALUES ($1, $2, $3, $4)
@@ -2168,6 +2264,10 @@ async function claimModerator(topic) {
   try {
     await client.query('BEGIN');
     await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [slug]);
+    if (await lockDiscussionSlug(client, slug)) {
+      await client.query('COMMIT');
+      return null;
+    }
 
     const claim = await client.query(
       `INSERT INTO discussions (topic, slug, admin_token)
@@ -3175,6 +3275,7 @@ app.post('/api/duplicate-discussion', async (req, res) => {
     let newDiscussion = null;
     for (let suffix = 1; suffix <= 1000; suffix += 1) {
       const newSlug = suffixSlug(baseNewSlug, suffix);
+      if (await lockDiscussionSlug(client, newSlug)) continue;
       const newDiscussionResult = await client.query(
         `INSERT INTO discussions (topic, slug, admin_token, reactions_enabled, reactions_visible, comments_enabled, theme, results_visibility)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
