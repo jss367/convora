@@ -3107,7 +3107,7 @@ app.get('/api/discussions/:topic/export.csv', async (req, res) => {
         question.created_at,
         vote.id,
         vote.pseudonym || 'Anonymous',
-        parseStoredVoteValue(vote.value),
+        question.type === 'Multiple Choice' ? vote.value : parseStoredVoteValue(vote.value),
         vote.created_at,
       ]);
     });

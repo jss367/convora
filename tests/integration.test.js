@@ -1058,6 +1058,34 @@ test('Multiple Choice results stay hidden until a participant votes, and snapsho
   assert.deepEqual(revealedSummary.optionCounts, { Higher: 2, Lower: 1, 'About the same': 1 });
 });
 
+test('the CSV export preserves Multiple Choice option labels as literal strings', async () => {
+  const created = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('mc-csv-literals') });
+  const { id, slug, adminToken } = created.body;
+  const options = ['null', '"quoted"', '["A"]', '{"x":1}', 'true', '=SUM(A1)'];
+  const inserted = await pool.query(
+    'INSERT INTO questions (discussion_id, text, type, options) VALUES ($1, $2, $3, $4) RETURNING id',
+    [id, 'Pick a literal label', 'Multiple Choice', JSON.stringify(options)]
+  );
+  for (const [index, value] of options.entries()) {
+    await pool.query('INSERT INTO votes (question_id, value, user_id) VALUES ($1, $2, $3)',
+      [inserted.rows[0].id, value, 'literal-voter-' + index]);
+  }
+
+  const response = await fetch(baseUrl + '/api/discussions/' + slug + '/export.csv', {
+    headers: asModerator(adminToken),
+  });
+  assert.equal(response.status, 200);
+  const csv = await response.text();
+  const values = csv.split('\n').slice(1).map(line => {
+    const fields = Array.from(line.matchAll(/(?:^|,)("(?:[^"]|"")*"|[^,]*)/g), match => match[1]);
+    const value = fields[7];
+    return value.startsWith('"') ? value.slice(1, -1).replace(/""/g, '"') : value;
+  });
+  // Literal JSON-looking labels survive unchanged; the existing CSV formula
+  // neutralization still applies to a formula-looking option.
+  assert.deepEqual(values, ['null', '"quoted"', '["A"]', '{"x":1}', 'true', "'=SUM(A1)"]);
+});
+
 test('a moderator can edit a question to Multiple Choice, and options are saved with the edit', async () => {
   const topic = uniqueTopic('edit-mc');
   const mod = await connectSocket();
