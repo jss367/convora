@@ -1,11 +1,10 @@
 const { test, expect } = require('./lifecycle-fixtures.cjs');
 
-async function createFromHomePage(page, topic, { listPublicly }) {
+async function createFromHomePage(page, topic) {
   await page.goto('/');
   await page.getByPlaceholder('Enter discussion topic').fill(topic);
   const checkbox = page.getByRole('checkbox', { name: /List publicly/ });
-  await expect(checkbox).not.toBeChecked();
-  if (listPublicly) await checkbox.check();
+  await expect(checkbox).toHaveCount(0);
   await page.getByRole('button', { name: 'Create', exact: true }).click();
   await expect(page.getByRole('heading', { name: `Discussion: ${topic}`, exact: true })).toBeVisible();
   return new URL(page.url()).pathname.split('/').pop();
@@ -17,11 +16,14 @@ test('a creator can list a discussion publicly and take it off the list', async 
   const unlistedTopic = `Unlisted meeting ${suffix}`;
   const visitorContext = await browser.newContext();
   try {
-    const listedSlug = await createFromHomePage(page, listedTopic, { listPublicly: true });
+    const listedSlug = await createFromHomePage(page, listedTopic);
     await rooms.trackSlug(listedSlug);
+    const publish = page.getByRole('button', { name: 'List publicly', exact: true });
+    await expect(publish).toHaveAttribute('aria-pressed', 'false');
+    await publish.click();
     const toggle = page.getByRole('button', { name: 'Listed publicly', exact: true });
     await expect(toggle).toHaveAttribute('aria-pressed', 'true');
-    const unlistedSlug = await createFromHomePage(page, unlistedTopic, { listPublicly: false });
+    const unlistedSlug = await createFromHomePage(page, unlistedTopic);
     await rooms.trackSlug(unlistedSlug);
     await expect(page.getByRole('button', { name: 'List publicly', exact: true })).toHaveAttribute('aria-pressed', 'false');
 
