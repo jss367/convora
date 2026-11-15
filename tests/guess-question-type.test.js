@@ -147,5 +147,5 @@ test('every guessed type is a real question type', () => {
   const config = readFileSync(require.resolve('../client/src/questions/config.js'), 'utf8');
   const block = config.match(/export const QuestionTypes = \{([^}]*)\}/)[1];
   const types = [...block.matchAll(/'([^']+)'/g)].map(match => match[1]);
-  assert.deepEqual(Object.keys(CASES).sort(), [...types].sort());
+  for (const type of Object.keys(CASES)) assert.ok(types.includes(type), type);
 });

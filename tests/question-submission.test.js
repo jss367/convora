@@ -17,7 +17,10 @@ function setup(draft = defaultDraft()) {
   const context = {
     questionDraft: draft,
     questionPendingRef: { current: false }, discussionSlug: 'room', adminToken: null,
-    QuestionTypes: { AGREEMENT: 'Agreement', NUMERICAL: 'Numerical' }, console,
+    QuestionTypes: { AGREEMENT: 'Agreement', NUMERICAL: 'Numerical', MULTIPLE_CHOICE: 'Multiple Choice' }, console,
+    emptyQuestionDraft: () => ({ text: '', type: 'Agreement', minValue: 0, maxValue: 100, options: ['', ''], typeChosen: false }),
+    MULTIPLE_CHOICE_LIMITS: { MIN_OPTIONS: 2, MAX_OPTIONS: 6, MAX_OPTION_LENGTH: 100 },
+    validateChoiceOptions: options => ({ options: options.map(option => option.trim()) }),
     setError: value => { state.error = value; },
     setQuestionDraft: update => { state.draft = update(state.draft); },
     socket: {
@@ -41,7 +44,7 @@ test('question submissions wait for acknowledgment and reset an untouched draft 
   submit();
   assert.equal(state.sent.length, 1);
   ack(null, { added: true });
-  assert.deepEqual(plain(state.draft), { text: '', type: 'Agreement', minValue: 0, maxValue: 100, typeChosen: false });
+  assert.deepEqual(plain(state.draft), { text: '', type: 'Agreement', minValue: 0, maxValue: 100, options: ['', ''], typeChosen: false });
 });
 
 for (const [label, edits] of [
@@ -98,4 +101,22 @@ test('rejected or interrupted question submissions retain the draft and allow re
   assert.match(state.error, /Check the discussion/);
   submit();
   assert.equal(state.sent.length, 3);
+});
+
+test('a delayed acknowledgment keeps Multiple Choice options edited after submission', () => {
+  const original = { text: 'p(doom)?', type: 'Multiple Choice', minValue: 0, maxValue: 100, options: ['Higher', 'Lower'] };
+  const { state, submit, ack } = setup(original);
+  submit({ text: 'p(doom)?', type: 'Multiple Choice', options: ['Higher', 'Lower'] });
+  const edited = { ...original, options: ['Higher', 'Lower', 'Same'] };
+  state.draft = edited;
+  ack(null, { added: true });
+  assert.equal(state.draft, edited);
+});
+
+test('an untouched Multiple Choice draft resets once its submission is acknowledged', () => {
+  const original = { text: 'p(doom)?', type: 'Multiple Choice', minValue: 0, maxValue: 100, options: [' Higher', 'Lower'] };
+  const { state, submit, ack } = setup(original);
+  submit({ text: 'p(doom)?', type: 'Multiple Choice', options: ['Higher', 'Lower'] });
+  ack(null, { added: true });
+  assert.deepEqual(plain(state.draft), { text: '', type: 'Agreement', minValue: 0, maxValue: 100, options: ['', ''], typeChosen: false });
 });

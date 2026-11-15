@@ -13,15 +13,23 @@ import ModeratorLinkPanel, { ModeratorLinkUnsavedMark, moderatorLinkPromptState,
 import { downloadForViewer } from './viewer';
 import OpenEndedQuestion from './questions/OpenEndedQuestion';
 import QuestionEditor from './questions/QuestionEditor';
-import { AgreementResults, YesNoResults } from './questions/OpinionResults';
+import { AgreementResults, YesNoResults, MultipleChoiceResults } from './questions/OpinionResults';
+import ChoiceOptionsEditor from './questions/ChoiceOptionsEditor';
 import BrainstormQuestion from './questions/BrainstormQuestion';
 import NumericalResults from './questions/NumericalResults';
-import { clampNumericalValue, sortQuestionsMostRecent } from './questions/questionHelpers.mjs';
+import { clampNumericalValue, sortQuestionsMostRecent, validateChoiceOptions } from './questions/questionHelpers.mjs';
 import { guessQuestionType } from './questions/guessQuestionType.mjs';
 import {
     QuestionTypes, QuestionTypeDescriptions, VoteOptions, YesNoOptions,
-    EPISTEMIC_REACTIONS, ALL_REACTION_KEYS,
+    EPISTEMIC_REACTIONS, ALL_REACTION_KEYS, MULTIPLE_CHOICE_LIMITS,
 } from './questions/config';
+
+// A blank Add Question form. Multiple Choice starts with two empty options, the
+// minimum it needs; they are kept while the type changes so switching away and
+// back does not lose what was typed.
+const emptyQuestionDraft = () => ({
+    text: '', type: QuestionTypes.AGREEMENT, minValue: 0, maxValue: 100, options: ['', ''], typeChosen: false,
+});
 
 // Color themes a moderator can apply to a discussion. Keys and the palettes
 // they map to are defined in client/src/index.css ([data-theme] blocks) and
@@ -60,13 +68,6 @@ const SortOptions = {
     MOST_CONTROVERSIAL: 'Most Controversial',
 };
 
-// A blank Add Question form. `typeChosen` records that the author set the type
-// or the numerical range by hand, which stops the type from following the
-// wording (see guessQuestionType).
-const emptyQuestionDraft = () => ({
-    text: '', type: QuestionTypes.AGREEMENT, minValue: 0, maxValue: 100, typeChosen: false,
-});
-
 const DiscussionPage = () => {
     const { topic } = useParams();
     const navigate = useNavigate();
@@ -77,7 +78,7 @@ const DiscussionPage = () => {
     const [discussion, setDiscussion] = useState(null);
     const [questions, setQuestions] = useState([]);
     const [questionDraft, setQuestionDraft] = useState(emptyQuestionDraft);
-    const { text: newQuestion, type: questionType, minValue, maxValue } = questionDraft;
+    const { text: newQuestion, type: questionType, minValue, maxValue, options: choiceOptions } = questionDraft;
     // Until the author picks a type themselves, the type follows the wording:
     // the guess when there is one, otherwise the default.
     const updateQuestionText = (text) => setQuestionDraft(current => ({
@@ -89,6 +90,7 @@ const DiscussionPage = () => {
     // so later edits to the wording leave it alone.
     const chooseQuestionSetting = (field, value) => setQuestionDraft(current => ({ ...current, [field]: value, typeChosen: true }));
     const typeGuessed = !questionDraft.typeChosen && guessQuestionType(newQuestion) !== null;
+    const updateQuestionDraft = (field, value) => setQuestionDraft(current => ({ ...current, [field]: value }));
     const [sliderValues, setSliderValues] = useState({});
     const [sortOption, setSortOption] = useState(SortOptions.MOST_RECENT);
     const [showUnansweredOnly, setShowUnansweredOnly] = useState(false);
@@ -735,6 +737,15 @@ const DiscussionPage = () => {
             question.maxValue = parseInt(maxValue);
         }
 
+        if (questionType === QuestionTypes.MULTIPLE_CHOICE) {
+            const { options, error: optionsError } = validateChoiceOptions(choiceOptions, MULTIPLE_CHOICE_LIMITS);
+            if (optionsError) {
+                setError(optionsError);
+                return;
+            }
+            question.options = options;
+        }
+
         submitQuestion(question, false);
     };
 
@@ -764,7 +775,10 @@ const DiscussionPage = () => {
                             || current.text.trim() !== question.text
                             || current.type !== question.type
                             || (question.type === QuestionTypes.NUMERICAL
-                                && (current.minValue !== question.minValue || current.maxValue !== question.maxValue))) return current;
+                                && (current.minValue !== question.minValue || current.maxValue !== question.maxValue))
+                            || (question.type === QuestionTypes.MULTIPLE_CHOICE
+                                && validateChoiceOptions(current.options, MULTIPLE_CHOICE_LIMITS).options?.join('\n')
+                                    !== question.options.join('\n'))) return current;
                         return emptyQuestionDraft();
                     });
                 } else if (resp && resp.reason === 'moderator_only') {
@@ -994,6 +1008,22 @@ const DiscussionPage = () => {
                                         <span className="font-medium">
                                             {option}{question.resultsHidden ? '' : `: ${question.votes ? question.votes.filter(v => v.value === option).length : 0}`}
                                         </span>
+                                        {renderOptionVoteButton(option)}
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+                );
+            case QuestionTypes.MULTIPLE_CHOICE:
+                return (
+                    <div>
+                        <MultipleChoiceResults question={question} />
+                        {!locked && (
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                {(question.options || []).map((option) => (
+                                    <div key={option} className="flex items-center justify-between gap-3 bg-gray-100 p-3 rounded-md">
+                                        <span className="font-medium break-words min-w-0">{option}</span>
                                         {renderOptionVoteButton(option)}
                                     </div>
                                 ))}
@@ -1922,6 +1952,12 @@ const DiscussionPage = () => {
                     <label className="block mb-2">Question Type:</label>
                     <select
                         value={questionType}
+                        onPointerDown={() => setQuestionDraft(current => ({ ...current, typeChosen: true }))}
+                        onKeyDown={(event) => {
+                            if (['Enter', ' ', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) {
+                                setQuestionDraft(current => ({ ...current, typeChosen: true }));
+                            }
+                        }}
                         onChange={(e) => chooseQuestionSetting('type', e.target.value)}
                         className="w-full p-3 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary"
                     >
@@ -1940,6 +1976,12 @@ const DiscussionPage = () => {
                         <p className="mt-2 text-sm text-gray-500">{QuestionTypeDescriptions[questionType]}</p>
                     )}
                 </div>
+                {questionType === QuestionTypes.MULTIPLE_CHOICE && (
+                    <ChoiceOptionsEditor
+                        options={choiceOptions}
+                        onChange={(options) => updateQuestionDraft('options', options)}
+                    />
+                )}
                 {questionType === QuestionTypes.NUMERICAL && (
                     <div className="mb-4 flex space-x-4">
                         <div className="flex-1">
@@ -2033,7 +2075,7 @@ const DiscussionPage = () => {
                                     </button>
                                 )}
                                 {discussionState.resultsVisibility !== 'always'
-                                    && [QuestionTypes.AGREEMENT, QuestionTypes.YES_NO, QuestionTypes.NUMERICAL].includes(question.type) && (
+                                    && [QuestionTypes.AGREEMENT, QuestionTypes.YES_NO, QuestionTypes.MULTIPLE_CHOICE, QuestionTypes.NUMERICAL].includes(question.type) && (
                                     <button
                                         onClick={() => handleToggleResultsRevealed(question.id, question.resultsRevealed)}
                                         aria-pressed={question.resultsRevealed === true}

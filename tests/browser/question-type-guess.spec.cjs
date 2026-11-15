@@ -1,5 +1,23 @@
 const { test, expect } = require('./lifecycle-fixtures.cjs');
 
+for (const guessed of [false, true]) {
+  test(`confirming the ${guessed ? 'guessed' : 'default'} type without changing its value locks the choice`, async ({ page, rooms }) => {
+    const room = await rooms.create('Confirmed type');
+    await page.goto(`/discussion/${room.slug}`);
+    const input = page.getByPlaceholder('Enter a new question or statement');
+    const picker = page.getByRole('combobox').filter({ has: page.locator('option[value="Numerical"]') });
+    if (guessed) await input.fill('How many seats do we need?');
+    const chosen = guessed ? 'Numerical' : 'Agreement';
+    await expect(picker).toHaveValue(chosen);
+    await picker.focus();
+    await picker.press('Space');
+    await picker.press('Enter');
+    await input.fill('Why did the plan change?');
+    await expect(picker).toHaveValue(chosen);
+    await expect(page.getByRole('status').filter({ hasText: 'based on your wording' })).toHaveCount(0);
+  });
+}
+
 test('the type picker follows the wording until the author chooses a type', async ({ page, rooms }) => {
   const room = await rooms.create('Type guess');
   await page.goto(`/discussion/${room.slug}`);

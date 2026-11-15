@@ -1,7 +1,8 @@
-const { AGREEMENT_OPTIONS, YES_NO_OPTIONS } = require('./question-data');
+const { choiceOptionsFor } = require('./question-data');
 
-const OPTIONS = { Agreement: AGREEMENT_OPTIONS, 'Yes/No': YES_NO_OPTIONS };
-const OPINION_TYPES = ['Numerical', ...Object.keys(OPTIONS)];
+// The tallied question types: their results are hidden until a participant
+// answers, and snapshots record their aggregates.
+const OPINION_TYPES = ['Numerical', 'Agreement', 'Yes/No', 'Multiple Choice'];
 
 // Only aggregates leave this function. Never persist names, user ids, vote ids,
 // or per-person histories in a snapshot that the whole room can read.
@@ -37,9 +38,12 @@ function buildOpinionSnapshot(questions) {
         average: values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null,
       };
     } else {
-      const options = OPTIONS[question.type];
+      const options = choiceOptionsFor(question);
       validVotes = question.votes.filter(vote => options.includes(vote.value));
       metrics = {
+        // Multiple Choice options are part of the question's wording, so the
+        // snapshot keeps them and a comparison can tell when they changed.
+        ...(question.type === 'Multiple Choice' ? { options } : {}),
         optionCounts: Object.fromEntries(options.map(option => [option, validVotes.filter(v => v.value === option).length])),
       };
     }
