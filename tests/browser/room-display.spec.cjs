@@ -492,3 +492,33 @@ for (const layout of ['all', 'focus']) {
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   });
 }
+
+for (const layout of ['all', 'focus']) {
+  test('long choice labels wrap inside the hidden-results option list in ' + layout + ' layout', async ({ page, rooms }) => {
+    await page.setViewportSize({ width: 1920, height: 1080 });
+    const room = await rooms.create('Long hidden choices', 'Multiple Choice');
+    const longOption = 'Y'.repeat(100);
+    await rooms.pool.query('UPDATE questions SET options = $1 WHERE discussion_id = $2',
+      [JSON.stringify([longOption, 'Short']), room.id]);
+    // Results only after voting, with one response: the display shows the count
+    // and the options, not the chart.
+    await rooms.pool.query("UPDATE discussions SET results_visibility = 'after_vote', display_layout = $1 WHERE id = $2",
+      [layout, room.id]);
+    await rooms.pool.query(
+      "INSERT INTO votes (question_id, value, user_id) SELECT id, 'Short', 'wrap-voter' FROM questions WHERE discussion_id = $1",
+      [room.id]
+    );
+    await page.goto(`/discussion/${room.slug}/display`);
+    const card = page.getByTestId('display-question');
+    const pill = card.getByTestId('display-choice-options').getByText(longOption, { exact: true });
+    await expect(pill).toBeVisible();
+    const fits = await pill.evaluate(element => {
+      const cardBox = element.closest('[data-testid="display-question"]').getBoundingClientRect();
+      const range = document.createRange();
+      range.selectNodeContents(element);
+      return Array.from(range.getClientRects()).every(rect => rect.left >= cardBox.left - 1 && rect.right <= cardBox.right + 1);
+    });
+    expect(fits).toBe(true);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  });
+}

@@ -56,9 +56,9 @@ export function QuestionComparison({ before, after, comparing, beforeName, after
                 {Array.isArray(question.options) && question.options.length > 0 && (
                     // Multiple Choice options are part of the question, so they
                     // are listed while the counts stay hidden.
-                    <ul className="mt-2 flex flex-wrap gap-2" aria-label="Answer options">
+                    <ul className="mt-2 flex max-w-full flex-wrap gap-2" aria-label="Answer options">
                         {question.options.map(option => (
-                            <li key={option} className="rounded-full bg-gray-100 px-3 py-1 text-sm text-gray-700">{option}</li>
+                            <li key={option} className="min-w-0 max-w-full break-words rounded-2xl bg-gray-100 px-3 py-1 text-sm text-gray-700">{option}</li>
                         ))}
                     </ul>
                 )}

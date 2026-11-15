@@ -271,6 +271,11 @@ test('persisted categorical snapshots render ordered labels, zero counts, and al
   }));
   assert.deepEqual([...hiddenHtml.matchAll(/<li[^>]*>([^<]*)<\/li>/g)].map(match => match[1]), choice.labels);
   assert.doesNotMatch(hiddenHtml, /<table|\d+%/);
+  // A long unbroken option wraps inside the card rather than overflowing it.
+  for (const item of hiddenHtml.matchAll(/<li class="([^"]*)"/g)) {
+    assert.match(item[1], /\bmax-w-full\b/);
+    assert.match(item[1], /\bbreak-words\b/);
+  }
 });
 
 test('snapshots support empty responses, numerical bounds, locked rooms, and promoted moderators', async () => {

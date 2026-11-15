@@ -268,9 +268,11 @@ export const ResponseCountOnly = ({ count, options, focus }) => (
         </p>
         <p className={`${focus ? 'text-2xl' : 'text-lg'} mt-3 text-gray-500`}>Vote on your phone. The moderator will show the results here.</p>
         {Array.isArray(options) && options.length > 0 && (
-            <ul className="mt-4 flex flex-wrap gap-3" data-testid="display-choice-options">
+            <ul className="mt-4 flex max-w-full flex-wrap gap-3" data-testid="display-choice-options">
                 {options.map(option => (
-                    <li key={option} className={`${focus ? 'text-3xl px-5 py-2' : 'text-xl px-4 py-1.5'} rounded-full bg-gray-100 text-gray-800`}>
+                    // max-w-full keeps a long unbroken option inside the card,
+                    // where break-words can then wrap it.
+                    <li key={option} className={`${focus ? 'text-3xl px-5 py-2' : 'text-xl px-4 py-1.5'} min-w-0 max-w-full break-words rounded-2xl bg-gray-100 text-gray-800`}>
                         {option}
                     </li>
                 ))}
