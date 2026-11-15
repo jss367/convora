@@ -314,40 +314,68 @@ function restViewer(req) {
 // only once a room-wide send that started after it has been delivered: the
 // socket is in the room already and has the newer payload. A room-wide send
 // that started but then failed does not cancel it.
-const questionBroadcasts = new Map(); // slug -> { runs, delivered, tail, queued }
+//
+// A discussion's entry is removed once it is idle: no room-wide send running or
+// queued and no send to one socket still loading. Until then its counters stay,
+// so a send in flight is always compared against the same entry.
+const questionBroadcasts = new Map(); // slug -> { runs, delivered, tail, queued, busy, personal }
+
+function questionRoom(slug) {
+  let room = questionBroadcasts.get(slug);
+  if (!room) {
+    room = { runs: 0, delivered: 0, tail: Promise.resolve(), queued: null, busy: false, personal: 0 };
+    questionBroadcasts.set(slug, room);
+  }
+  return room;
+}
+
+function evictIfIdle(slug, room) {
+  if (!room.busy && room.personal === 0 && questionBroadcasts.get(slug) === room) {
+    questionBroadcasts.delete(slug);
+  }
+}
 
 function emitQuestions(topic, onlySocket = null, isCurrent = () => true) {
   const slug = slugifyTopic(topic);
-  let room = questionBroadcasts.get(slug);
-  if (onlySocket) return sendQuestions(slug, { onlySocket, isCurrent, startedAfterRun: room?.runs || 0 });
-  if (!room) {
-    room = { runs: 0, delivered: 0, tail: Promise.resolve(), queued: null };
-    questionBroadcasts.set(slug, room);
+  const room = questionRoom(slug);
+  if (onlySocket) {
+    room.personal += 1;
+    return sendQuestions(slug, room, { onlySocket, isCurrent, startedAfterRun: room.runs })
+      .finally(() => {
+        room.personal -= 1;
+        evictIfIdle(slug, room);
+      });
   }
   if (room.queued) return room.queued;
+  room.busy = true;
   const run = room.tail.catch(() => {}).then(async () => {
     // From here on, a new request needs a send that starts after this one.
     room.queued = null;
     room.runs += 1;
-    await sendQuestions(slug, { run: room.runs });
+    await sendQuestions(slug, room, { run: room.runs });
   });
   room.tail = run;
   room.queued = run;
+  run.catch(() => {}).then(() => {
+    // Nothing was chained after this run: the room has no send left.
+    if (room.tail !== run) return;
+    room.busy = false;
+    evictIfIdle(slug, room);
+  });
   return run;
 }
 
 // One send of the questions: to `onlySocket`, or room-wide as room run `run`.
 // A room-wide send records itself as delivered in the same synchronous step as
 // its emits, so a send to one socket never sees it half done.
-async function sendQuestions(slug, { onlySocket = null, isCurrent = () => true, startedAfterRun = 0, run = 0 } = {}) {
+async function sendQuestions(slug, room, { onlySocket = null, isCurrent = () => true, startedAfterRun = 0, run = 0 } = {}) {
   const respondents = new Map();
   const questions = await getQuestions(slug, { respondents });
   const access = await getResultsAccess(slug);
-  const room = questionBroadcasts.get(slug);
-  if (onlySocket && (room?.delivered || 0) > startedAfterRun) return;
+  if (onlySocket && room.delivered > startedAfterRun) return;
   if (onlySocket && !isCurrent()) return;
   const markDelivered = () => {
-    if (!onlySocket && room) room.delivered = Math.max(room.delivered, run);
+    if (!onlySocket) room.delivered = Math.max(room.delivered, run);
   };
   if (access.alwaysShow) {
     if (onlySocket?.data.isDisplay && onlySocket.data.display !== slug) return;
