@@ -406,17 +406,28 @@ test('the room display lists Multiple Choice options while results are hidden, t
   const room = await rooms.create('Choice display', 'Multiple Choice');
   await rooms.pool.query('UPDATE questions SET options = $1 WHERE discussion_id = $2',
     [JSON.stringify(['Higher', 'Lower', 'About the same']), room.id]);
-  await rooms.pool.query(
-    `INSERT INTO votes (question_id, value, user_id)
-     SELECT id, v.value, v.user_id FROM questions,
-       (VALUES ('Higher', 'seed-a'), ('Higher', 'seed-b'), ('Lower', 'seed-c')) AS v(value, user_id)
-     WHERE discussion_id = $1`, [room.id]
-  );
   const context = await browser.newContext();
   try {
     const display = await context.newPage();
-    await display.goto(`/discussion/${room.slug}/display`);
     const question = display.getByTestId('display-question');
+
+    // Results always shown but nobody has voted yet: the choices are still on
+    // screen, each at zero, so the room knows what it is choosing between.
+    await rooms.pool.query("UPDATE discussions SET results_visibility = 'always' WHERE id = $1", [room.id]);
+    await display.goto(`/discussion/${room.slug}/display`);
+    await expect(question.getByText('No responses yet', { exact: true })).toBeVisible();
+    await expect(question.getByTestId('display-chart').getByLabel('Higher: 0, 0%')).toBeVisible();
+    await expect(question.getByTestId('display-chart').getByLabel('Lower: 0, 0%')).toBeVisible();
+    await expect(question.getByTestId('display-chart').getByLabel('About the same: 0, 0%')).toBeVisible();
+
+    await rooms.pool.query("UPDATE discussions SET results_visibility = 'after_vote' WHERE id = $1", [room.id]);
+    await rooms.pool.query(
+      `INSERT INTO votes (question_id, value, user_id)
+       SELECT id, v.value, v.user_id FROM questions,
+         (VALUES ('Higher', 'seed-a'), ('Higher', 'seed-b'), ('Lower', 'seed-c')) AS v(value, user_id)
+       WHERE discussion_id = $1`, [room.id]
+    );
+    await display.reload();
     await expect(question.getByTestId('display-results-hidden')).toContainText('3');
     await expect(question.getByTestId('display-choice-options').getByRole('listitem'))
       .toHaveText(['Higher', 'Lower', 'About the same']);

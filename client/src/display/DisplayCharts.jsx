@@ -127,7 +127,6 @@ YesNoChart.propTypes = { question: PropTypes.object.isRequired, focus: PropTypes
 export const MultipleChoiceChart = ({ question, focus }) => {
     const votes = question.votes || [];
     const total = votes.length;
-    if (total === 0) return <NoResponses focus={focus} />;
     const options = Array.isArray(question.options) ? question.options : [];
     const rows = options.map(option => ({
         key: option,
@@ -135,6 +134,16 @@ export const MultipleChoiceChart = ({ question, focus }) => {
         count: votes.filter(v => v.value === option).length,
         bar: 'bg-primary',
     }));
+    // The options are part of the question and appear nowhere else on the
+    // display, so before the first vote they are still listed, at zero.
+    if (total === 0) {
+        return (
+            <div>
+                <div className="mb-5"><NoResponses focus={focus} /></div>
+                <BarRows rows={rows} total={0} focus={focus} />
+            </div>
+        );
+    }
     const top = Math.max(0, ...rows.map(row => row.count));
     const leaders = rows.filter(row => row.count === top);
     return (
