@@ -298,11 +298,14 @@ function restViewer(req) {
 // of questions they have not answered removed. Views are built once per
 // participant and shared by their sockets, from a single questions query. Room
 // displays get the display view, whatever else their socket has claimed.
-async function emitQuestions(topic, onlySocket = null) {
+// `isCurrent`, given with `onlySocket`, is checked once the data has loaded; a
+// caller whose request has been superseded meanwhile sends nothing.
+async function emitQuestions(topic, onlySocket = null, isCurrent = () => true) {
   const slug = slugifyTopic(topic);
   const respondents = new Map();
   const questions = await getQuestions(slug, { respondents });
   const access = await getResultsAccess(slug);
+  if (onlySocket && !isCurrent()) return;
   if (access.alwaysShow) {
     if (onlySocket?.data.isDisplay && onlySocket.data.display !== slug) return;
     (onlySocket || audience(slug)).emit('questions', questions);
@@ -415,7 +418,7 @@ io.on('connection', (socket) => {
       const discussion = await getDiscussionBySlug(discussionSlug);
       if (!current()) return;
       socket.emit('discussion', discussion);
-      await emitQuestions(discussionSlug, socket);
+      await emitQuestions(discussionSlug, socket, current);
       const state = await getDiscussionState(discussionSlug);
       if (!current()) return;
       socket.emit('discussionState', state);

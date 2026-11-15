@@ -1243,6 +1243,30 @@ test('a room display shows live results when the moderator always shows them', a
   }
 });
 
+test('a room display that switches discussions ends up showing only the last one', async () => {
+  const first = await seedResultsDiscussion('display-switch-a');
+  const second = await seedResultsDiscussion('display-switch-b');
+  const display = await connectSocket();
+  try {
+    const received = [];
+    display.on('discussion', payload => received.push(['discussion', payload?.slug]));
+    display.on('questions', payload => received.push(['questions', payload[0]?.id === first.agreement ? first.slug : second.slug]));
+    // A -> B -> A, sent back to back so the joins overlap.
+    const settled = waitForEvent(display, 'discussionState');
+    display.emit('joinDisplay', first.slug);
+    display.emit('joinDisplay', second.slug);
+    display.emit('joinDisplay', first.slug);
+    await settled;
+    // Give any superseded join time to finish; it must send nothing after this.
+    await new Promise(resolve => setTimeout(resolve, 300));
+    const last = kind => received.filter(([event]) => event === kind).at(-1)?.[1];
+    assert.equal(last('discussion'), first.slug);
+    assert.equal(last('questions'), first.slug);
+  } finally {
+    display.disconnect();
+  }
+});
+
 test('a room display is not a participant and cannot vote, write or moderate', async () => {
   const seed = await seedResultsDiscussion('display-read-only');
   const { socket: participant } = await joinAs(seed.slug, 'seed-c');
