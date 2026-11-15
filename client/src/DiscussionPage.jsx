@@ -909,10 +909,11 @@ const DiscussionPage = () => {
         socket.emit('toggleResponseReaction', topic, responseId, reaction, userId);
     };
 
-    const handleAddComment = (responseId, body) => {
+    const handleAddComment = (responseId, body, onResult) => {
         // Pass the name mode so pseudonym-mode comments persist under our reserved
         // handle rather than a pre-reservation local pick (#57); see handleVote.
-        socket.emit('addResponseComment', topic, responseId, body, userId, displayName, getEffectiveNameMode(identity));
+        socket.timeout(10000).emit('addResponseComment', topic, responseId, body, userId, displayName, getEffectiveNameMode(identity),
+            (error, result) => onResult?.(!error && result?.added === true));
     };
 
     const handleDeleteComment = (commentId) => {

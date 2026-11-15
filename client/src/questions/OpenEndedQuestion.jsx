@@ -29,8 +29,9 @@ const WrittenResponse = ({
     const submitComment = () => {
         const trimmed = comment.trim();
         if (trimmed === '') return;
-        onAddComment(vote.id, trimmed);
-        setComment('');
+        onAddComment(vote.id, trimmed, (added) => {
+            if (added) setComment(current => current === comment ? '' : current);
+        });
     };
 
     return (
