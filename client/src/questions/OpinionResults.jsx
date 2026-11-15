@@ -182,6 +182,60 @@ YesNoResults.propTypes = {
     }).isRequired,
 };
 
+// One horizontal bar per option for a Multiple Choice question, in the order the
+// author wrote them. The options are unordered categories, not a scale, so the
+// bars share one color and there is no consensus/divisive badge. While results
+// are hidden the same rows render with empty bars and no numbers, so the card
+// does not shift when they arrive.
+const MultipleChoiceResults = ({ question }) => {
+    const options = Array.isArray(question.options) ? question.options : [];
+    const votes = question.votes || [];
+    const hidden = Boolean(question.resultsHidden);
+    const counts = options.map(option => ({
+        option,
+        count: hidden ? 0 : votes.filter(v => v.value === option).length,
+    }));
+    const total = counts.reduce((sum, c) => sum + c.count, 0);
+
+    return (
+        <div className="mb-4" data-testid={hidden ? 'results-hidden' : 'choice-results'}>
+            <div className="text-sm text-gray-600 mb-2">
+                {hidden
+                    ? RESULTS_HIDDEN_HINT
+                    : total === 0
+                        ? 'No votes yet — be the first to weigh in.'
+                        : `${total} ${total === 1 ? 'vote' : 'votes'}`}
+            </div>
+            <div className="space-y-1.5">
+                {counts.map(({ option, count }) => {
+                    const pct = total > 0 ? Math.round((count / total) * 100) : 0;
+                    return (
+                        <div key={option}>
+                            <div className="flex justify-between gap-2 text-xs text-gray-600">
+                                <span className="break-words min-w-0">{option}</span>
+                                {!hidden && <span className="shrink-0">{count} · {pct}%</span>}
+                            </div>
+                            <div className="w-full h-2.5 rounded-full overflow-hidden bg-gray-200">
+                                {!hidden && count > 0 && (
+                                    <div className="h-full bg-primary" style={{ width: `${(count / total) * 100}%` }} />
+                                )}
+                            </div>
+                        </div>
+                    );
+                })}
+            </div>
+        </div>
+    );
+};
+
+MultipleChoiceResults.propTypes = {
+    question: PropTypes.shape({
+        options: PropTypes.array,
+        votes: PropTypes.array,
+        resultsHidden: PropTypes.bool,
+    }).isRequired,
+};
+
 // Compact agreement-distribution bar for a single brainstorm idea. Shows how the
 // room splits without naming anyone — the whole point of the agreement axis.
 const AgreementMiniBar = ({ counts }) => {
@@ -210,4 +264,4 @@ AgreementMiniBar.propTypes = {
     counts: PropTypes.object,
 };
 
-export { AgreementResults, YesNoResults, AgreementMiniBar };
+export { AgreementResults, YesNoResults, MultipleChoiceResults, AgreementMiniBar };

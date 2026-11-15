@@ -6,7 +6,9 @@ import { useConnectionLost, useDiscussionSocket } from './hooks/useDiscussionRoo
 import useFullscreen from './hooks/useFullscreen';
 import useIdle from './hooks/useIdle';
 import useScreenWakeLock from './hooks/useScreenWakeLock';
-import { AgreementChart, NumericalChart, ResponseCountOnly, YesNoChart } from './display/DisplayCharts';
+import {
+    AgreementChart, MultipleChoiceChart, NumericalChart, ResponseCountOnly, YesNoChart,
+} from './display/DisplayCharts';
 import { EPISTEMIC_REACTIONS, QuestionTypes } from './questions/config';
 import { slugifyTopic } from './slugs';
 
@@ -18,7 +20,7 @@ import { slugifyTopic } from './slugs';
 // arrive with only their response count (see displayView in server.js).
 
 const THEME_KEYS = ['indigo', 'orange', 'emerald', 'rose', 'slate'];
-const TALLIED_TYPES = [QuestionTypes.AGREEMENT, QuestionTypes.YES_NO, QuestionTypes.NUMERICAL];
+const TALLIED_TYPES = [QuestionTypes.AGREEMENT, QuestionTypes.YES_NO, QuestionTypes.MULTIPLE_CHOICE, QuestionTypes.NUMERICAL];
 // Written responses beyond this many are summarized, so one busy question cannot
 // push the rest off the screen.
 const MAX_WRITTEN_RESPONSES = 8;
@@ -37,9 +39,15 @@ const responseCountOf = question => (question.resultsHidden
     : (question.votes || []).length);
 
 const TalliedResults = ({ question, focus }) => {
-    if (question.resultsHidden) return <ResponseCountOnly count={responseCountOf(question)} focus={focus} />;
+    if (question.resultsHidden) {
+        // A Multiple Choice question's options are part of the question, not its
+        // results, so the room can read them while the tallies stay hidden.
+        const options = question.type === QuestionTypes.MULTIPLE_CHOICE ? question.options : undefined;
+        return <ResponseCountOnly count={responseCountOf(question)} options={options} focus={focus} />;
+    }
     if (question.type === QuestionTypes.AGREEMENT) return <AgreementChart question={question} focus={focus} />;
     if (question.type === QuestionTypes.YES_NO) return <YesNoChart question={question} focus={focus} />;
+    if (question.type === QuestionTypes.MULTIPLE_CHOICE) return <MultipleChoiceChart question={question} focus={focus} />;
     const parsedMin = parseInt(question.minValue ?? question.min_value);
     const parsedMax = parseInt(question.maxValue ?? question.max_value);
     const minValue = Number.isNaN(parsedMin) ? 0 : parsedMin;

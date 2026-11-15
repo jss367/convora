@@ -65,3 +65,16 @@ test('signed drafts stay unset until digits arrive and clamp independently of th
   assert.deepEqual(drafts.map(raw => clampNumericalValue(raw, -100, 100)), [null, -1, -15, -100]);
   assert.deepEqual(drafts, ['-', '-1', '-15', '-150']);
 });
+
+test('validateChoiceOptions matches the server rules for Multiple Choice options', async () => {
+  const { validateChoiceOptions } = await helpers;
+  const limits = { MIN_OPTIONS: 2, MAX_OPTIONS: 6, MAX_OPTION_LENGTH: 100 };
+  assert.deepEqual(validateChoiceOptions([' Higher ', 'Lower', 'About   the same'], limits),
+    { options: ['Higher', 'Lower', 'About the same'] });
+  assert.match(validateChoiceOptions(['Higher', '  '], limits).error, /Fill in every/);
+  assert.match(validateChoiceOptions(['Only one'], limits).error, /2 to 6/);
+  assert.match(validateChoiceOptions(['a', 'b', 'c', 'd', 'e', 'f', 'g'], limits).error, /2 to 6/);
+  assert.match(validateChoiceOptions(['Higher', 'x'.repeat(101)], limits).error, /100 characters/);
+  assert.match(validateChoiceOptions(['Higher', 'higher'], limits).error, /different/);
+  assert.match(validateChoiceOptions(undefined, limits).error, /2 to 6/);
+});

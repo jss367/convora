@@ -16,8 +16,10 @@ const OPINION_OPTIONS = {
 function distributionRows(question) {
     if (!question) return [];
     if (question.type !== 'Numerical') {
-        // JSONB does not preserve object-key order; use the semantic scale.
-        return OPINION_OPTIONS[question.type].map(label => ({ label, count: question.optionCounts[label] || 0 }));
+        // JSONB does not preserve object-key order; use the semantic scale, or
+        // for Multiple Choice the options in the order the snapshot saved them.
+        const options = question.type === 'Multiple Choice' ? (question.options || []) : OPINION_OPTIONS[question.type];
+        return options.map(label => ({ label, count: question.optionCounts[label] || 0 }));
     }
     return question.distribution.map((bin, index, bins) => ({
         label: `${formatNumber(bin.min)} to ${index < bins.length - 1 ? '<' : ''}${formatNumber(bin.max)}`,
@@ -51,11 +53,21 @@ export function QuestionComparison({ before, after, comparing, beforeName, after
                     <span className="text-xs text-gray-500">{question.type}</span>
                 </div>
                 <p className="text-sm text-gray-600">{RESULTS_HIDDEN_HINT}. Answer this question, then choose Refresh.</p>
+                {Array.isArray(question.options) && question.options.length > 0 && (
+                    // Multiple Choice options are part of the question, so they
+                    // are listed while the counts stay hidden.
+                    <ul className="mt-2 flex max-w-full flex-wrap gap-2" aria-label="Answer options">
+                        {question.options.map(option => (
+                            <li key={option} className="min-w-0 max-w-full break-words rounded-2xl bg-gray-100 px-3 py-1 text-sm text-gray-700">{option}</li>
+                        ))}
+                    </ul>
+                )}
             </article>
         );
     }
     const changed = before && after && (before.text !== after.text || before.type !== after.type
-        || before.minValue !== after.minValue || before.maxValue !== after.maxValue);
+        || before.minValue !== after.minValue || before.maxValue !== after.maxValue
+        || JSON.stringify(before.options ?? null) !== JSON.stringify(after.options ?? null));
     const beforeRows = distributionRows(before);
     const afterRows = distributionRows(after);
     const delta = !changed && before?.average != null && after?.average != null
@@ -103,7 +115,7 @@ export function QuestionComparison({ before, after, comparing, beforeName, after
             )}
             {changed ? (
                 <>
-                    <p className="text-sm text-amber-800 mb-3">The question wording, type, or scale changed. Results are shown separately; no change is calculated.</p>
+                    <p className="text-sm text-amber-800 mb-3">The question wording, type, scale, or answer options changed. Results are shown separately; no change is calculated.</p>
                     <p className="text-sm mb-2">Earlier wording: {before.text}</p>
                     {renderTable(beforeRows, before, null, ' (earlier scale)')}
                     {renderTable(afterRows, null, after, ' (later scale)')}

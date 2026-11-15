@@ -38,7 +38,7 @@ const BarRows = ({ rows, total, focus }) => {
                 const share = pct(row.count, total);
                 return (
                     <li key={row.key} className="flex items-center gap-4" aria-label={`${row.label}: ${row.count}, ${share}%`}>
-                        <span className={`${s.label} w-[40%] max-w-[18rem] shrink-0 font-medium text-gray-800`}>{row.label}</span>
+                        <span className={`${s.label} w-[40%] max-w-[18rem] shrink-0 break-words font-medium text-gray-800`}>{row.label}</span>
                         <span className={`${s.bar} relative flex-1 overflow-hidden rounded-md bg-gray-100`}>
                             <span
                                 className={`absolute inset-y-0 left-0 rounded-md ${row.bar} transition-[width] duration-500`}
@@ -68,7 +68,7 @@ BarRows.propTypes = {
 
 const Headline = ({ children, badge, focus }) => (
     <div className="mb-5 flex flex-wrap items-center gap-4">
-        <p className={`${sizes(focus).headline} font-bold text-gray-900`}>{children}</p>
+        <p className={`${sizes(focus).headline} min-w-0 max-w-full break-words font-bold text-gray-900`}>{children}</p>
         {badge}
     </div>
 );
@@ -120,6 +120,44 @@ export const YesNoChart = ({ question, focus }) => {
     );
 };
 YesNoChart.propTypes = { question: PropTypes.object.isRequired, focus: PropTypes.bool };
+
+// One bar per option, in the author's order. The options are categories, not a
+// scale, so they share one color and there is no consensus/divisive badge; the
+// headline names the most-chosen option, or says which options are tied.
+export const MultipleChoiceChart = ({ question, focus }) => {
+    const votes = question.votes || [];
+    const total = votes.length;
+    const options = Array.isArray(question.options) ? question.options : [];
+    const rows = options.map(option => ({
+        key: option,
+        label: option,
+        count: votes.filter(v => v.value === option).length,
+        bar: 'bg-primary',
+    }));
+    // The options are part of the question and appear nowhere else on the
+    // display, so before the first vote they are still listed, at zero.
+    if (total === 0) {
+        return (
+            <div>
+                <div className="mb-5"><NoResponses focus={focus} /></div>
+                <BarRows rows={rows} total={0} focus={focus} />
+            </div>
+        );
+    }
+    const top = Math.max(0, ...rows.map(row => row.count));
+    const leaders = rows.filter(row => row.count === top);
+    return (
+        <div>
+            <Headline focus={focus}>
+                {leaders.length === 1
+                    ? `${pct(top, total)}% ${leaders[0].label}`
+                    : `Tied: ${leaders.map(row => row.label).join(' · ')}`}
+            </Headline>
+            <BarRows rows={rows} total={total} focus={focus} />
+        </div>
+    );
+};
+MultipleChoiceChart.propTypes = { question: PropTypes.object.isRequired, focus: PropTypes.bool };
 
 const formatNumber = n => (Number.isInteger(n) ? String(n) : n.toFixed(1));
 
@@ -219,7 +257,7 @@ NumericalChart.propTypes = {
 
 // Under "show results after you vote" the server sends only how many have
 // answered, so that is the whole chart.
-export const ResponseCountOnly = ({ count, focus }) => (
+export const ResponseCountOnly = ({ count, options, focus }) => (
     <div data-testid="display-results-hidden">
         <p className="flex flex-col items-start">
             <span className={`${focus ? 'text-[9rem]' : 'text-7xl'} font-bold leading-none tabular-nums text-primary`}>{count}</span>
@@ -229,6 +267,21 @@ export const ResponseCountOnly = ({ count, focus }) => (
             </span>
         </p>
         <p className={`${focus ? 'text-2xl' : 'text-lg'} mt-3 text-gray-500`}>Vote on your phone. The moderator will show the results here.</p>
+        {Array.isArray(options) && options.length > 0 && (
+            <ul className="mt-4 flex max-w-full flex-wrap gap-3" data-testid="display-choice-options">
+                {options.map(option => (
+                    // max-w-full keeps a long unbroken option inside the card,
+                    // where break-words can then wrap it.
+                    <li key={option} className={`${focus ? 'text-3xl px-5 py-2' : 'text-xl px-4 py-1.5'} min-w-0 max-w-full break-words rounded-2xl bg-gray-100 text-gray-800`}>
+                        {option}
+                    </li>
+                ))}
+            </ul>
+        )}
     </div>
 );
-ResponseCountOnly.propTypes = { count: PropTypes.number.isRequired, focus: PropTypes.bool };
+ResponseCountOnly.propTypes = {
+    count: PropTypes.number.isRequired,
+    options: PropTypes.arrayOf(PropTypes.string),
+    focus: PropTypes.bool,
+};
