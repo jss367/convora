@@ -1384,6 +1384,33 @@ test('a moderator can reveal one question\'s results to everyone, including the 
   }
 });
 
+test('rapid show and hide leave every screen matching the stored reveal state', async () => {
+  const seed = await seedResultsDiscussion('reveal-race');
+  const { socket: display } = await joinDisplay(seed.slug);
+  const { socket: watcher } = await joinAs(seed.slug, 'watcher');
+  const mod = await connectSocket();
+  try {
+    const last = { display: null, watcher: null };
+    display.on('questions', qs => { last.display = byId(qs, seed.agreement); });
+    watcher.on('questions', qs => { last.watcher = byId(qs, seed.agreement); });
+    // Overlapping refreshes must not deliver an older payload after a newer one.
+    for (let i = 0; i < 10; i += 1) {
+      mod.emit('setResultsRevealed', seed.slug, seed.agreement, i % 2 === 0, seed.adminToken);
+    }
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    const stored = (await pool.query('SELECT results_revealed FROM questions WHERE id = $1', [seed.agreement])).rows[0].results_revealed;
+    for (const [label, question] of Object.entries(last)) {
+      assert.ok(question, `${label} received questions`);
+      assert.equal(question.resultsRevealed, stored, `${label} matches the stored state`);
+      assert.equal(question.resultsHidden, !stored, `${label} hides results exactly when not revealed`);
+    }
+  } finally {
+    display.disconnect();
+    watcher.disconnect();
+    mod.disconnect();
+  }
+});
+
 test('a room display is not a participant and cannot vote, write or moderate', async () => {
   const seed = await seedResultsDiscussion('display-read-only');
   const { socket: participant } = await joinAs(seed.slug, 'seed-c');
