@@ -59,6 +59,16 @@ function createVoteStore(pool) {
         if (typeof payload.text !== 'string' || !payload.text.trim()) throw new Error('Response cannot be empty');
         if (payload.requestId != null && (typeof payload.requestId !== 'string' || payload.requestId.length > 100)) throw new Error('Invalid request id');
         await lockPollVote(client, questionId, userId);
+        // Pre-upgrade Open Ended clients send scalar edits. Their migrated
+        // one-response policy keeps that upsert contract; object payloads and
+        // unlimited former Brainstorm prompts still create separate responses.
+        if (typeof vote === 'string' && question.max_responses === 1) {
+          const existing = await client.query('SELECT id FROM votes WHERE question_id = $1 AND user_id = $2 ORDER BY id LIMIT 1', [questionId, userId]);
+          if (existing.rows.length) {
+            await client.query('UPDATE votes SET value = $1, pseudonym = $2 WHERE id = $3', [payload.text.trim(), pseudonym, existing.rows[0].id]);
+            return { added: false, updated: true };
+          }
+        }
         if (payload.responseId != null) {
           const updated = await client.query('UPDATE votes SET value = $1 WHERE id = $2 AND question_id = $3 AND user_id = $4', [payload.text.trim(), payload.responseId, questionId, userId]);
           return { added: false, updated: updated.rowCount > 0 };

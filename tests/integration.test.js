@@ -4432,6 +4432,19 @@ test('response settings persist, copy, validate, and hide attribution on public 
   } finally { socket.disconnect(); }
 });
 
+test('legacy scalar answers update single-response questions but keep unlimited response creation', async () => {
+  const created = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('legacy-scalar-update') });
+  const questions = (await pool.query("INSERT INTO questions (discussion_id, text, type, max_responses) VALUES ($1, 'Legacy written', 'Open Ended', 1), ($1, 'Former ideas', 'Open Ended', NULL) RETURNING id", [created.body.id])).rows;
+  const store = createVoteStore(pool);
+  await store.addVote(questions[0].id, 'Original', 'author', 'Author');
+  assert.deepEqual(await store.addVote(questions[0].id, 'Updated scalar', 'author', 'Author'), { added: false, updated: true });
+  assert.deepEqual((await pool.query('SELECT value FROM votes WHERE question_id = $1', [questions[0].id])).rows, [{ value: 'Updated scalar' }]);
+  assert.equal((await store.addVote(questions[0].id, { text: 'New object response', requestId: 'new-create' }, 'author', 'Author')).reason, 'limit');
+  await store.addVote(questions[1].id, 'First idea', 'author', 'Author');
+  await store.addVote(questions[1].id, 'Second idea', 'author', 'Author');
+  assert.equal((await pool.query('SELECT count(*)::int AS n FROM votes WHERE question_id = $1', [questions[1].id])).rows[0].n, 2);
+});
+
 test('legacy upvote toggles and new quality ratings stay synchronized after migration', async () => {
   const created = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('legacy-feedback-sync') });
   const question = (await pool.query("INSERT INTO questions (discussion_id, text, type) VALUES ($1, 'Feedback', 'Open Ended') RETURNING id", [created.body.id])).rows[0];
