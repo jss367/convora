@@ -1,5 +1,35 @@
 const { test, expect } = require('./lifecycle-fixtures.cjs');
 
+test('a moderator can remove their own response while voting is locked', async ({ page, rooms }) => {
+  const room = await rooms.create('Locked moderator response');
+  await page.goto(`/discussion/${room.slug}?admin=${room.adminToken}`);
+  await page.getByPlaceholder('Enter a response').fill('Moderator response');
+  await page.getByRole('button', { name: 'Add Response', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Delete', exact: true }).last()).toBeVisible();
+  await rooms.pool.query('UPDATE discussions SET locked = TRUE WHERE id = $1', [room.id]);
+  await page.reload();
+  await page.getByRole('button', { name: 'Delete', exact: true }).last().click();
+  await expect(page.getByText('Moderator response', { exact: true })).toHaveCount(0);
+});
+
+test('legacy upvotes remain visible without enabling hidden response feedback', async ({ page, rooms }) => {
+  const room = await rooms.create('Legacy response feedback');
+  const vote = (await rooms.pool.query("INSERT INTO votes (question_id, user_id, value) SELECT id, 'legacy-author', 'Legacy answer' FROM questions WHERE discussion_id = $1 RETURNING id", [room.id])).rows[0];
+  await rooms.pool.query("INSERT INTO response_votes (response_id, user_id) VALUES ($1, 'legacy-voter')", [vote.id]);
+  await rooms.pool.query("INSERT INTO response_ratings (response_id, user_id, quality) VALUES ($1, 'legacy-voter', 1)", [vote.id]);
+  await rooms.pool.query('UPDATE discussions SET reactions_enabled = FALSE, reactions_visible = FALSE WHERE id = $1', [room.id]);
+  for (const suffix of ['', '/display']) {
+    await page.goto(`/discussion/${room.slug}${suffix}`);
+    await expect(page.getByText('Legacy answer', { exact: true })).toBeVisible();
+    await expect(page.getByLabel('1 legacy upvote', { exact: true })).toBeVisible();
+  }
+  // Existing hidden ratings must stay hidden; preserving old upvotes must not
+  // enable all feedback in a discussion containing other free-text questions.
+  await rooms.pool.query('UPDATE discussions SET reactions_enabled = TRUE WHERE id = $1', [room.id]);
+  await page.reload();
+  await expect(page.getByLabel('1 legacy upvote', { exact: true })).toHaveCount(0);
+});
+
 test('an open-ended edit survives another participant responding', async ({ page, browser, rooms }) => {
   const room = await rooms.create('Draft preservation');
   const context = await browser.newContext();

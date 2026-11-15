@@ -79,7 +79,9 @@ const WrittenResponses = ({ question, reactionKeys, focus }) => {
                                     <span className="shrink-0 font-bold tabular-nums text-gray-600">{net > 0 ? `+${net}` : net}</span>
                                 )}
                                 <span className="min-w-0 flex-1 whitespace-pre-wrap break-words leading-snug">{vote.value}</span>
-
+                                {!question.reactionsEnabled && vote.upvotes > 0 && (
+                                    <span className="shrink-0 font-bold tabular-nums text-gray-600" aria-label={`${vote.upvotes} legacy upvote${vote.upvotes === 1 ? '' : 's'}`}>▲ {vote.upvotes}</span>
+                                )}
                             </div>
                             {(reactions.length > 0 || (vote.comments || []).length > 0) && (
                                 <div className={`mt-2 flex flex-wrap gap-4 text-gray-600 ${focus ? 'text-2xl' : 'text-lg'}`}>

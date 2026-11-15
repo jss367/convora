@@ -9,7 +9,7 @@ import { AGREEMENT_SCALE, AGREEMENT_SHORT, EPISTEMIC_REACTIONS } from './config'
 // aggregates; only this user's own selections (myRating/myReactions) are known
 // to the client, so nothing reveals who voted which way.
 const WrittenResponse = ({
-    vote, isOwn, isAdmin, showAttribution, onEdit, pending, ownedCommentIds, reactionsActive, activeReactionKeys, commentsEnabled, locked,
+    vote, isOwn, isAdmin, showAttribution, showLegacyUpvotes, onEdit, pending, ownedCommentIds, reactionsActive, activeReactionKeys, commentsEnabled, locked,
     myRating, myReactions, onDeleteVote, onModeratorDelete, onSetRating, onToggleReaction,
     onAddComment, onDeleteComment, onModeratorDeleteComment,
 }) => {
@@ -69,7 +69,7 @@ const WrittenResponse = ({
                         {(isOwn || isAdmin) && (
                             <button
                                 disabled={locked && !isAdmin}
-                                onClick={isOwn ? onDeleteVote : onModeratorDelete}
+                                onClick={isAdmin ? onModeratorDelete : onDeleteVote}
                                 title={isOwn ? undefined : 'Remove this response (moderator)'}
                                 className="ml-2 text-sm text-red-500 hover:text-red-700 shrink-0"
                             >
@@ -78,6 +78,9 @@ const WrittenResponse = ({
                         )}
                     </div>
 
+                    {showLegacyUpvotes && vote.upvotes > 0 && (
+                        <span className="text-sm text-gray-600" aria-label={`${vote.upvotes} legacy upvote${vote.upvotes === 1 ? '' : 's'}`}>▲ {vote.upvotes}</span>
+                    )}
                     {reactionsActive && (
                         <div className="mt-2">
                             <div className="flex flex-wrap gap-1">
@@ -191,12 +194,14 @@ WrittenResponse.propTypes = {
         ownerToken: PropTypes.string,
         qualityUp: PropTypes.number,
         qualityDown: PropTypes.number,
+        upvotes: PropTypes.number,
         agreementCounts: PropTypes.object,
         reactionCounts: PropTypes.object,
         comments: PropTypes.array,
     }).isRequired,
     isOwn: PropTypes.bool,
     showAttribution: PropTypes.bool,
+    showLegacyUpvotes: PropTypes.bool,
     onEdit: PropTypes.func,
     pending: PropTypes.bool,
     isAdmin: PropTypes.bool,
@@ -290,6 +295,9 @@ const OpenEndedQuestion = ({
                                 // parent precomputes the sets of ids we own.
                                 isOwn={ownedVoteIds.has(vote.id)}
                                 showAttribution={question.showAttribution !== false}
+                                // Legacy upvotes were always visible. Preserve
+                                // those totals without revealing other feedback.
+                                showLegacyUpvotes={!reactionsEnabled}
                                 pending={pending}
                                 onEdit={(text, callback) => handleVote(question.id, { text, responseId: vote.id }, callback)}
                                 isAdmin={isAdmin}
