@@ -195,3 +195,49 @@ test('the room display never holds two wake locks when the tab flips during a re
   await leaveDisplay(page);
   await expect.poll(() => page.evaluate(() => window.__wakeLock.held())).toBe(0);
 });
+
+test('the moderator shows and hides one question\'s results on the room display', async ({ page, browser, rooms }) => {
+  const room = await rooms.create('Reveal on screen', 'Agreement');
+  await seedVotes(rooms, room);
+  const displayContext = await browser.newContext();
+  const participantContext = await browser.newContext();
+  try {
+    const display = await displayContext.newPage();
+    await display.goto(`/discussion/${room.slug}/display`);
+    const question = display.getByTestId('display-question');
+    await expect(question.getByText('2 responses', { exact: true })).toBeVisible();
+    await expect(question.getByText('Vote on your phone. The moderator will show the results here.', { exact: true })).toBeVisible();
+    await expect(question.getByText(/: \d+$/)).toHaveCount(0);
+
+    const participant = await participantContext.newPage();
+    await participant.goto(`/discussion/${room.slug}`);
+    await expect(participant.getByText('Results appear after you vote', { exact: true })).toBeVisible();
+    await expect(participant.getByRole('button', { name: 'Show results', exact: true })).toHaveCount(0);
+
+    await page.goto(`/discussion/${room.slug}?admin=${room.adminToken}`);
+    const show = page.getByRole('button', { name: 'Show results', exact: true });
+    await expect(show).toHaveAttribute('aria-pressed', 'false');
+    await show.click();
+    const hide = page.getByRole('button', { name: 'Hide results', exact: true });
+    await expect(hide).toHaveAttribute('aria-pressed', 'true');
+
+    // Revealed for the room and for someone who has not voted.
+    await expect(question.getByText('Agree: 1', { exact: true })).toBeVisible();
+    await expect(question.getByText('Disagree: 1', { exact: true })).toBeVisible();
+    await expect(participant.getByText('Results appear after you vote', { exact: true })).toHaveCount(0);
+    await expect(participant.getByText('2 votes', { exact: false })).toBeVisible();
+
+    await hide.click();
+    await expect(question.getByText('Vote on your phone. The moderator will show the results here.', { exact: true })).toBeVisible();
+    await expect(question.getByText(/: \d+$/)).toHaveCount(0);
+    await expect(participant.getByText('Results appear after you vote', { exact: true })).toBeVisible();
+
+    // With results always shown there is nothing to reveal.
+    await page.getByRole('combobox').filter({ has: page.locator('option[value="after_vote"]') }).selectOption('always');
+    await expect(question.getByText('Agree: 1', { exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: /^(Show|Hide) results$/ })).toHaveCount(0);
+  } finally {
+    await displayContext.close();
+    await participantContext.close();
+  }
+});

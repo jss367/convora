@@ -849,8 +849,9 @@ function assertResultsHidden(question, label) {
   assert.deepEqual(question.votes, [], `${label}: no votes on the wire`);
   assert.deepEqual(
     Object.keys(question).filter(key => /vote|count|tally|result|average|response|distribution/i.test(key)).sort(),
-    ['resultsHidden', 'votes'], `${label}: no other result fields`
+    ['resultsHidden', 'resultsRevealed', 'votes'], `${label}: no other result fields`
   );
+  assert.equal(question.resultsRevealed, false, `${label}: not revealed`);
   assert.doesNotMatch(JSON.stringify(question), /Seed A|Seed B|ownerToken|"value"/, `${label}: no vote data`);
 }
 
@@ -1321,6 +1322,65 @@ test('a room display that switches discussions ends up showing only the last one
     assert.equal(last('questions'), first.slug);
   } finally {
     display.disconnect();
+  }
+});
+
+test('a moderator can reveal one question\'s results to everyone, including the room display', async () => {
+  const seed = await seedResultsDiscussion('reveal-results');
+  const other = await seedResultsDiscussion('reveal-results-other');
+  const { socket: display } = await joinDisplay(seed.slug);
+  const { socket: watcher } = await joinAs(seed.slug, 'watcher');
+  const mod = await connectSocket();
+  try {
+    // Only this discussion's moderator can reveal, and only its own questions.
+    const refused = waitForEvent(watcher, 'error', error => /not authorized/i.test(error.message));
+    watcher.emit('setResultsRevealed', seed.slug, seed.agreement, true, 'not-the-token');
+    await refused;
+    const quiet = nextQuestions(display, 'questions after a cross-discussion attempt');
+    mod.emit('setResultsRevealed', other.slug, seed.agreement, true, other.adminToken);
+    mod.emit('setPinned', seed.slug, seed.numerical, true, seed.adminToken);
+    assertDisplayHidden(byId(await quiet, seed.agreement), 2, 'after a cross-discussion attempt');
+    assert.equal((await pool.query('SELECT results_revealed FROM questions WHERE id = $1', [seed.agreement])).rows[0].results_revealed, false);
+
+    // Revealed: the display and a participant who has not voted both get it,
+    // while the other questions stay hidden.
+    const shownOnDisplay = waitForQuestions(display, qs => byId(qs, seed.agreement)?.resultsRevealed === true, 'display after reveal');
+    const shownToWatcher = waitForQuestions(watcher, qs => byId(qs, seed.agreement)?.resultsRevealed === true, 'watcher after reveal');
+    mod.emit('setResultsRevealed', seed.slug, seed.agreement, true, seed.adminToken);
+    for (const [view, label] of [[await shownOnDisplay, 'display'], [await shownToWatcher, 'participant']]) {
+      assertResultsShown(byId(view, seed.agreement), ['Agree', 'Disagree'], `${label}: revealed question`);
+      assert.equal(byId(view, seed.yesNo).resultsHidden, true, `${label}: other question still hidden`);
+      assert.equal(byId(view, seed.yesNo).resultsRevealed, false);
+    }
+
+    // Live votes on a revealed question reach everyone.
+    const live = nextQuestions(display, 'display after a vote on a revealed question');
+    await emitWithAck(watcher, 'vote', seed.slug, seed.yesNo, 'Yes', 'watcher', 'Watcher', undefined);
+    const { socket: voter } = await joinAs(seed.slug, 'seed-c');
+    try {
+      const next = waitForQuestions(display, qs => byId(qs, seed.agreement)?.votes.length === 3, 'display after another vote');
+      await live;
+      await emitWithAck(voter, 'vote', seed.slug, seed.agreement, 'Unsure', 'seed-c', 'Seed C', undefined);
+      assertResultsShown(byId(await next, seed.agreement), ['Agree', 'Disagree', 'Unsure'], 'display: live on revealed');
+    } finally {
+      voter.disconnect();
+    }
+
+    // The REST views follow the same switch, for a caller with no identity.
+    const summary = (await jsonRequest('GET', `/api/discussions/${seed.slug}/summary`)).body;
+    assert.equal(summary.counts.hiddenResults, 2);
+    assert.equal(summary.questions.find(q => q.id === seed.agreement).responseCount, 3);
+
+    // Hiding it again goes back to showing results only after voting.
+    const hiddenAgain = waitForQuestions(display, qs => byId(qs, seed.agreement)?.resultsRevealed === false, 'display after hiding');
+    const watcherHidden = waitForQuestions(watcher, qs => byId(qs, seed.agreement)?.resultsRevealed === false, 'watcher after hiding');
+    mod.emit('setResultsRevealed', seed.slug, seed.agreement, false, seed.adminToken);
+    assertDisplayHidden(byId(await hiddenAgain, seed.agreement), 3, 'display after hiding');
+    assertResultsHidden(byId(await watcherHidden, seed.agreement), 'participant after hiding');
+  } finally {
+    display.disconnect();
+    watcher.disconnect();
+    mod.disconnect();
   }
 });
 

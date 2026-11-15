@@ -998,6 +998,30 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Moderator-only: show one question's results to everyone now, voted or not,
+  // or go back to showing them only after voting. Anyone with the link can open
+  // the room display, so a result revealed on the room's screen cannot stay
+  // hidden from anyone; this is the one switch for both. Has no visible effect
+  // while the discussion always shows results.
+  socket.on('setResultsRevealed', async (topic, questionId, revealed, token) => {
+    const discussionSlug = slugifyTopic(topic);
+    try {
+      const discussionId = await verifyAdmin(discussionSlug, token);
+      if (!discussionId) {
+        socket.emit('error', { message: 'Not authorized to moderate this discussion.' });
+        return;
+      }
+      await pool.query(
+        'UPDATE questions SET results_revealed = $1 WHERE id = $2 AND discussion_id = $3',
+        [revealed === true, questionId, discussionId]
+      );
+      await emitQuestions(discussionSlug);
+    } catch (error) {
+      logError('Error revealing results:', error);
+      socket.emit('error', { message: 'Failed to update question' });
+    }
+  });
+
   socket.on('setPinned', async (topic, questionId, pinned, token) => {
     const discussionSlug = slugifyTopic(topic);
     try {
@@ -1545,7 +1569,9 @@ async function getOrCreateDiscussionForSlug(db, slug) {
 
 // `respondents`, when given, is filled with question id -> Set of the user ids
 // that answered it, for the tallied question types only, so a caller can decide
-// whose results to hide from the same rows it is about to send.
+// whose results to hide from the same rows it is about to send. Questions whose
+// results a moderator has revealed are left out: nothing hides them from anyone,
+// in the questions, the room display, the summary, snapshots or exports.
 async function getQuestions(topic, { includeUserIds = false, respondents = null } = {}) {
   const slug = slugifyTopic(topic);
   const query = `
@@ -1558,6 +1584,7 @@ async function getQuestions(topic, { includeUserIds = false, respondents = null 
       q.options,
       q.created_at,
       q.pinned,
+      q.results_revealed,
       d.reactions_enabled,
       d.reactions_visible,
       d.comments_enabled,
@@ -1583,12 +1610,12 @@ async function getQuestions(topic, { includeUserIds = false, respondents = null 
   const result = await pool.query(query, [slug]);
   if (respondents) {
     for (const row of result.rows) {
-      if (!OPINION_TYPES.includes(row.type)) continue;
+      if (!OPINION_TYPES.includes(row.type) || row.results_revealed === true) continue;
       const votes = Array.isArray(row.votes) ? row.votes : [];
       respondents.set(row.id, new Set(votes.map(vote => vote.userId).filter(Boolean)));
     }
   }
-  const questions = result.rows.map(row => ({
+  const questions = result.rows.map(({ results_revealed: revealed, ...row }) => ({
     ...row,
     minValue: row.min_value,
     maxValue: row.max_value,
@@ -1598,6 +1625,8 @@ async function getQuestions(topic, { includeUserIds = false, respondents = null 
     // Always present, so a client that merges successive payloads sees the flag
     // clear once the results arrive. Set by hideUnansweredResults.
     resultsHidden: false,
+    // Whether a moderator has shown this question's results to everyone.
+    resultsRevealed: revealed === true,
     options: parseOptions(row.options),
     // Replace raw stable user ids on the wire with per-response ownership
     // tokens so a socket observer can't correlate a participant's responses —
