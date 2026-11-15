@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { getKnownDiscussions, reconcileKnownDiscussions, rememberDiscussion } from './knownDiscussions';
 import { moderatorLinkPromptState } from './ModeratorLinkPanel';
 
@@ -15,6 +15,7 @@ const HomePage = () => {
     // double click can't create the discussion twice.
     const creatingRef = useRef(false);
     const navigate = useNavigate();
+    const location = useLocation();
 
     useEffect(() => {
         const slugs = getKnownDiscussions().map(discussion => discussion.slug);
@@ -123,6 +124,7 @@ const HomePage = () => {
 
     return (
         <div className="max-w-4xl mx-auto mt-10">
+            {location.state?.discussionDeleted && <p role="status" className="mb-4 text-gray-700">The discussion was deleted.</p>}
             <h1 className="text-4xl font-bold mb-8 text-center text-gray-800">Convora Discussions</h1>
 
             <div className="mb-8">

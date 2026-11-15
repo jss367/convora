@@ -8,6 +8,7 @@ import { useParticipantIdentity } from './hooks/useParticipantIdentity';
 import { useModeratorAccess } from './hooks/useModeratorAccess';
 import { useModalDialog } from './hooks/useModalDialog';
 import { slugifyTopic } from './slugs';
+import { forgetDiscussion } from './knownDiscussions';
 import OpinionSnapshots from './OpinionSnapshots';
 import ModeratorLinkPanel, { ModeratorLinkUnsavedMark, moderatorLinkPromptState, useModeratorLinkPrompt } from './ModeratorLinkPanel';
 import { downloadForViewer } from './viewer';
@@ -108,6 +109,9 @@ const DiscussionPage = () => {
     // in-progress edit; editingTitle swaps the <h1> for the editor.
     const [editingTitle, setEditingTitle] = useState(false);
     const [titleDraft, setTitleDraft] = useState('');
+    const [showDeleteModal, setShowDeleteModal] = useState(false);
+    const [deleting, setDeleting] = useState(false);
+    const [deleteError, setDeleteError] = useState('');
     const [showDuplicateModal, setShowDuplicateModal] = useState(false);
     const [showShareModal, setShowShareModal] = useState(false);
     const [showActionsMenu, setShowActionsMenu] = useState(false);
@@ -133,6 +137,7 @@ const DiscussionPage = () => {
     const discussionContentRef = useRef(null);
     const duplicateReturnFocusRef = useRef(null);
     const shareDialogRef = useModalDialog(showShareModal, () => setShowShareModal(false), shareButtonRef);
+    const deleteDialogRef = useModalDialog(showDeleteModal, () => { if (!deleting) setShowDeleteModal(false); }, actionsMenuButtonRef);
     const duplicateDialogRef = useModalDialog(showDuplicateModal, () => setShowDuplicateModal(false), duplicateReturnFocusRef);
     const similarDialogRef = useModalDialog(Boolean(similarPrompt), () => setSimilarPrompt(null));
     const questionPendingRef = useRef(false);
@@ -224,6 +229,12 @@ const DiscussionPage = () => {
         const resolveRoute = async () => {
             try {
                 const response = await fetch(`/api/discussions/resolve/${encodeURIComponent(topic)}`);
+                if (response.status === 410) {
+                    if (!cancelled) {
+                        navigate('/', { replace: true, state: { discussionDeleted: true } });
+                    }
+                    return;
+                }
                 if (response.ok) {
                     const data = await response.json();
                     if (!cancelled && data?.slug) {
@@ -594,6 +605,39 @@ const DiscussionPage = () => {
                 setError('Could not rename the discussion. Try again.');
             }
         });
+    };
+
+    const leaveDeletedDiscussion = useCallback(() => {
+        forgetDiscussion(discussionSlug);
+        navigate('/', { replace: true, state: { discussionDeleted: true } });
+    }, [discussionSlug, navigate]);
+
+    useEffect(() => {
+        const onDeleted = ({ slug }) => {
+            if (slug === discussionSlug) leaveDeletedDiscussion();
+        };
+        socket.on('discussionDeleted', onDeleted);
+        return () => socket.off('discussionDeleted', onDeleted);
+    }, [socket, discussionSlug, leaveDeletedDiscussion]);
+
+    const handleDeleteDiscussion = async () => {
+        if (deleting) return;
+        setDeleting(true);
+        setDeleteError('');
+        try {
+            const response = await fetch(`/api/discussions/${encodeURIComponent(discussionSlug)}`, {
+                method: 'DELETE',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ adminToken }),
+            });
+            const result = await response.json();
+            if (!response.ok) throw new Error(result.error || 'Could not delete the discussion.');
+            leaveDeletedDiscussion();
+        } catch (error) {
+            setDeleteError(error.message || 'Could not delete the discussion. Please try again.');
+        } finally {
+            setDeleting(false);
+        }
     };
 
     const handleDuplicateDiscussion = async () => {
@@ -1365,6 +1409,16 @@ const DiscussionPage = () => {
                                 >
                                     Duplicate Discussion
                                 </button>
+                                {canDemote && (
+                                    <button
+                                        type="button"
+                                        role="menuitem"
+                                        onClick={() => { setShowActionsMenu(false); setDeleteError(''); setShowDeleteModal(true); }}
+                                        className="block w-full text-left px-4 py-2 text-sm text-red-700 hover:bg-red-50"
+                                    >
+                                        Delete discussion
+                                    </button>
+                                )}
                                 <a
                                     role="menuitem"
                                     href={`/api/discussions/${encodeURIComponent(discussionSlug)}/export.csv`}
@@ -1388,6 +1442,22 @@ const DiscussionPage = () => {
             </div>
 
             {showSnapshots && <OpinionSnapshots key={discussionSlug} discussionSlug={discussionSlug} adminToken={adminToken} userId={userId} />}
+
+            {showDeleteModal && (
+                <div className="fixed inset-0 z-50 bg-gray-600 bg-opacity-50 overflow-y-auto flex items-center justify-center p-4">
+                    <div ref={deleteDialogRef} role="dialog" aria-modal="true" aria-labelledby="delete-dialog-title" aria-describedby="delete-dialog-description" tabIndex={-1} className="bg-white rounded-lg shadow-xl p-6 w-full max-w-md">
+                        <h2 id="delete-dialog-title" className="text-xl font-bold mb-4">Delete discussion?</h2>
+                        <p id="delete-dialog-description" className="text-gray-700 mb-4">
+                            Permanently delete “{discussionTitle}” and all its questions, responses, comments, and snapshots for everyone? This cannot be undone.
+                        </p>
+                        {deleteError && <p role="alert" className="text-red-700 mb-4">{deleteError}</p>}
+                        <div className="flex justify-end gap-3">
+                            <button type="button" data-autofocus disabled={deleting} onClick={() => setShowDeleteModal(false)} className="px-4 py-2 rounded bg-gray-200 disabled:opacity-50">Cancel</button>
+                            <button type="button" disabled={deleting} onClick={handleDeleteDiscussion} className="px-4 py-2 rounded bg-red-700 text-white disabled:opacity-50">{deleting ? 'Deleting…' : 'Delete discussion'}</button>
+                        </div>
+                    </div>
+                </div>
+            )}
 
             {/* Duplicate Modal */}
             {showDuplicateModal && (

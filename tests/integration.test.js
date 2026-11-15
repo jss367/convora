@@ -68,6 +68,191 @@ test('server startup creates schema and applies the pseudonym migration', async 
   assert.deepEqual(columns.rows.map((row) => row.column_name), ['short_code', 'pseudonym']);
 });
 
+for (const order of ['delete-first', 'rename-first']) {
+  test(`promoted moderator rename and creator deletion serialize when ${order}`, async () => {
+    const created = (await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('rename-delete') })).body;
+    const title = uniqueTopic('Requested New Title');
+    const token = 'promoted-' + crypto.randomUUID();
+    await pool.query('INSERT INTO discussion_moderators (discussion_id, user_id, token) VALUES ($1, $2, $3)', [created.id, 'promoted-renamer', token]);
+    const socket = await connectSocket();
+    const blocker = await pool.connect();
+    let deleting;
+    let renaming;
+    const waitForLocks = async count => {
+      const deadline = Date.now() + 5000;
+      while (Date.now() < deadline) {
+        const result = await pool.query("SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname = current_database() AND state = 'active' AND wait_event_type = 'Lock'");
+        if (result.rows[0].n >= count) return;
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+      throw new Error('Timed out waiting for rename/deletion operations');
+    };
+    try {
+      await blocker.query('BEGIN');
+      await blocker.query('SELECT id FROM discussions WHERE id = $1 FOR UPDATE', [created.id]);
+      if (order === 'delete-first') deleting = jsonRequest('DELETE', `/api/discussions/${created.slug}`, { adminToken: created.adminToken });
+      else renaming = emitWithAck(socket, 'setTopic', created.slug, title, token);
+      await waitForLocks(1);
+      if (order === 'delete-first') renaming = emitWithAck(socket, 'setTopic', created.slug, title, token);
+      else deleting = jsonRequest('DELETE', `/api/discussions/${created.slug}`, { adminToken: created.adminToken });
+      await waitForLocks(2);
+      await blocker.query('COMMIT');
+      const [deleted, renamed] = await Promise.all([deleting, renaming]);
+      assert.equal(deleted.status, 200);
+      assert.equal(renamed.updated, order === 'rename-first');
+      assert.equal((await jsonRequest('GET', `/api/discussions/resolve/${encodeURIComponent(title)}`)).status, order === 'rename-first' ? 410 : 404);
+      assert.equal((await pool.query('SELECT count(*)::int AS n FROM discussions WHERE id = $1', [created.id])).rows[0].n, 0);
+    } finally {
+      await blocker.query('ROLLBACK');
+      await Promise.allSettled([deleting, renaming].filter(Boolean));
+      blocker.release();
+      socket.disconnect();
+    }
+  });
+}
+
+test('deleting rooms with swapped title aliases does not invert lifecycle locks', async () => {
+  const a = (await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('swap-a') })).body;
+  const b = (await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('swap-b') })).body;
+  const socket = await connectSocket();
+  try {
+    assert.equal((await emitWithAck(socket, 'setTopic', a.slug, b.topic + '!', a.adminToken)).updated, true);
+    assert.equal((await emitWithAck(socket, 'setTopic', b.slug, a.topic + '!', b.adminToken)).updated, true);
+    const results = await withTimeout(Promise.all([
+      jsonRequest('DELETE', `/api/discussions/${a.slug}`, { adminToken: a.adminToken }),
+      jsonRequest('DELETE', `/api/discussions/${b.slug}`, { adminToken: b.adminToken }),
+      jsonRequest('POST', '/api/discussions', { topic: a.topic }),
+    ]), 5000, 'Concurrent alias deletion/creation deadlocked');
+    assert.deepEqual(results.map(result => result.status), [200, 200, 200]);
+  } finally { socket.disconnect(); }
+});
+
+test('deletion reserves renamed title aliases without hiding another live canonical room', async () => {
+  const created = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('old-title') });
+  const title = uniqueTopic('Renamed Title');
+  const alias = title.toLowerCase().replace(/\s+/g, '-');
+  const { socket } = await joinAs(created.body.slug, 'alias-visitor');
+  try {
+    assert.equal((await emitWithAck(socket, 'setTopic', created.body.slug, title, created.body.adminToken)).updated, true);
+    assert.equal((await jsonRequest('DELETE', `/api/discussions/${created.body.slug}`, { adminToken: created.body.adminToken })).status, 200);
+    assert.equal((await jsonRequest('GET', `/api/discussions/resolve/${encodeURIComponent(title)}`)).status, 410);
+    const missing = waitForEvent(socket, 'discussionDeleted');
+    socket.emit('joinDiscussion', alias);
+    assert.deepEqual(await missing, { slug: alias });
+    assert.equal((await emitWithAck(socket, 'claimModerator', alias)).success, false);
+    assert.equal((await emitWithAck(socket, 'addQuestion', alias, { text: 'Stale alias submission', type: 'Agreement' }, true)).added, false);
+    const live = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('Collision Room') });
+    const original = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('collision-original') });
+    const collidingTitle = live.body.topic + '!';
+    assert.equal((await emitWithAck(socket, 'setTopic', original.body.slug, collidingTitle, original.body.adminToken)).updated, true);
+    assert.equal((await jsonRequest('DELETE', `/api/discussions/${original.body.slug}`, { adminToken: original.body.adminToken })).status, 200);
+    assert.equal((await jsonRequest('GET', `/api/discussions/resolve/${encodeURIComponent(collidingTitle)}`)).status, 410);
+    assert.equal((await jsonRequest('GET', `/api/discussions/resolve/${live.body.slug}`)).body.id, live.body.id);
+    const exactAlias = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('exact-alias-original') });
+    assert.equal((await emitWithAck(socket, 'setTopic', exactAlias.body.slug, live.body.slug, exactAlias.body.adminToken)).updated, true);
+    assert.equal((await jsonRequest('DELETE', `/api/discussions/${exactAlias.body.slug}`, { adminToken: exactAlias.body.adminToken })).status, 200);
+    // Even an exact deleted title equal to another room's canonical slug must
+    // not mask that live route in the resolver.
+    assert.equal((await jsonRequest('GET', `/api/discussions/resolve/${live.body.slug}`)).body.id, live.body.id);
+    assert.equal((await emitWithAck(socket, 'addQuestion', live.body.slug, { text: 'The other room stays usable', type: 'Agreement' }, true)).added, true);
+    await stopServer();
+    await startServer();
+    assert.equal((await jsonRequest('GET', `/api/discussions/resolve/${encodeURIComponent(title)}`)).status, 410);
+  } finally { socket.disconnect(); }
+});
+
+test('deletion rejects queued and stale question submissions without reusing the deleted slug', async () => {
+  const topic = uniqueTopic('delete-race');
+  const created = await jsonRequest('POST', '/api/discussions', { topic });
+  const { id, slug, adminToken } = created.body;
+  const { socket } = await joinAs(slug, 'stale-participant');
+  const blocker = await pool.connect();
+  try {
+    await blocker.query('BEGIN');
+    await blocker.query('SELECT id FROM discussions WHERE id = $1 FOR UPDATE', [id]);
+    const deleting = jsonRequest('DELETE', `/api/discussions/${slug}`, { adminToken });
+    const waitForLocks = async count => {
+      const deadline = Date.now() + 5000;
+      while (Date.now() < deadline) {
+        const result = await pool.query("SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname = current_database() AND state = 'active' AND wait_event_type = 'Lock'");
+        if (result.rows[0].n >= count) return;
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+      throw new Error('Timed out waiting for blocked lifecycle operations');
+    };
+    await waitForLocks(1);
+    const adding = emitWithAck(socket, 'addQuestion', slug, { text: 'A queued stale question', type: 'Agreement' }, true);
+    await waitForLocks(2);
+    await blocker.query('COMMIT');
+    assert.equal((await deleting).status, 200);
+    assert.equal((await adding).added, false);
+    assert.equal((await pool.query('SELECT count(*)::int AS n FROM discussions WHERE slug = $1', [slug])).rows[0].n, 0);
+    assert.equal((await emitWithAck(socket, 'addQuestion', slug, { text: 'A later stale question', type: 'Agreement' }, true)).added, false);
+    assert.equal((await emitWithAck(socket, 'claimModerator', slug)).success, false);
+    await stopServer();
+    await startServer();
+    const restarted = await connectSocket();
+    try {
+      const deletedJoin = waitForEvent(restarted, 'discussionDeleted');
+      restarted.emit('joinDiscussion', slug);
+      assert.deepEqual(await deletedJoin, { slug });
+    } finally { restarted.disconnect(); }
+    const replacement = await jsonRequest('POST', '/api/discussions', { topic });
+    assert.equal(replacement.status, 200);
+    assert.notEqual(replacement.body.slug, slug);
+    assert.equal((await jsonRequest('GET', `/api/discussions/resolve/${slug}`)).status, 404);
+    assert.equal((await jsonRequest('DELETE', `/api/discussions/${replacement.body.slug}`, { adminToken: replacement.body.adminToken })).status, 200);
+    const source = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('copy-source') });
+    const duplicate = await jsonRequest('POST', '/api/duplicate-discussion', { originalTopic: source.body.slug, newTopic: topic });
+    assert.equal(duplicate.status, 200);
+    assert.notEqual(duplicate.body.newSlug, slug);
+    assert.notEqual(duplicate.body.newSlug, replacement.body.slug);
+    assert.equal((await jsonRequest('GET', `/api/discussions/resolve/${slug}`)).status, 404);
+  } finally {
+    await blocker.query('ROLLBACK');
+    blocker.release();
+    socket.disconnect();
+  }
+});
+
+test('only the creator can delete a discussion, removing all contents and notifying viewers', async () => {
+  const created = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('delete') });
+  const other = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('keep') });
+  const { id, slug, adminToken } = created.body;
+  const q = (await pool.query("INSERT INTO questions (discussion_id, text, type) VALUES ($1, 'Idea', 'Brainstorm') RETURNING id", [id])).rows[0].id;
+  const v = (await pool.query("INSERT INTO votes (question_id, value, user_id) VALUES ($1, 'Response', 'person') RETURNING id", [q])).rows[0].id;
+  await pool.query("INSERT INTO response_votes (response_id, user_id) VALUES ($1, 'other')", [v]);
+  await pool.query("INSERT INTO response_ratings (response_id, user_id, quality) VALUES ($1, 'other', 1)", [v]);
+  await pool.query("INSERT INTO response_reactions (response_id, user_id, reaction) VALUES ($1, 'other', 'follows')", [v]);
+  await pool.query("INSERT INTO response_comments (response_id, user_id, body) VALUES ($1, 'other', 'Comment')", [v]);
+  await pool.query("INSERT INTO opinion_snapshots (discussion_id, name, data) VALUES ($1, 'Snapshot', '{}')", [id]);
+  await pool.query("INSERT INTO discussion_moderators (discussion_id, user_id, token) VALUES ($1, 'other', 'promoted-token')", [id]);
+  await pool.query("INSERT INTO discussion_pseudonyms (discussion_id, user_id, pseudonym) VALUES ($1, 'person', 'Happy Fox')", [id]);
+  const endpoint = `/api/discussions/${slug}`;
+  for (const token of [undefined, '', {}, 'wrong', 'promoted-token', other.body.adminToken]) {
+    assert.equal((await jsonRequest('DELETE', endpoint, { adminToken: token })).status, 403);
+  }
+  assert.equal((await pool.query('SELECT id FROM votes WHERE id = $1', [v])).rowCount, 1);
+  const socket = await connectSocket();
+  try {
+    const joined = once(socket, 'discussion');
+    socket.emit('joinDiscussion', slug);
+    await joined;
+    const deleted = once(socket, 'discussionDeleted');
+    const result = await jsonRequest('DELETE', endpoint, { adminToken });
+    assert.equal(result.status, 200);
+    assert.deepEqual(result.body, { deleted: true });
+    assert.deepEqual((await deleted)[0], { slug });
+    for (const table of ['questions', 'votes', 'response_votes', 'response_ratings', 'response_reactions', 'response_comments', 'opinion_snapshots', 'discussion_moderators', 'discussion_pseudonyms']) {
+      assert.equal((await pool.query(`SELECT * FROM ${table}`)).rowCount, 0, table);
+    }
+    assert.deepEqual((await pool.query('SELECT id FROM discussions')).rows.map(row => row.id), [other.body.id]);
+    assert.equal((await jsonRequest('DELETE', endpoint, { adminToken })).status, 403);
+  } finally {
+    socket.disconnect();
+  }
+});
+
 test('initialization adds the vote lookup index to existing databases idempotently', async () => {
   await pool.query('DROP INDEX IF EXISTS votes_question_id_idx');
   await initializeDatabase(pool);

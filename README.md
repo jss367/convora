@@ -203,3 +203,13 @@ Moderators can enable quality votes, agreement ratings, reactions, and comments.
 Existing Brainstorm questions become Open Ended and retain hidden attribution.
 Existing Open Ended questions retain their one-response limit. Responses and
 feedback survive migration, with previous upvotes carried over as quality votes.
+
+## Delete a discussion
+
+The creator can choose **More → Delete discussion** and confirm permanent deletion.
+This removes the discussion and all its questions, responses, comments, and saved
+snapshots for everyone. Connected participants return to the home page and room
+displays show that the discussion is gone. Deleted discussion routes stay reserved;
+creating the same title later gives it a new link. Promoted
+moderators cannot delete discussions. As with other creator controls, anyone with
+the creator's saved moderator link has the same authority.
