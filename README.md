@@ -68,7 +68,19 @@ moderator's browser. It follows the **Results** setting:
 - With **Show results after you vote**, the server sends the display each
   question's response count but no tallies, percentages or histograms. The
   display has not voted, so it sees what a participant who has not voted sees.
-- With **Always show results**, it shows the live results.
+- With **Always show results**, it shows the live results as charts sized for
+  the room: a labelled bar with count and percentage for each agreement or
+  yes/no option, and a histogram with the average and median for numerical
+  questions.
+
+Two moderator bar settings change the display from wherever the moderator is
+sitting, so nobody has to touch the shared screen:
+
+- **Display QR**: the join QR code and link **Large** in a sidebar (the
+  default), **Small, in a corner** of the header, or **Hidden**.
+- **Display shows**: **All questions** (the default), or **One question**: the
+  first pinned question, or the newest one when nothing is pinned, filling the
+  screen. Pin a question to put it on the display.
 
 To put one question's results on the screen, click **Show results** on that
 question from your own moderator page, phone or laptop. The display updates at

@@ -337,6 +337,12 @@ async function initializeDatabase(pool) {
     // Whether the discussion is listed publicly on the home page. Discussions are
     // unlisted unless their moderator chooses otherwise, existing ones included.
     await pool.query('ALTER TABLE discussions ADD COLUMN IF NOT EXISTS listed BOOLEAN NOT NULL DEFAULT FALSE');
+    // How the room display presents itself: the join QR code large in a sidebar,
+    // small in a corner, or hidden ('full', 'corner', 'hidden'), and whether it
+    // shows every question or one at a time ('all', 'focus'). See
+    // DISPLAY_QR_MODES and DISPLAY_LAYOUTS in server.js.
+    await pool.query("ALTER TABLE discussions ADD COLUMN IF NOT EXISTS display_qr TEXT NOT NULL DEFAULT 'full'");
+    await pool.query("ALTER TABLE discussions ADD COLUMN IF NOT EXISTS display_layout TEXT NOT NULL DEFAULT 'all'");
 
     try {
       await pool.query('CREATE EXTENSION IF NOT EXISTS pg_trgm');

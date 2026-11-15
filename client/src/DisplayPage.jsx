@@ -4,8 +4,7 @@ import React, { useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { useConnectionLost, useDiscussionSocket } from './hooks/useDiscussionRoom';
 import useScreenWakeLock from './hooks/useScreenWakeLock';
-import NumericalResults from './questions/NumericalResults';
-import { AgreementResults, YesNoResults } from './questions/OpinionResults';
+import { AgreementChart, NumericalChart, ResponseCountOnly, YesNoChart } from './display/DisplayCharts';
 import { EPISTEMIC_REACTIONS, QuestionTypes } from './questions/config';
 import { slugifyTopic } from './slugs';
 
@@ -21,6 +20,8 @@ const TALLIED_TYPES = [QuestionTypes.AGREEMENT, QuestionTypes.YES_NO, QuestionTy
 // Written responses beyond this many are summarized, so one busy question cannot
 // push the rest off the screen.
 const MAX_WRITTEN_RESPONSES = 8;
+const MAX_FOCUS_WRITTEN_RESPONSES = 10;
+const QR_MODES = ['full', 'corner', 'hidden'];
 // Nobody is at the screen to press a button, so a failed load retries itself.
 const RETRY_DELAY_MS = 5000;
 
@@ -30,89 +31,70 @@ const responseCountOf = question => (question.resultsHidden
     ? Number(question.responseCount) || 0
     : (question.votes || []).length);
 
-// The results components are sized for a phone held at arm's length; scale them
-// up so they read from across a room.
-const LargeResults = ({ children }) => <div style={{ zoom: 1.6 }}>{children}</div>;
-LargeResults.propTypes = { children: PropTypes.node.isRequired };
-
-const TalliedResults = ({ question }) => {
-    const count = responseCountOf(question);
-    if (question.resultsHidden) {
-        return (
-            <div data-testid="display-results-hidden">
-                <p className="text-3xl font-semibold text-gray-800">{plural(count, 'response', 'responses')}</p>
-                <p className="mt-1 text-lg text-gray-500">Vote on your phone. The moderator will show the results here.</p>
-            </div>
-        );
-    }
-    let results;
-    if (question.type === QuestionTypes.AGREEMENT) results = <AgreementResults question={question} />;
-    else if (question.type === QuestionTypes.YES_NO) results = <YesNoResults question={question} />;
-    else {
-        const parsedMin = parseInt(question.minValue ?? question.min_value);
-        const parsedMax = parseInt(question.maxValue ?? question.max_value);
-        const minValue = Number.isNaN(parsedMin) ? 0 : parsedMin;
-        const maxValue = Number.isNaN(parsedMax) ? 100 : parsedMax;
-        results = <NumericalResults question={question} minValue={minValue} maxValue={maxValue} />;
-    }
-    return (
-        <div>
-            <p className="mb-2 text-3xl font-semibold text-gray-800">{plural(count, 'response', 'responses')}</p>
-            <LargeResults>{results}</LargeResults>
-        </div>
-    );
+const TalliedResults = ({ question, focus }) => {
+    if (question.resultsHidden) return <ResponseCountOnly count={responseCountOf(question)} focus={focus} />;
+    if (question.type === QuestionTypes.AGREEMENT) return <AgreementChart question={question} focus={focus} />;
+    if (question.type === QuestionTypes.YES_NO) return <YesNoChart question={question} focus={focus} />;
+    const parsedMin = parseInt(question.minValue ?? question.min_value);
+    const parsedMax = parseInt(question.maxValue ?? question.max_value);
+    const minValue = Number.isNaN(parsedMin) ? 0 : parsedMin;
+    const maxValue = Number.isNaN(parsedMax) ? 100 : parsedMax;
+    return <NumericalChart question={question} minValue={minValue} maxValue={maxValue} focus={focus} />;
 };
-TalliedResults.propTypes = { question: PropTypes.object.isRequired };
+TalliedResults.propTypes = { question: PropTypes.object.isRequired, focus: PropTypes.bool };
+
+const sortedResponses = question => [...(question.votes || [])]
+    .sort((a, b) => (b.upvotes || 0) - (a.upvotes || 0) || a.id - b.id);
 
 // Open Ended and Brainstorm responses are the discussion itself, so they are
 // shown as participants see them. Brainstorm ratings and reactions appear only
 // when the moderator has revealed them; the server sends them only then.
-const WrittenResponses = ({ question, reactionKeys }) => {
-    const votes = [...(question.votes || [])]
-        .sort((a, b) => (b.upvotes || 0) - (a.upvotes || 0) || a.id - b.id);
+const WrittenResponses = ({ question, reactionKeys, focus }) => {
+    const votes = sortedResponses(question);
     const isBrainstorm = question.type === QuestionTypes.BRAINSTORM;
     const showReactions = isBrainstorm && question.reactionsEnabled && question.reactionsVisible;
-    const shown = votes.slice(0, MAX_WRITTEN_RESPONSES);
+    const shown = votes.slice(0, focus ? MAX_FOCUS_WRITTEN_RESPONSES : MAX_WRITTEN_RESPONSES);
+    if (votes.length === 0) {
+        return <p className={`${focus ? 'text-4xl' : 'text-2xl'} text-gray-500`}>{isBrainstorm ? 'No ideas yet' : 'No responses yet'}</p>;
+    }
     return (
         <div>
-            <p className="mb-3 text-3xl font-semibold text-gray-800">
-                {plural(votes.length, isBrainstorm ? 'idea' : 'response', isBrainstorm ? 'ideas' : 'responses')}
-            </p>
-            {shown.length > 0 && (
-                <ul className="space-y-2">
-                    {shown.map(vote => {
-                        const net = (vote.qualityUp || 0) - (vote.qualityDown || 0);
-                        const reactions = showReactions
-                            ? EPISTEMIC_REACTIONS.filter(r => reactionKeys.includes(r.key) && (vote.reactionCounts || {})[r.key] > 0)
-                            : [];
-                        return (
-                            <li key={vote.id} className="rounded-md bg-gray-50 px-4 py-3 text-2xl text-gray-800">
-                                <div className="flex items-start gap-3">
-                                    {showReactions && (
-                                        <span className="shrink-0 font-semibold text-gray-600">{net > 0 ? `+${net}` : net}</span>
-                                    )}
-                                    <span className="min-w-0 flex-1 whitespace-pre-wrap break-words">{vote.value}</span>
-                                    {!isBrainstorm && vote.upvotes > 0 && (
-                                        <span className="shrink-0 font-semibold text-gray-600">▲ {vote.upvotes}</span>
+            <ul className={focus ? 'grid grid-cols-1 gap-4 xl:grid-cols-2' : 'space-y-3'}>
+                {shown.map(vote => {
+                    const net = (vote.qualityUp || 0) - (vote.qualityDown || 0);
+                    const reactions = showReactions
+                        ? EPISTEMIC_REACTIONS.filter(r => reactionKeys.includes(r.key) && (vote.reactionCounts || {})[r.key] > 0)
+                        : [];
+                    return (
+                        <li
+                            key={vote.id}
+                            className={`rounded-lg border-l-8 border-primary bg-gray-50 px-5 py-4 text-gray-900 ${focus ? 'text-4xl' : 'text-2xl'}`}
+                        >
+                            <div className="flex items-start gap-4">
+                                {showReactions && (
+                                    <span className="shrink-0 font-bold tabular-nums text-gray-600">{net > 0 ? `+${net}` : net}</span>
+                                )}
+                                <span className="min-w-0 flex-1 whitespace-pre-wrap break-words leading-snug">{vote.value}</span>
+                                {!isBrainstorm && vote.upvotes > 0 && (
+                                    <span className="shrink-0 font-bold tabular-nums text-gray-600">▲ {vote.upvotes}</span>
+                                )}
+                            </div>
+                            {(reactions.length > 0 || (vote.comments || []).length > 0) && (
+                                <div className={`mt-2 flex flex-wrap gap-4 text-gray-600 ${focus ? 'text-2xl' : 'text-lg'}`}>
+                                    {reactions.map(r => (
+                                        <span key={r.key}>{r.emoji} {r.label} {vote.reactionCounts[r.key]}</span>
+                                    ))}
+                                    {(vote.comments || []).length > 0 && (
+                                        <span>💬 {plural(vote.comments.length, 'comment', 'comments')}</span>
                                     )}
                                 </div>
-                                {(reactions.length > 0 || (vote.comments || []).length > 0) && (
-                                    <div className="mt-1 flex flex-wrap gap-3 text-lg text-gray-600">
-                                        {reactions.map(r => (
-                                            <span key={r.key}>{r.emoji} {r.label} {vote.reactionCounts[r.key]}</span>
-                                        ))}
-                                        {(vote.comments || []).length > 0 && (
-                                            <span>💬 {plural(vote.comments.length, 'comment', 'comments')}</span>
-                                        )}
-                                    </div>
-                                )}
-                            </li>
-                        );
-                    })}
-                </ul>
-            )}
+                            )}
+                        </li>
+                    );
+                })}
+            </ul>
             {votes.length > shown.length && (
-                <p className="mt-2 text-lg text-gray-500">and {votes.length - shown.length} more</p>
+                <p className={`mt-3 text-gray-500 ${focus ? 'text-2xl' : 'text-lg'}`}>and {votes.length - shown.length} more</p>
             )}
         </div>
     );
@@ -120,6 +102,73 @@ const WrittenResponses = ({ question, reactionKeys }) => {
 WrittenResponses.propTypes = {
     question: PropTypes.object.isRequired,
     reactionKeys: PropTypes.arrayOf(PropTypes.string).isRequired,
+    focus: PropTypes.bool,
+};
+
+const countLabel = question => {
+    if (TALLIED_TYPES.includes(question.type)) return plural(responseCountOf(question), 'response', 'responses');
+    const count = (question.votes || []).length;
+    return question.type === QuestionTypes.BRAINSTORM ? plural(count, 'idea', 'ideas') : plural(count, 'response', 'responses');
+};
+
+const QuestionCard = ({ question, reactionKeys, focus }) => (
+    <article
+        className={`flex flex-col rounded-2xl bg-white shadow-lg ring-1 ring-black/5 ${focus ? 'p-10' : 'p-7'}`}
+        data-testid="display-question"
+    >
+        <header className={`flex items-start justify-between gap-6 ${focus ? 'mb-8' : 'mb-5'}`}>
+            <h2 className={`font-bold leading-tight text-gray-900 ${focus ? 'text-6xl' : 'text-3xl'}`}>
+                {question.pinned && <span aria-label="Pinned" className="mr-3">📌</span>}
+                {question.text}
+            </h2>
+            {/* With results withheld, the count is the whole chart below. */}
+            {!question.resultsHidden && (
+                <span className={`shrink-0 rounded-full bg-gray-100 font-semibold tabular-nums text-gray-700 ${focus ? 'px-5 py-2 text-3xl' : 'px-4 py-1 text-xl'}`}>
+                    {countLabel(question)}
+                </span>
+            )}
+        </header>
+        {TALLIED_TYPES.includes(question.type)
+            ? <TalliedResults question={question} focus={focus} />
+            : <WrittenResponses question={question} reactionKeys={reactionKeys} focus={focus} />}
+    </article>
+);
+QuestionCard.propTypes = {
+    question: PropTypes.object.isRequired,
+    reactionKeys: PropTypes.arrayOf(PropTypes.string).isRequired,
+    focus: PropTypes.bool,
+};
+
+// The one-question view shows the first pinned question (the server sends
+// pinned questions first), otherwise the newest.
+const focusQuestionOf = questions => questions.find(q => q.pinned) || questions[questions.length - 1];
+
+const JoinCard = ({ linkUrl, linkText, title, compact }) => (
+    <div
+        className={compact
+            ? 'flex items-center gap-4 rounded-xl bg-white py-2 pl-2 pr-5 text-left'
+            : 'flex flex-col items-center rounded-2xl bg-white p-8 text-center shadow-lg ring-1 ring-black/5'}
+        data-testid="display-join"
+    >
+        <div role="img" aria-label={`QR code to join ${title}`}>
+            <QRCodeSVG value={linkUrl} size={compact ? 120 : 340} includeMargin={!compact} />
+        </div>
+        <div className={compact ? 'text-left' : ''}>
+            <p className={`font-semibold uppercase tracking-wide text-gray-500 ${compact ? 'text-base' : 'mt-4 text-xl'}`}>Scan to join</p>
+            <p
+                className={`break-all font-bold text-gray-900 ${compact ? 'max-w-[16rem] text-xl' : 'mt-2 text-3xl'}`}
+                data-testid="display-join-link"
+            >
+                {linkText}
+            </p>
+        </div>
+    </div>
+);
+JoinCard.propTypes = {
+    linkUrl: PropTypes.string.isRequired,
+    linkText: PropTypes.string.isRequired,
+    title: PropTypes.string.isRequired,
+    compact: PropTypes.bool,
 };
 
 const DisplayPage = () => {
@@ -203,46 +252,56 @@ const DisplayPage = () => {
         );
     }
 
-    return (
-        <main className="min-h-screen bg-gray-100 p-6 lg:p-10" aria-label="Room display">
-            <div className="flex flex-col gap-8 lg:flex-row lg:items-start">
-                <aside className="flex shrink-0 flex-col items-center rounded-xl bg-white p-6 text-center shadow-lg lg:sticky lg:top-10 lg:w-[26rem]">
-                    <h1 className="text-4xl font-bold text-primary">{title}</h1>
-                    <div className="mt-6" role="img" aria-label={`QR code to join ${title}`}>
-                        <QRCodeSVG value={linkUrl} size={320} includeMargin />
-                    </div>
-                    <p className="mt-3 text-xl font-semibold uppercase tracking-wide text-gray-500">Scan to join</p>
-                    <p className="mt-2 break-all text-2xl font-semibold text-gray-800" data-testid="display-join-link">{linkText}</p>
-                    <p className="mt-6 text-3xl font-semibold text-gray-800" role="status">
-                        {plural(presence, 'person', 'people')} here now
-                    </p>
-                    {state.locked && <p className="mt-3 text-xl text-amber-700">🔒 Voting is closed</p>}
-                    {connectionLost && <p className="mt-3 text-xl text-red-600">Reconnecting…</p>}
-                </aside>
+    const qrMode = QR_MODES.includes(state.displayQr) ? state.displayQr : 'full';
+    const focus = state.displayLayout === 'focus';
+    const ready = discussion !== undefined && questions !== null;
 
-                <section className="min-w-0 flex-1" aria-label="Questions">
-                    {loadFailed && questions === null ? (
-                        <p className="text-2xl text-red-600" role="alert">Couldn’t load the questions. Trying again…</p>
-                    ) : discussion === undefined || questions === null ? (
-                        <p className="text-2xl text-gray-500">Loading…</p>
-                    ) : questions.length === 0 ? (
-                        <p className="text-3xl text-gray-500">No questions yet</p>
-                    ) : (
-                        <ol className="grid grid-cols-1 gap-6 2xl:grid-cols-2">
-                            {questions.map(question => (
-                                <li key={question.id} className="rounded-xl bg-white p-6 shadow-lg" data-testid="display-question">
-                                    <h2 className="mb-4 text-3xl font-bold text-gray-900">
-                                        {question.pinned && <span aria-label="Pinned" className="mr-2">📌</span>}
-                                        {question.text}
-                                    </h2>
-                                    {TALLIED_TYPES.includes(question.type)
-                                        ? <TalliedResults question={question} />
-                                        : <WrittenResponses question={question} reactionKeys={reactionKeys} />}
-                                </li>
-                            ))}
-                        </ol>
-                    )}
-                </section>
+    let body;
+    if (loadFailed && questions === null) {
+        body = <p className="text-3xl text-red-600" role="alert">Couldn’t load the questions. Trying again…</p>;
+    } else if (!ready) {
+        body = <p className="text-3xl text-gray-500">Loading…</p>;
+    } else if (questions.length === 0) {
+        body = <p className="text-4xl text-gray-500">No questions yet</p>;
+    } else if (focus) {
+        body = <QuestionCard question={focusQuestionOf(questions)} reactionKeys={reactionKeys} focus />;
+    } else {
+        body = (
+            <ol className={`grid grid-cols-1 gap-8 ${qrMode === 'full' ? '2xl:grid-cols-2' : 'xl:grid-cols-2'}`}>
+                {questions.map(question => (
+                    <li key={question.id} className="contents">
+                        <QuestionCard question={question} reactionKeys={reactionKeys} />
+                    </li>
+                ))}
+            </ol>
+        );
+    }
+
+    return (
+        <main className="flex min-h-screen flex-col bg-gray-100" aria-label="Room display">
+            {/* The right-hand group has room for more controls, such as a full
+                screen button; it wraps below the title on narrow screens. */}
+            <header
+                className="flex flex-wrap items-center justify-between gap-x-10 gap-y-3 bg-primary px-8 py-6 text-white shadow-md lg:px-12"
+                data-testid="display-header"
+            >
+                <h1 className="min-w-0 text-4xl font-bold leading-tight lg:text-5xl">{title}</h1>
+                <div className="flex flex-wrap items-center gap-x-8 gap-y-2 text-2xl font-semibold">
+                    {state.locked && <span>🔒 Voting is closed</span>}
+                    {connectionLost && <span className="rounded-full bg-white px-4 py-1 text-red-700">Reconnecting…</span>}
+                    <span role="status" className="tabular-nums">{plural(presence, 'person', 'people')} here now</span>
+                    {/* The small QR code sits in the header, in the page flow, so it
+                        never covers a question on a screen nobody scrolls. */}
+                    {qrMode === 'corner' && <JoinCard linkUrl={linkUrl} linkText={linkText} title={title} compact />}
+                        </div>
+            </header>
+            <div className="flex flex-1 flex-col gap-10 p-8 lg:flex-row lg:items-start lg:p-12">
+                {qrMode === 'full' && (
+                    <aside className="shrink-0 lg:sticky lg:top-12 lg:w-[26rem]">
+                        <JoinCard linkUrl={linkUrl} linkText={linkText} title={title} />
+                    </aside>
+                )}
+                <section className="min-w-0 flex-1" aria-label="Questions">{body}</section>
             </div>
         </main>
     );
