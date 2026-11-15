@@ -82,9 +82,11 @@ made them visible.
 
 While the display is open and visible, it asks the browser to keep the screen
 awake, as a video player does, so the TV or laptop doesn't dim or go to sleep
-partway through a discussion. This uses the Screen Wake Lock API, which current
-Chrome, Edge, Safari and Firefox support on HTTPS pages. Older browsers sleep as
-usual.
+partway through a discussion. It holds a Screen Wake Lock where the browser
+supports one (current Chrome, Edge, Safari and Firefox, on HTTPS pages), and also
+plays a tiny muted video on a loop, because smart TVs can ignore the wake lock or
+have a built-in browser without it, but don't sleep during video playback. A TV's
+own power settings, such as an auto power-off timer, can still turn it off.
 
 ## Compare opinions before and after discussion
 
