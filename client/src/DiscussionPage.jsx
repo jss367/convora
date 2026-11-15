@@ -820,6 +820,9 @@ const DiscussionPage = () => {
                         if (current !== submittedDraft
                             || current.text.trim() !== question.text
                             || current.type !== question.type
+                            || (question.type === QuestionTypes.OPEN_ENDED
+                                && ((Number(current.maxResponses) || null) !== (Number(question.maxResponses) || null)
+                                    || (current.showAttribution !== false) !== (question.showAttribution !== false)))
                             || (question.type === QuestionTypes.NUMERICAL
                                 && (current.minValue !== question.minValue || current.maxValue !== question.maxValue))
                             || (question.type === QuestionTypes.MULTIPLE_CHOICE
