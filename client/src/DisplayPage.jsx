@@ -46,8 +46,10 @@ const TalliedResults = ({ question }) => {
     if (question.type === QuestionTypes.AGREEMENT) results = <AgreementResults question={question} />;
     else if (question.type === QuestionTypes.YES_NO) results = <YesNoResults question={question} />;
     else {
-        const minValue = parseInt(question.minValue ?? question.min_value) || 0;
-        const maxValue = parseInt(question.maxValue ?? question.max_value) || 100;
+        const parsedMin = parseInt(question.minValue ?? question.min_value);
+        const parsedMax = parseInt(question.maxValue ?? question.max_value);
+        const minValue = Number.isNaN(parsedMin) ? 0 : parsedMin;
+        const maxValue = Number.isNaN(parsedMax) ? 100 : parsedMax;
         results = <NumericalResults question={question} minValue={minValue} maxValue={maxValue} />;
     }
     return (

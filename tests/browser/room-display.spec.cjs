@@ -91,3 +91,25 @@ test('the room display says when the discussion does not exist', async ({ page }
   await page.goto('/discussion/no-such-discussion-for-the-display/display');
   await expect(page.getByText('Discussion not found', { exact: true })).toBeVisible();
 });
+
+test('the room display preserves a numerical range ending at zero', async ({ page, rooms }) => {
+  const room = await rooms.create('Negative range display', 'Numerical');
+  await rooms.pool.query("UPDATE discussions SET results_visibility = 'always' WHERE id = $1", [room.id]);
+  await rooms.pool.query('UPDATE questions SET min_value = -100, max_value = 0 WHERE discussion_id = $1', [room.id]);
+  await rooms.pool.query(
+    `INSERT INTO votes (question_id, value, user_id)
+     SELECT id, v.value, v.user_id FROM questions,
+       (VALUES ('-100', 'seed-a'), ('0', 'seed-b')) AS v(value, user_id)
+     WHERE discussion_id = $1`, [room.id]
+  );
+  await page.goto(`/discussion/${room.slug}/display`);
+  const question = page.getByTestId('display-question');
+  await expect(question.getByText('2 responses · average -50.0', { exact: true })).toBeVisible();
+  const axis = question.locator('.ml-7.flex.justify-between');
+  await expect(axis.locator('span')).toHaveText(['-100', '0']);
+  // The two endpoints must land in opposite end bins of the actual range.
+  const bars = question.locator('[title$=" response"], [title$=" responses"]');
+  await expect(bars).toHaveCount(10);
+  await expect(bars.first()).toHaveAttribute('title', '1 response');
+  await expect(bars.last()).toHaveAttribute('title', '1 response');
+});

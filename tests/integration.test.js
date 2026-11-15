@@ -1257,13 +1257,17 @@ test('a room display is not a participant and cannot vote, write or moderate', a
       await questions;
 
       // A participant joining is counted, and the display hears about it.
+      const secondJoined = waitForEvent(display, 'presence', count => count === 2);
       const { socket: second } = await joinAs(seed.slug, 'seed-d');
+      // Subscribe before disconnecting too: both broadcasts can arrive before
+      // the asynchronous join/disconnect helpers return control to this test.
+      const secondLeft = waitForEvent(participant, 'presence', count => count === 1);
       try {
-        assert.equal(await waitForEvent(display, 'presence', count => count === 2), 2);
+        assert.equal(await secondJoined, 2);
       } finally {
         second.disconnect();
       }
-      assert.equal(await waitForEvent(participant, 'presence', count => count === 1), 1);
+      assert.equal(await secondLeft, 1);
 
       // Even if it claims an identity, it cannot vote, add anything or moderate.
       display.emit('identify', seed.slug, 'seed-display');
