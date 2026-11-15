@@ -3014,7 +3014,9 @@ test('Brainstorm ratings broadcast as aggregates without exposing who voted', as
       (questions) => questions[0] && questions[0].reactionsEnabled === true,
       'reactions enabled'
     );
-    mod.emit('setResponseRating', topic, responseId, 'quality', 1, 'user-early');
+    // Socket handlers run concurrently: finish the rejected rating before
+    // enabling feedback, so this checks disabled feedback rather than a race.
+    assert.deepEqual(await emitWithAck(mod, 'setResponseRating', topic, responseId, 'quality', 1, 'user-early'), { updated: false });
     mod.emit('setDiscussionFlags', topic, { reactions_enabled: true }, token);
     const afterEnable = (await enabledUpdate)[0].votes[0];
     assert.equal(afterEnable.qualityUp, 0, 'rating before enabling reactions must be rejected');
@@ -3394,6 +3396,81 @@ test('Brainstorm ratings, reactions, and comments are rejected once the discussi
     participant.disconnect();
   }
 });
+
+async function waitForFeedbackLockWait(fragment) {
+  const deadline = Date.now() + 1000;
+  while (Date.now() < deadline) {
+    const result = await pool.query("SELECT count(*)::int AS n FROM pg_stat_activity WHERE pid <> pg_backend_pid() AND datname = current_database() AND wait_event_type = 'Lock' AND query ILIKE $1", [`%${fragment}%`]);
+    if (result.rows[0].n) return true;
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  return false;
+}
+
+for (const action of ['quality', 'agreement', 'reaction', 'comment']) {
+  test(`a ${action} waiting for a moderator lock cannot write feedback`, async () => {
+    const created = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic(`feedback-lock-${action}`) });
+    await pool.query('UPDATE discussions SET reactions_enabled = TRUE, reactions_visible = TRUE, comments_enabled = TRUE WHERE id = $1', [created.body.id]);
+    const q = (await pool.query("INSERT INTO questions (discussion_id, text, type) VALUES ($1, 'Feedback', 'Open Ended') RETURNING id", [created.body.id])).rows[0];
+    const response = (await pool.query("INSERT INTO votes (question_id, user_id, value) VALUES ($1, 'author', 'A response') RETURNING id", [q.id])).rows[0];
+    const { socket } = await joinAs(created.body.slug, 'critic');
+    const blocker = await pool.connect();
+    try {
+      await blocker.query('BEGIN');
+      await blocker.query('UPDATE discussions SET locked = TRUE WHERE id = $1', [created.body.id]);
+      let comment;
+      if (action === 'comment') comment = emitWithAck(socket, 'addResponseComment', created.body.slug, response.id, 'A comment', 'critic', 'Critic', 'custom');
+      else if (action === 'reaction') socket.emit('toggleResponseReaction', created.body.slug, response.id, 'crux', 'critic');
+      else socket.emit('setResponseRating', created.body.slug, response.id, action, action === 'quality' ? 1 : 'Agree', 'critic');
+      const waited = await waitForFeedbackLockWait('FOR SHARE OF d');
+      await blocker.query('COMMIT');
+      if (comment) assert.equal((await comment).added, false);
+      await emitWithAck(socket, 'getBrainstormState', created.body.slug, 'critic');
+      for (const table of ['response_votes', 'response_ratings', 'response_reactions', 'response_comments']) {
+        assert.equal((await pool.query(`SELECT count(*)::int AS n FROM ${table} WHERE response_id = $1`, [response.id])).rows[0].n, 0, `${table} stays unchanged`);
+      }
+      assert.equal(waited, true, 'feedback validation waits for the moderator transaction');
+    } finally {
+      await blocker.query('ROLLBACK');
+      blocker.release();
+      socket.disconnect();
+    }
+  });
+}
+
+for (const [action, table] of [['quality', 'response_ratings'], ['reaction', 'response_reactions'], ['comment', 'response_comments']]) {
+  test(`a moderator lock waits for an in-progress ${action} write`, async () => {
+    const created = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic(`feedback-write-${action}`) });
+    await pool.query('UPDATE discussions SET reactions_enabled = TRUE, reactions_visible = TRUE, comments_enabled = TRUE WHERE id = $1', [created.body.id]);
+    const q = (await pool.query("INSERT INTO questions (discussion_id, text, type) VALUES ($1, 'Feedback', 'Open Ended') RETURNING id", [created.body.id])).rows[0];
+    const response = (await pool.query("INSERT INTO votes (question_id, user_id, value) VALUES ($1, 'author', 'A response') RETURNING id", [q.id])).rows[0];
+    const { socket } = await joinAs(created.body.slug, 'critic');
+    const blocker = await pool.connect();
+    try {
+      await blocker.query('BEGIN');
+      await blocker.query(`LOCK TABLE ${table} IN SHARE MODE`);
+      let comment;
+      if (action === 'comment') comment = emitWithAck(socket, 'addResponseComment', created.body.slug, response.id, 'A comment', 'critic', 'Critic', 'custom');
+      else if (action === 'reaction') socket.emit('toggleResponseReaction', created.body.slug, response.id, 'crux', 'critic');
+      else socket.emit('setResponseRating', created.body.slug, response.id, 'quality', 1, 'critic');
+      assert.equal(await waitForFeedbackLockWait(table), true, 'feedback write reached its transaction gate');
+      let locked = false;
+      const locking = pool.query('UPDATE discussions SET locked = TRUE WHERE id = $1', [created.body.id]).then(() => { locked = true; });
+      const waited = await waitForFeedbackLockWait('UPDATE discussions SET locked');
+      const committedEarly = locked;
+      await blocker.query('COMMIT');
+      await locking;
+      if (comment) assert.equal((await comment).added, true);
+      assert.equal(waited, true, 'moderator lock waits until the feedback write commits');
+      assert.equal(committedEarly, false);
+      assert.equal((await pool.query(`SELECT count(*)::int AS n FROM ${table} WHERE response_id = $1`, [response.id])).rows[0].n, 1);
+    } finally {
+      await blocker.query('ROLLBACK');
+      blocker.release();
+      socket.disconnect();
+    }
+  });
+}
 
 test('moderator-only mode lets only moderators add questions while voting stays open', async () => {
   const topic = uniqueTopic('mod-only-questions');
