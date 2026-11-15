@@ -116,7 +116,8 @@ test('the moderator moves or hides the display QR code and shows one question at
     await qrSetting.selectOption('hidden');
     await expect(qr).toHaveCount(0);
     await expect(page.getByTestId('display-join-link')).toHaveCount(0);
-    await expect(page.getByText('0 people here now', { exact: true })).toBeVisible();
+    // The header keeps its count; the moderator's own page is the one person here.
+    await expect(page.getByText('1 person here now', { exact: true })).toBeVisible();
 
     // One question at a time: the newest, until the moderator pins one.
     await layoutSetting.selectOption('focus');
