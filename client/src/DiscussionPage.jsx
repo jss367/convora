@@ -1594,6 +1594,33 @@ const DiscussionPage = () => {
                         >
                             Open room display
                         </a>
+                        {/* How the room display presents itself. Set here, so
+                            nobody has to walk up to the shared screen. */}
+                        <label className="flex items-center gap-1.5 font-medium text-indigo-800">
+                            Display QR
+                            <select
+                                value={discussionState.displayQr || 'full'}
+                                onChange={(e) => socket.emit('setDisplaySettings', discussionSlug, { qr: e.target.value }, adminToken)}
+                                title="How the room display shows the join QR code"
+                                className="px-2 py-1 rounded bg-white border border-indigo-300 text-indigo-700 font-normal"
+                            >
+                                <option value="full">Large</option>
+                                <option value="corner">Small, in a corner</option>
+                                <option value="hidden">Hidden</option>
+                            </select>
+                        </label>
+                        <label className="flex items-center gap-1.5 font-medium text-indigo-800">
+                            Display shows
+                            <select
+                                value={discussionState.displayLayout || 'all'}
+                                onChange={(e) => socket.emit('setDisplaySettings', discussionSlug, { layout: e.target.value }, adminToken)}
+                                title="One question shows the first pinned question, or the newest one when nothing is pinned"
+                                className="px-2 py-1 rounded bg-white border border-indigo-300 text-indigo-700 font-normal"
+                            >
+                                <option value="all">All questions</option>
+                                <option value="focus">One question</option>
+                            </select>
+                        </label>
                         {/* Color theme picker: clicking a swatch recolors the
                             discussion for everyone in the room. */}
                         <div className="flex items-center gap-1.5 pl-1" role="group" aria-label="Color theme">

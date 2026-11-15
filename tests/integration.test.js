@@ -1233,6 +1233,39 @@ function assertDisplayHidden(question, responseCount, label) {
   assertResultsHidden(rest, label);
 }
 
+test('a moderator sets how the room display shows the QR code and questions', async () => {
+  const created = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('display-settings') });
+  const { slug, adminToken } = created.body;
+  const display = await connectSocket();
+  const mod = await connectSocket();
+  try {
+    const initial = waitForEvent(display, 'discussionState', () => true);
+    display.emit('joinDisplay', slug);
+    const state = await initial;
+    assert.equal(state.displayQr, 'full');
+    assert.equal(state.displayLayout, 'all');
+
+    const refused = waitForEvent(display, 'error', error => /not authorized/i.test(error.message));
+    display.emit('setDisplaySettings', slug, { qr: 'hidden' }, 'not-the-token');
+    await refused;
+
+    const rejected = waitForEvent(mod, 'error', error => /room display setting/i.test(error.message));
+    mod.emit('setDisplaySettings', slug, { qr: 'huge' }, adminToken);
+    await rejected;
+
+    // Each field changes on its own and leaves the other alone.
+    const corner = waitForEvent(display, 'discussionState', s => s.displayQr === 'corner');
+    mod.emit('setDisplaySettings', slug, { qr: 'corner' }, adminToken);
+    assert.equal((await corner).displayLayout, 'all');
+    const focus = waitForEvent(display, 'discussionState', s => s.displayLayout === 'focus');
+    mod.emit('setDisplaySettings', slug, { layout: 'focus' }, adminToken);
+    assert.equal((await focus).displayQr, 'corner');
+  } finally {
+    display.disconnect();
+    mod.disconnect();
+  }
+});
+
 test('a room display shows response counts but no results while results are shown after voting', async () => {
   const seed = await seedResultsDiscussion('display-hidden');
   const { socket: display, questions: initial } = await joinDisplay(seed.slug);

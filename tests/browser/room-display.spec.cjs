@@ -59,12 +59,14 @@ test('the room display shows response counts but no results until the moderator 
 
     // Always show results: the displays switch to live results at once.
     await moderator.getByRole('combobox').filter({ has: moderator.locator('option[value="after_vote"]') }).selectOption('always');
-    await expect(question.getByText('Strongly Agree: 1', { exact: true })).toBeVisible();
-    await expect(question.getByText('Agree: 1', { exact: true })).toBeVisible();
-    await expect(question.getByText('Disagree: 1', { exact: true })).toBeVisible();
-    await expect(popup.getByTestId('display-question').getByText(/3 votes · 67% agree/)).toBeVisible();
+    // Each option is its own labelled bar, drawn for the big screen.
+    await expect(question.getByLabel('Strongly Agree: 1, 33%', { exact: true })).toBeVisible();
+    await expect(question.getByLabel('Agree: 1, 33%', { exact: true })).toBeVisible();
+    await expect(question.getByLabel('Disagree: 1, 33%', { exact: true })).toBeVisible();
+    await expect(question.getByTestId('display-results-hidden')).toHaveCount(0);
+    await expect(popup.getByTestId('display-question').getByText(/67% agree/)).toBeVisible();
     await page.getByRole('button', { name: 'Vote Strongly Agree on "Room display question"', exact: true, pressed: true }).click();
-    await expect(question.getByText('Strongly Agree: 0', { exact: true })).toBeVisible();
+    await expect(question.getByLabel('Strongly Agree: 0, 0%', { exact: true })).toBeVisible();
     await expect(question.getByText('2 responses', { exact: true })).toBeVisible();
     // Participants still count once each: the participant and the moderator.
     await expect(display.getByText('2 people here now', { exact: true })).toBeVisible();
@@ -87,6 +89,54 @@ test('the room display shows written responses and the discussion title', async 
   await expect(page.getByText('0 people here now', { exact: true })).toBeVisible();
 });
 
+test('the moderator moves or hides the display QR code and shows one question at a time', async ({ page, browser, rooms }) => {
+  const room = await rooms.create('Display controls', 'Agreement');
+  await rooms.pool.query(
+    'INSERT INTO questions (discussion_id, text, type) VALUES ($1, $2, $3)',
+    [room.id, 'Newest display question', 'Open Ended']
+  );
+  const moderatorContext = await browser.newContext();
+  try {
+    await page.goto(`/discussion/${room.slug}/display`);
+    const qr = page.getByRole('img', { name: /^QR code to join/ });
+    await expect(qr).toBeVisible();
+    await expect(page.getByTestId('display-question')).toHaveCount(2);
+
+    const moderator = await moderatorContext.newPage();
+    await moderator.goto(`/discussion/${room.slug}?admin=${room.adminToken}`);
+    const qrSetting = moderator.getByLabel('Display QR');
+    const layoutSetting = moderator.getByLabel('Display shows');
+
+    // A small QR code in the header still lets people join.
+    await qrSetting.selectOption('corner');
+    await expect(page.getByTestId('display-header').getByTestId('display-join')).toBeVisible();
+    await expect(qr).toBeVisible();
+    await expect(page.getByTestId('display-join-link')).toBeVisible();
+
+    await qrSetting.selectOption('hidden');
+    await expect(qr).toHaveCount(0);
+    await expect(page.getByTestId('display-join-link')).toHaveCount(0);
+    await expect(page.getByText('0 people here now', { exact: true })).toBeVisible();
+
+    // One question at a time: the newest, until the moderator pins one.
+    await layoutSetting.selectOption('focus');
+    const shown = page.getByTestId('display-question');
+    await expect(shown).toHaveCount(1);
+    await expect(shown.getByRole('heading', { name: 'Newest display question' })).toBeVisible();
+    await rooms.pool.query('UPDATE questions SET pinned = TRUE WHERE discussion_id = $1 AND type = $2', [room.id, 'Agreement']);
+    await moderator.getByLabel('Display QR').selectOption('full');
+    await page.reload();
+    await expect(shown).toHaveCount(1);
+    await expect(shown.getByRole('heading', { name: /Display controls question/ })).toBeVisible();
+    await expect(qr).toBeVisible();
+
+    await layoutSetting.selectOption('all');
+    await expect(page.getByTestId('display-question')).toHaveCount(2);
+  } finally {
+    await moderatorContext.close();
+  }
+});
+
 test('the room display says when the discussion does not exist', async ({ page }) => {
   await page.goto('/discussion/no-such-discussion-for-the-display/display');
   await expect(page.getByText('Discussion not found', { exact: true })).toBeVisible();
@@ -104,14 +154,15 @@ test('the room display preserves a numerical range ending at zero', async ({ pag
   );
   await page.goto(`/discussion/${room.slug}/display`);
   const question = page.getByTestId('display-question');
-  await expect(question.getByText('2 responses · average -50.0', { exact: true })).toBeVisible();
-  const axis = question.locator('.ml-7.flex.justify-between');
-  await expect(axis.locator('span')).toHaveText(['-100', '0']);
+  await expect(question.getByText('2 responses', { exact: true })).toBeVisible();
+  await expect(question.getByText('Average -50', { exact: true })).toBeVisible();
+  await expect(question.getByTestId('display-histogram-axis').locator('span'))
+    .toHaveText(['-100', '-80', '-60', '-40', '-20', '0']);
   // The two endpoints must land in opposite end bins of the actual range.
-  const bars = question.locator('[title$=" response"], [title$=" responses"]');
+  const bars = question.getByTestId('display-histogram-bin');
   await expect(bars).toHaveCount(10);
-  await expect(bars.first()).toHaveAttribute('title', '1 response');
-  await expect(bars.last()).toHaveAttribute('title', '1 response');
+  await expect(bars.first()).toHaveAttribute('aria-label', '1 response');
+  await expect(bars.last()).toHaveAttribute('aria-label', '1 response');
 });
 
 // A fake Screen Wake Lock API that counts the locks held, and releases them
@@ -259,8 +310,8 @@ test('the moderator shows and hides one question\'s results on the room display'
     await expect(hide).toHaveAttribute('aria-pressed', 'true');
 
     // Revealed for the room and for someone who has not voted.
-    await expect(question.getByText('Agree: 1', { exact: true })).toBeVisible();
-    await expect(question.getByText('Disagree: 1', { exact: true })).toBeVisible();
+    await expect(question.getByLabel('Agree: 1, 50%', { exact: true })).toBeVisible();
+    await expect(question.getByLabel('Disagree: 1, 50%', { exact: true })).toBeVisible();
     await expect(participant.getByText('Results appear after you vote', { exact: true })).toHaveCount(0);
     await expect(participant.getByText('2 votes', { exact: false })).toBeVisible();
 
@@ -271,7 +322,7 @@ test('the moderator shows and hides one question\'s results on the room display'
 
     // With results always shown there is nothing to reveal.
     await page.getByRole('combobox').filter({ has: page.locator('option[value="after_vote"]') }).selectOption('always');
-    await expect(question.getByText('Agree: 1', { exact: true })).toBeVisible();
+    await expect(question.getByLabel('Agree: 1, 50%', { exact: true })).toBeVisible();
     await expect(page.getByRole('button', { name: /^(Show|Hide) results$/ })).toHaveCount(0);
   } finally {
     await displayContext.close();

@@ -177,6 +177,7 @@ async function getDiscussionState(topic) {
   const slug = slugifyTopic(topic);
   const result = await pool.query(
     `SELECT locked, moderator_only_questions, theme, reaction_keys, results_visibility, listed,
+            display_qr, display_layout,
             admin_token IS NOT NULL AS has_moderator,
             reactions_enabled, reactions_visible, comments_enabled
        FROM discussions WHERE slug = $1`,
@@ -189,6 +190,8 @@ async function getDiscussionState(topic) {
       reactionKeys: [...DEFAULT_REACTION_KEYS],
       resultsVisibility: DEFAULT_RESULTS_VISIBILITY,
       listed: false,
+      displayQr: DISPLAY_QR_MODES[0],
+      displayLayout: DISPLAY_LAYOUTS[0],
     };
   }
   const row = result.rows[0];
@@ -203,8 +206,18 @@ async function getDiscussionState(topic) {
     reactionKeys: resolveReactionKeys(row.reaction_keys),
     resultsVisibility: resolveResultsVisibility(row.results_visibility),
     listed: row.listed === true,
+    displayQr: DISPLAY_QR_MODES.includes(row.display_qr) ? row.display_qr : DISPLAY_QR_MODES[0],
+    displayLayout: DISPLAY_LAYOUTS.includes(row.display_layout) ? row.display_layout : DISPLAY_LAYOUTS[0],
   };
 }
+
+// The room display's presentation, chosen by the moderator so nobody has to
+// touch the shared screen. The first entry of each is the default.
+// displayQr: the join QR code large in a sidebar, small in a corner, or hidden.
+// displayLayout: every question, or one at a time (the first pinned question,
+// otherwise the newest).
+const DISPLAY_QR_MODES = ['full', 'corner', 'hidden'];
+const DISPLAY_LAYOUTS = ['all', 'focus'];
 
 async function emitDiscussionState(topic) {
   audience(topic).emit('discussionState', await getDiscussionState(topic));
@@ -857,6 +870,38 @@ io.on('connection', (socket) => {
     } catch (error) {
       logError('Error deleting question:', error);
       socket.emit('error', { message: 'Failed to delete question' });
+    }
+  });
+
+  // Moderator-only: change how the room display presents itself. Either field
+  // may be left out to keep its current value. The settings ride
+  // discussionState, which the display's room receives too.
+  socket.on('setDisplaySettings', async (topic, settings, token) => {
+    const discussionSlug = slugifyTopic(topic);
+    try {
+      const discussionId = await verifyAdmin(discussionSlug, token);
+      if (!discussionId) {
+        socket.emit('error', { message: 'Not authorized to moderate this discussion.' });
+        return;
+      }
+      const { qr, layout } = settings && typeof settings === 'object' ? settings : {};
+      if ((qr !== undefined && !DISPLAY_QR_MODES.includes(qr))
+          || (layout !== undefined && !DISPLAY_LAYOUTS.includes(layout))
+          || (qr === undefined && layout === undefined)) {
+        socket.emit('error', { message: 'Unknown room display setting.' });
+        return;
+      }
+      await pool.query(
+        `UPDATE discussions
+            SET display_qr = COALESCE($1, display_qr),
+                display_layout = COALESCE($2, display_layout)
+          WHERE id = $3`,
+        [qr ?? null, layout ?? null, discussionId]
+      );
+      await emitDiscussionState(discussionSlug);
+    } catch (error) {
+      logError('Error setting room display settings:', error);
+      socket.emit('error', { message: 'Failed to update discussion' });
     }
   });
 
