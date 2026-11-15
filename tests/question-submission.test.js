@@ -11,12 +11,14 @@ function setup(draft = defaultDraft()) {
   const source = fs.readFileSync(require.resolve('../client/src/DiscussionPage.jsx'), 'utf8');
   const start = source.indexOf('    const submitQuestion =');
   const end = source.indexOf('    const handlePostAnyway =', start);
+  // The handler resets to the page's own blank draft, so run that too.
+  const blankDraft = source.match(/const emptyQuestionDraft = [^;]*;/)[0];
   const state = { draft, sent: [], error: null };
   const context = {
     questionDraft: draft,
     questionPendingRef: { current: false }, discussionSlug: 'room', adminToken: null,
     QuestionTypes: { AGREEMENT: 'Agreement', NUMERICAL: 'Numerical', MULTIPLE_CHOICE: 'Multiple Choice' }, console,
-    emptyQuestionDraft: () => ({ text: '', type: 'Agreement', minValue: 0, maxValue: 100, options: ['', ''] }),
+    emptyQuestionDraft: () => ({ text: '', type: 'Agreement', minValue: 0, maxValue: 100, options: ['', ''], typeChosen: false }),
     MULTIPLE_CHOICE_LIMITS: { MIN_OPTIONS: 2, MAX_OPTIONS: 6, MAX_OPTION_LENGTH: 100 },
     validateChoiceOptions: options => ({ options: options.map(option => option.trim()) }),
     setError: value => { state.error = value; },
@@ -26,7 +28,7 @@ function setup(draft = defaultDraft()) {
       emit(...args) { state.sent.push(args); },
     },
   };
-  const handler = vm.runInNewContext(`${source.slice(start, end)}\nsubmitQuestion`, context);
+  const handler = vm.runInNewContext(`${blankDraft}\n${source.slice(start, end)}\nsubmitQuestion`, context);
   const submit = (question = { ...state.draft }, force = false) => {
     context.questionDraft = state.draft;
     handler(question, force);
@@ -42,7 +44,7 @@ test('question submissions wait for acknowledgment and reset an untouched draft 
   submit();
   assert.equal(state.sent.length, 1);
   ack(null, { added: true });
-  assert.deepEqual(plain(state.draft), { text: '', type: 'Agreement', minValue: 0, maxValue: 100, options: ['', ''] });
+  assert.deepEqual(plain(state.draft), { text: '', type: 'Agreement', minValue: 0, maxValue: 100, options: ['', ''], typeChosen: false });
 });
 
 for (const [label, edits] of [
@@ -116,5 +118,5 @@ test('an untouched Multiple Choice draft resets once its submission is acknowled
   const { state, submit, ack } = setup(original);
   submit({ text: 'p(doom)?', type: 'Multiple Choice', options: ['Higher', 'Lower'] });
   ack(null, { added: true });
-  assert.deepEqual(plain(state.draft), { text: '', type: 'Agreement', minValue: 0, maxValue: 100, options: ['', ''] });
+  assert.deepEqual(plain(state.draft), { text: '', type: 'Agreement', minValue: 0, maxValue: 100, options: ['', ''], typeChosen: false });
 });
