@@ -302,11 +302,47 @@ function restViewer(req) {
 // displays get the display view, whatever else their socket has claimed.
 // `isCurrent`, given with `onlySocket`, is checked once the data has loaded; a
 // caller whose request has been superseded meanwhile sends nothing.
-async function emitQuestions(topic, onlySocket = null, isCurrent = () => true) {
+//
+// Room-wide sends for one discussion run one at a time. Overlapping sends could
+// finish out of order, and an older payload arriving last would undo a newer
+// change, such as a moderator hiding results again. A request made while one is
+// running marks the room for one more send, which starts after it and so reads
+// the change; requests made meanwhile share that send. A send to one socket
+// that a room-wide send overtakes is dropped: the socket is in the room already
+// and gets the newer payload.
+const questionBroadcasts = new Map(); // slug -> { runs, active, again }
+
+function emitQuestions(topic, onlySocket = null, isCurrent = () => true) {
   const slug = slugifyTopic(topic);
+  let room = questionBroadcasts.get(slug);
+  if (onlySocket) return sendQuestions(slug, onlySocket, isCurrent, room?.runs || 0);
+  if (!room) {
+    room = { runs: 0, active: null, again: false };
+    questionBroadcasts.set(slug, room);
+  }
+  if (room.active) {
+    room.again = true;
+    return room.active;
+  }
+  room.active = (async () => {
+    try {
+      do {
+        room.again = false;
+        room.runs += 1;
+        await sendQuestions(slug, null);
+      } while (room.again);
+    } finally {
+      room.active = null;
+    }
+  })();
+  return room.active;
+}
+
+async function sendQuestions(slug, onlySocket, isCurrent = () => true, runsAtStart = 0) {
   const respondents = new Map();
   const questions = await getQuestions(slug, { respondents });
   const access = await getResultsAccess(slug);
+  if (onlySocket && (questionBroadcasts.get(slug)?.runs || 0) !== runsAtStart) return;
   if (onlySocket && !isCurrent()) return;
   if (access.alwaysShow) {
     if (onlySocket?.data.isDisplay && onlySocket.data.display !== slug) return;
