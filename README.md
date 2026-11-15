@@ -30,10 +30,9 @@ and can change or undo it like an Agreement or Yes/No vote.
 
 A new discussion is unlisted: it's reachable only through its link or short
 link, so share the link with the people you want to take part. To let anyone
-find it, tick **List publicly on this page** when you create it, or click
-**List publicly** in the moderator bar later. Listed discussions appear under
-**Public Discussions** on the home page, newest first. Click **Listed publicly**
-to take a discussion off the list; its link keeps working either way. A
+find it, turn on **Listed publicly** in the moderator controls. Listed
+discussions appear under **Public Discussions** on the home page, newest first.
+Turn it off to take a discussion off the list; its link keeps working either way. A
 duplicated discussion starts unlisted.
 
 The home page shows **Your Discussions**: the ones this browser created or
@@ -51,10 +50,10 @@ percentages and histogram only for questions they have answered. Seeing the
 room's answer first pulls people toward it, and it would spoil the "before"
 half of an opinion snapshot. Undoing a vote hides that question's results again.
 
-A moderator can change this in the moderator bar, under **Results**:
+A moderator can change this in the moderator controls, under **Results shown**:
 
-- **Show results after you vote** is the default, for new and existing discussions.
-- **Always show results** shows every result to everyone.
+- **After voting** is the default, for new and existing discussions.
+- **Always** shows every result to everyone.
 
 With **Show results after you vote**, a moderator can also reveal one question
 at a time: click **Show results** on the question to show its results to
@@ -71,7 +70,7 @@ itself, not a tally, and Brainstorm reactions keep their own moderator toggles.
 ## Room display
 
 To show a discussion on a shared TV or projector while people vote on their
-phones, click **Open room display** in the moderator bar. This opens
+phones, click **Open room display** in the moderator controls. This opens
 `/discussion/<discussion>/display` in a new tab. It shows the discussion title, a
 large QR code and join link, the questions as they come in, how many people are
 here now, and how many responses each question has.
@@ -93,7 +92,7 @@ moderator's browser. It follows the **Results** setting:
   for numerical questions. While results are hidden, a multiple choice question
   still lists its options under the response count.
 
-Two moderator bar settings change the display from wherever the moderator is
+Two moderator settings change the display from wherever the moderator is
 sitting, so nobody has to touch the shared screen:
 
 - **Display QR**: the join QR code and link **Large** in a sidebar (the

@@ -139,7 +139,7 @@ test('the similar-statement prompt is a modal dialog that closes on Escape', asy
 test('Share and Duplicate stay above the floating QR and contain background focus', async ({ page, rooms }) => {
   const room = await rooms.create('Modal above QR');
   await page.goto(`/discussion/${room.slug}?admin=${encodeURIComponent(room.adminToken)}`);
-  await page.getByRole('button', { name: 'Show join QR', exact: true }).click();
+  await page.getByRole('switch', { name: 'Join QR on this page', exact: true }).click();
   const resize = page.getByRole('slider', { name: 'Resize join QR code', exact: true });
   await expect(resize).toBeVisible();
   for (const name of ['Share this discussion', 'Duplicate Discussion']) {
