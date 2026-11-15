@@ -47,7 +47,7 @@ test('question editing, numerical and binary voting, and brainstorm comments sti
   try {
     await pool.query("UPDATE discussions SET comments_enabled = TRUE, reactions_enabled = TRUE WHERE id = $1", [discussion.id]);
     await pool.query(
-      "INSERT INTO questions (discussion_id, text, type) VALUES ($1, 'Ideas to try', 'Brainstorm')", [discussion.id]
+      "INSERT INTO questions (discussion_id, text, type) VALUES ($1, 'Ideas to try', 'Open Ended')", [discussion.id]
     );
     await page.goto(`/discussion/${discussion.slug}?admin=${discussion.adminToken}`);
     await page.getByRole('button', { name: 'Edit', exact: true }).click();
@@ -55,9 +55,9 @@ test('question editing, numerical and binary voting, and brainstorm comments sti
     await page.getByRole('button', { name: 'Save', exact: true }).click();
     await expect(page.getByRole('heading', { name: 'Ideas worth trying', exact: true })).toBeVisible();
 
-    await page.getByPlaceholder('Add an idea (you can add as many as you like)').fill('A helpful idea');
-    await page.getByRole('button', { name: 'Add Idea', exact: true }).click();
-    await expect(page.getByRole('listitem').getByText('A helpful idea (You)', { exact: true })).toBeVisible();
+    await page.getByPlaceholder('Enter a response').fill('A helpful idea');
+    await page.getByRole('button', { name: 'Add Response', exact: true }).click();
+    await expect(page.getByRole('listitem').getByText('A helpful idea', { exact: true })).toBeVisible();
     await expect(page.getByText('No agreement votes yet.', { exact: true })).toBeVisible();
     await page.getByPlaceholder('Add a comment').fill('A useful follow-up');
     await page.getByRole('button', { name: 'Post', exact: true }).click();

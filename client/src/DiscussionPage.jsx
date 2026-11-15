@@ -11,10 +11,10 @@ import { slugifyTopic } from './slugs';
 import OpinionSnapshots from './OpinionSnapshots';
 import ModeratorLinkPanel, { ModeratorLinkUnsavedMark, moderatorLinkPromptState, useModeratorLinkPrompt } from './ModeratorLinkPanel';
 import { downloadForViewer } from './viewer';
-import OpenEndedQuestion from './questions/OpenEndedQuestion';
+import ResponseSettings from './questions/ResponseSettings';
 import QuestionEditor from './questions/QuestionEditor';
 import { AgreementResults, YesNoResults } from './questions/OpinionResults';
-import BrainstormQuestion from './questions/BrainstormQuestion';
+import OpenEndedQuestion from './questions/OpenEndedQuestion';
 import NumericalResults from './questions/NumericalResults';
 import { clampNumericalValue, sortQuestionsMostRecent } from './questions/questionHelpers.mjs';
 import {
@@ -141,7 +141,7 @@ const DiscussionPage = () => {
     const closeParticipants = useCallback(() => setShowParticipants(false), []);
     const {
         identity, userId, displayName, effectivePseudonym, pseudonymReserved,
-        shufflePending, selfHandle, ownedVoteIds, upvotedVoteIds, ownedCommentIds,
+        shufflePending, selfHandle, ownedVoteIds, ownedCommentIds,
         isMyVote, handlePseudonymSync, handleRegeneratePseudonym,
         handleSelectNameMode, handleCustomNameChange,
     } = useParticipantIdentity(socket, { topic, discussionSlug, discussionId: discussion?.id, questions });
@@ -706,6 +706,8 @@ const DiscussionPage = () => {
             text: newQuestion.trim(),
             type: questionType,
             timestamp: Date.now(),
+            maxResponses: questionDraft.maxResponses,
+            showAttribution: questionDraft.showAttribution,
         };
 
         // Handle numerical questions
@@ -770,7 +772,7 @@ const DiscussionPage = () => {
     };
 
     // onResult is optional. The server acks a stored vote with { added: true }
-    // and a repeated Brainstorm idea with { added: false, reason: 'duplicate' }.
+    // and free-text limits with { added: false, reason: 'limit' }.
     const handleVote = (questionId, value, onResult) => {
         // Send the name mode too: in pseudonym mode the server persists our
         // reserved handle instead of this possibly-pre-reservation displayName,
@@ -806,10 +808,6 @@ const DiscussionPage = () => {
 
     const handleSliderChange = (questionId, value) => {
         setSliderValues(prev => ({ ...prev, [questionId]: value }));
-    };
-
-    const handleResponseVote = (responseId) => {
-        socket.emit('toggleResponseVote', discussionSlug, responseId, userId);
     };
 
     // Set/clear one axis of this user's rating on a brainstorm idea. Toggles off
@@ -1063,10 +1061,7 @@ const DiscussionPage = () => {
                 );
             }
             case QuestionTypes.OPEN_ENDED: {
-                return <OpenEndedQuestion question={question} userVote={userVote} handleVote={handleVote} pending={votePending} ownedVoteIds={ownedVoteIds} upvotedVoteIds={upvotedVoteIds} handleResponseVote={handleResponseVote} locked={locked} isAdmin={isAdmin} onModeratorDeleteVote={handleModeratorDeleteVote} />;
-            }
-            case QuestionTypes.BRAINSTORM: {
-                return <BrainstormQuestion
+                return <OpenEndedQuestion
                     question={question}
                     ownedVoteIds={ownedVoteIds}
                     ownedCommentIds={ownedCommentIds}
@@ -1646,7 +1641,7 @@ const DiscussionPage = () => {
                             every brainstorm prompt at once (read silently, then
                             open reactions, then open comments). */}
                         <span className="w-px self-stretch bg-indigo-200" aria-hidden="true" />
-                        <span className="text-indigo-700">Brainstorms:</span>
+                        <span className="text-indigo-700">Response feedback:</span>
                         <button
                             onClick={() => handleSetDiscussionFlags({ reactions_enabled: !discussionState.reactionsEnabled })}
                             className="px-3 py-1 rounded bg-white border border-indigo-300 text-indigo-700 hover:bg-indigo-100"
@@ -1917,6 +1912,7 @@ const DiscussionPage = () => {
                         <p className="mt-2 text-sm text-gray-500">{QuestionTypeDescriptions[questionType]}</p>
                     )}
                 </div>
+                {questionType === QuestionTypes.OPEN_ENDED && <ResponseSettings maxResponses={questionDraft.maxResponses} showAttribution={questionDraft.showAttribution} onChange={updateQuestionDraft} />}
                 {questionType === QuestionTypes.NUMERICAL && (
                     <div className="mb-4 flex space-x-4">
                         <div className="flex-1">

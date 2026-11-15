@@ -72,7 +72,7 @@ function normalizeQuestionPayload(question) {
   }
 
   const text = String(question.text ?? '').trim();
-  const type = question.type;
+  const type = question.type === 'Brainstorm' ? 'Open Ended' : question.type;
   if (!text || !VALID_QUESTION_TYPES.has(type)) {
     return null;
   }
@@ -87,7 +87,12 @@ function normalizeQuestionPayload(question) {
     }
   }
 
+  const maxResponses = question.maxResponses == null || question.maxResponses === '' ? null : parseIntegerInput(question.maxResponses);
+  if (maxResponses !== null && (!Number.isSafeInteger(maxResponses) || maxResponses < 1 || maxResponses > 2147483647)) return null;
+  if (question.showAttribution !== undefined && typeof question.showAttribution !== 'boolean') return null;
   return {
+    maxResponses: type === 'Open Ended' ? maxResponses : null,
+    showAttribution: question.showAttribution !== false,
     text,
     type,
     minValue,

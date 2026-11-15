@@ -2,8 +2,7 @@ export const QuestionTypes = {
     AGREEMENT: 'Agreement',
     YES_NO: 'Yes/No',
     NUMERICAL: 'Numerical',
-    OPEN_ENDED: 'Open Ended',
-    BRAINSTORM: 'Brainstorm'
+    OPEN_ENDED: 'Open Ended'
 };
 
 // Shown under the type picker so creators understand what each type does.
@@ -11,8 +10,7 @@ export const QuestionTypeDescriptions = {
     [QuestionTypes.AGREEMENT]: 'Each participant picks one option on the five-point scale from Strongly Agree to Strongly Disagree.',
     [QuestionTypes.YES_NO]: 'Each participant picks a simple Yes or No — a binary alternative to the five-point agreement scale.',
     [QuestionTypes.NUMERICAL]: 'Each participant submits a single number on a slider between your min and max.',
-    [QuestionTypes.OPEN_ENDED]: 'Each participant gives one free-text response, which they can edit later. One answer per person.',
-    [QuestionTypes.BRAINSTORM]: 'Each participant can add as many separate ideas as they want, and remove their own. Many answers per person.'
+    [QuestionTypes.OPEN_ENDED]: 'Participants can add, edit, and delete multiple responses, with ratings, reactions, and comments.',
 };
 
 export const VoteOptions = {

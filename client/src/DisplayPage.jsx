@@ -49,18 +49,16 @@ const TalliedResults = ({ question, focus }) => {
 TalliedResults.propTypes = { question: PropTypes.object.isRequired, focus: PropTypes.bool };
 
 const sortedResponses = question => [...(question.votes || [])]
-    .sort((a, b) => (b.upvotes || 0) - (a.upvotes || 0) || a.id - b.id);
+    .sort((a, b) => a.id - b.id);
 
-// Open Ended and Brainstorm responses are the discussion itself, so they are
-// shown as participants see them. Brainstorm ratings and reactions appear only
+// Open Ended responses are shown as participants see them. Ratings and reactions appear only
 // when the moderator has revealed them; the server sends them only then.
 const WrittenResponses = ({ question, reactionKeys, focus }) => {
     const votes = sortedResponses(question);
-    const isBrainstorm = question.type === QuestionTypes.BRAINSTORM;
-    const showReactions = isBrainstorm && question.reactionsEnabled && question.reactionsVisible;
+    const showReactions = question.reactionsEnabled && question.reactionsVisible;
     const shown = votes.slice(0, focus ? MAX_FOCUS_WRITTEN_RESPONSES : MAX_WRITTEN_RESPONSES);
     if (votes.length === 0) {
-        return <p className={`${focus ? 'text-4xl' : 'text-2xl'} text-gray-500`}>{isBrainstorm ? 'No ideas yet' : 'No responses yet'}</p>;
+        return <p className={`${focus ? 'text-4xl' : 'text-2xl'} text-gray-500`}>No responses yet</p>;
     }
     return (
         <div>
@@ -75,14 +73,13 @@ const WrittenResponses = ({ question, reactionKeys, focus }) => {
                             key={vote.id}
                             className={`rounded-lg border-l-8 border-primary bg-gray-50 px-5 py-4 text-gray-900 ${focus ? 'text-4xl' : 'text-2xl'}`}
                         >
+                            {question.showAttribution !== false && <div className="text-sm text-gray-500">{vote.pseudonym || 'Anonymous'}</div>}
                             <div className="flex items-start gap-4">
                                 {showReactions && (
                                     <span className="shrink-0 font-bold tabular-nums text-gray-600">{net > 0 ? `+${net}` : net}</span>
                                 )}
                                 <span className="min-w-0 flex-1 whitespace-pre-wrap break-words leading-snug">{vote.value}</span>
-                                {!isBrainstorm && vote.upvotes > 0 && (
-                                    <span className="shrink-0 font-bold tabular-nums text-gray-600">▲ {vote.upvotes}</span>
-                                )}
+
                             </div>
                             {(reactions.length > 0 || (vote.comments || []).length > 0) && (
                                 <div className={`mt-2 flex flex-wrap gap-4 text-gray-600 ${focus ? 'text-2xl' : 'text-lg'}`}>
@@ -113,7 +110,7 @@ WrittenResponses.propTypes = {
 const countLabel = question => {
     if (TALLIED_TYPES.includes(question.type)) return plural(responseCountOf(question), 'response', 'responses');
     const count = (question.votes || []).length;
-    return question.type === QuestionTypes.BRAINSTORM ? plural(count, 'idea', 'ideas') : plural(count, 'response', 'responses');
+    return plural(count, 'response', 'responses');
 };
 
 const QuestionCard = ({ question, reactionKeys, focus }) => (

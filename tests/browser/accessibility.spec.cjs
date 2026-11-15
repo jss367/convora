@@ -29,14 +29,14 @@ test('vote buttons are named for their option and question and expose the chosen
 });
 
 test('brainstorm agreement buttons have full names, a pressed state, and a visible label on keyboard focus', async ({ page, browser, rooms }) => {
-  const room = await rooms.create('Rated ideas', 'Brainstorm');
+  const room = await rooms.create('Rated ideas', 'Open Ended');
   await rooms.pool.query('UPDATE discussions SET reactions_enabled = TRUE WHERE id = $1', [room.id]);
   const authorContext = await browser.newContext();
   try {
     const author = await authorContext.newPage();
     await author.goto(`http://127.0.0.1:4173/discussion/${room.slug}`);
-    await author.getByPlaceholder('Add an idea (you can add as many as you like)').fill('Longer lunch breaks');
-    await author.getByRole('button', { name: 'Add Idea', exact: true }).click();
+    await author.getByPlaceholder('Enter a response').fill('Longer lunch breaks');
+    await author.getByRole('button', { name: 'Add Response', exact: true }).click();
 
     await page.goto(`/discussion/${room.slug}`);
     const rate = label => page.getByRole('button', { name: `${label}: "Longer lunch breaks"`, exact: true });

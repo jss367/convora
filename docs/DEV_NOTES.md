@@ -7,9 +7,14 @@ Convora uses a single-server setup where the backend Node.js/Express server serv
 The frontend is React and the backend is Node.js.
 
 `votes.js` owns transactional response writes, including serialization of
-simultaneous poll submissions from the same participant. Brainstorm ideas
-remain separate responses. On the wire a `vote` event means "set my answer to
-this value" and is safe to repeat; removing an Agreement or Yes/No vote is the
+simultaneous poll submissions from the same participant. Open Ended responses
+are independent rows. Their `vote` payload is `{ text, requestId }` for creation
+or `{ text, responseId }` for an owned edit. Request IDs prevent transport retries
+from creating extra rows; matching text is deliberately allowed. Per-person limits
+are checked under the same participant/question lock as insertion. Question fields
+`maxResponses` (null for unlimited) and `showAttribution` persist and copy with the
+question. Attribution is stripped on the server when disabled.
+For polls, a `vote` event means "set my answer to this value" and is safe to repeat; removing an Agreement or Yes/No vote is the
 separate `clearVote` event. Both acknowledge with `{ ok }`, which the client uses
 to show a saving state until the answer is handled. `question-data.js` owns question validation and stored
 value parsing, and `reports.js` builds discussion summaries and printable reports

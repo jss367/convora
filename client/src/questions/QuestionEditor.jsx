@@ -1,3 +1,4 @@
+import ResponseSettings from './ResponseSettings';
 import PropTypes from 'prop-types';
 import React, { useState } from 'react';
 import { QuestionTypes, QuestionTypeDescriptions } from './config';
@@ -10,6 +11,7 @@ const QuestionEditor = ({ question, onSave, onCancel }) => {
     const [type, setType] = useState(question.type);
     const [minValue, setMinValue] = useState(question.minValue ?? 0);
     const [maxValue, setMaxValue] = useState(question.maxValue ?? 100);
+    const [settings, setSettings] = useState({ maxResponses: question.maxResponses, showAttribution: question.showAttribution });
     const [error, setError] = useState(null);
     const [saving, setSaving] = useState(false);
 
@@ -19,7 +21,7 @@ const QuestionEditor = ({ question, onSave, onCancel }) => {
             setError('Question text cannot be empty.');
             return;
         }
-        const updates = { text: trimmed, type };
+        const updates = { text: trimmed, type, ...settings };
         if (type === QuestionTypes.NUMERICAL) {
             const min = parseInt(minValue, 10);
             const max = parseInt(maxValue, 10);
@@ -69,6 +71,7 @@ const QuestionEditor = ({ question, onSave, onCancel }) => {
                     <p className="mt-2 text-sm text-gray-500">{QuestionTypeDescriptions[type]}</p>
                 )}
             </div>
+            {type === QuestionTypes.OPEN_ENDED && <ResponseSettings {...settings} onChange={(key, value) => setSettings(prev => ({ ...prev, [key]: value }))} />}
             {type === QuestionTypes.NUMERICAL && (
                 <div className="mb-4 flex space-x-4">
                     <div className="flex-1">

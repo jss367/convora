@@ -721,15 +721,13 @@ io.on('connection', (socket) => {
       // (possibly pre-reservation, colliding) local pick — see canonicalPseudonym.
       const handle = await canonicalPseudonym(discussionSlug, target.discussionId, userId, mode, pseudonym);
       const result = await addVote(questionId, vote, userId, handle);
-      if (result.reason === 'duplicate') {
-        // An identical Brainstorm idea is already listed. Tell the submitter
-        // (via the optional ack) so they can vote on that one instead.
-        reply(false, { added: false, reason: 'duplicate' });
-        socket.emit('error', { message: 'That idea has already been added.' });
+      if (result.reason === 'limit') {
+        reply(false, result);
+        socket.emit('error', { message: 'You have reached the response limit for this question.' });
         return;
       }
       await emitQuestions(discussionSlug);
-      reply(true, target.type === 'Brainstorm' ? { added: true } : {});
+      reply(result.updated !== false, ['Open Ended', 'Brainstorm'].includes(target.type) ? result : {});
     } catch (error) {
       logError('Error handling vote:', error);
       socket.emit('error', { message: 'Failed to handle vote' });
@@ -1198,7 +1196,7 @@ io.on('connection', (socket) => {
       // this write: if a vote landed in between, no row is updated and we report
       // it as having responses rather than silently editing an answered question.
       const result = await pool.query(
-        `UPDATE questions SET text = $1, type = $2, min_value = $3, max_value = $4
+        `UPDATE questions SET text = $1, type = $2, min_value = $3, max_value = $4, max_responses = $7, show_attribution = $8
          WHERE id = $5 AND discussion_id = $6
            AND NOT EXISTS (SELECT 1 FROM votes WHERE question_id = $5)`,
         [
@@ -1208,6 +1206,8 @@ io.on('connection', (socket) => {
           normalizedUpdates.maxValue,
           questionId,
           discussionId,
+          normalizedUpdates.maxResponses,
+          normalizedUpdates.showAttribution,
         ]
       );
       if (result.rowCount === 0) {
@@ -1249,7 +1249,7 @@ io.on('connection', (socket) => {
       const ctx = await getResponseContext(topic, responseId);
       // Locking closes voting; ratings are votes, so reject them just like the
       // `vote` handler does. (Phasing uses reactionsVisible, not the lock.)
-      if (!ctx || ctx.locked || ctx.type !== 'Brainstorm' || !ctx.reactionsEnabled || !ctx.reactionsVisible) return;
+      if (!ctx || ctx.locked || !['Open Ended', 'Brainstorm'].includes(ctx.type) || !ctx.reactionsEnabled || !ctx.reactionsVisible) return;
       // No self-rating: an author can't vote on their own idea, mirroring the
       // self-upvote guard on toggleResponseVote, so they can't inflate it.
       if (ctx.ownerId === userId) return;
@@ -1267,7 +1267,7 @@ io.on('connection', (socket) => {
     if (!userId) return;
     try {
       const ctx = await getResponseContext(topic, responseId);
-      if (!ctx || ctx.locked || ctx.type !== 'Brainstorm' || !ctx.reactionsEnabled || !ctx.reactionsVisible) return;
+      if (!ctx || ctx.locked || !['Open Ended', 'Brainstorm'].includes(ctx.type) || !ctx.reactionsEnabled || !ctx.reactionsVisible) return;
       // Reject anything outside the set the creator has active for this session.
       if (!ctx.reactionKeys.includes(reaction)) return;
       // No self-reactions on your own idea, same rationale as ratings.
@@ -1298,7 +1298,7 @@ io.on('connection', (socket) => {
     try {
       const ctx = await getResponseContext(topic, responseId);
       // A locked discussion has new statements closed; comments are statements.
-      if (!ctx || ctx.locked || ctx.type !== 'Brainstorm' || !ctx.commentsEnabled) {
+      if (!ctx || ctx.locked || !['Open Ended', 'Brainstorm'].includes(ctx.type) || !ctx.commentsEnabled) {
         reply({ added: false });
         return;
       }
@@ -1457,7 +1457,9 @@ io.on('connection', (socket) => {
     const userId = bindSocketUser(socket, claimedUserId);
     if (!userId) return;
     try {
-      await deleteVote(voteId, userId);
+      await pool.query(`DELETE FROM votes v USING questions q, discussions d
+        WHERE v.id = $1 AND v.user_id = $2 AND v.question_id = q.id AND q.discussion_id = d.id
+          AND d.slug = $3 AND NOT d.locked AND q.type IN ('Open Ended', 'Brainstorm')`, [voteId, userId, discussionSlug]);
       await emitQuestions(discussionSlug);
     } catch (error) {
       logError('Error deleting vote:', error);
@@ -1698,6 +1700,8 @@ async function getQuestions(topic, { includeUserIds = false, respondents = null 
       q.min_value,
       q.max_value,
       q.options,
+      q.max_responses,
+      q.show_attribution,
       q.created_at,
       q.pinned,
       q.results_revealed,
@@ -1733,6 +1737,8 @@ async function getQuestions(topic, { includeUserIds = false, respondents = null 
   }
   const questions = result.rows.map(({ results_revealed: revealed, ...row }) => ({
     ...row,
+    maxResponses: row.max_responses,
+    showAttribution: row.show_attribution,
     minValue: row.min_value,
     maxValue: row.max_value,
     reactionsEnabled: row.reactions_enabled === true,
@@ -1755,9 +1761,10 @@ async function getQuestions(topic, { includeUserIds = false, respondents = null 
       // Internal callers (e.g. getDiscussionSummary) opt into keeping the raw
       // stable user_id so they can count distinct participants correctly. This
       // path is SERVER-SIDE ONLY and must never feed a socket/API response.
-      if (includeUserIds) return { ...vote };
+      if (includeUserIds) return { ...vote, pseudonym: row.show_attribution === false ? null : vote.pseudonym };
       const tokenized = {
         ...vote,
+        pseudonym: row.show_attribution === false ? null : vote.pseudonym,
         ownerToken: ownerToken(vote.id, vote.userId),
         upvoterTokens: (Array.isArray(vote.upvoters) ? vote.upvoters : [])
           .map(uid => ownerToken(vote.id, uid)),
@@ -1810,7 +1817,7 @@ async function attachBrainstormInteractions(questions, { includeUserIds = false 
   const ratingIds = [];
   const commentIds = [];
   for (const q of questions) {
-    if (q.type !== 'Brainstorm') continue;
+    if (!['Open Ended', 'Brainstorm'].includes(q.type)) continue;
     const votes = q.votes || [];
     if (q.reactionsEnabled && q.reactionsVisible) {
       for (const v of votes) ratingIds.push(v.id);
@@ -1898,7 +1905,7 @@ async function attachBrainstormInteractions(questions, { includeUserIds = false 
   }
 
   for (const q of questions) {
-    if (q.type !== 'Brainstorm') continue;
+    if (!['Open Ended', 'Brainstorm'].includes(q.type)) continue;
     const reveal = q.reactionsEnabled && q.reactionsVisible;
     for (const v of q.votes || []) {
       if (reveal) {
@@ -1948,7 +1955,7 @@ async function addQuestion(topic, question) {
 
     // Insert the question
     const questionResult = await client.query(
-      'INSERT INTO questions (discussion_id, text, type, min_value, max_value, options) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
+      'INSERT INTO questions (discussion_id, text, type, min_value, max_value, options, max_responses, show_attribution) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *',
       [
         discussionId,
         normalizedQuestion.text,
@@ -1956,6 +1963,8 @@ async function addQuestion(topic, question) {
         normalizedQuestion.minValue,
         normalizedQuestion.maxValue,
         optionsJson,
+        normalizedQuestion.maxResponses,
+        normalizedQuestion.showAttribution,
       ]
     );
 
@@ -2792,15 +2801,6 @@ async function getMyBrainstormState(topic, userId) {
   return { ratings, reactions };
 }
 
-// Removes a single vote (used for Brainstorm ideas). The user_id check ensures a
-// participant can only delete their own ideas.
-async function deleteVote(voteId, userId) {
-  await pool.query(
-    'DELETE FROM votes WHERE id = $1 AND user_id = $2',
-    [voteId, userId]
-  );
-}
-
 // Discussions are unlisted unless their moderator lists them: they are reachable
 // by link or short link only, so no endpoint enumerates them (the public list
 // above holds only discussions a moderator chose to list). This lookup returns
@@ -3196,8 +3196,8 @@ app.post('/api/duplicate-discussion', async (req, res) => {
     // Copy questions from original to new discussion. The interaction flags now
     // live on the discussion (copied above), not per question.
     await client.query(`
-      INSERT INTO questions (discussion_id, text, type, min_value, max_value, options)
-      SELECT $1, text, type, min_value, max_value, options
+      INSERT INTO questions (discussion_id, text, type, min_value, max_value, options, max_responses, show_attribution)
+      SELECT $1, text, type, min_value, max_value, options, max_responses, show_attribution
       FROM questions
       WHERE discussion_id = $2
     `, [newDiscussionId, originalDiscussionId]);
