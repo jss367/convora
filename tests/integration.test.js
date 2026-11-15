@@ -68,6 +68,49 @@ test('server startup creates schema and applies the pseudonym migration', async 
   assert.deepEqual(columns.rows.map((row) => row.column_name), ['short_code', 'pseudonym']);
 });
 
+for (const order of ['delete-first', 'rename-first']) {
+  test(`promoted moderator rename and creator deletion serialize when ${order}`, async () => {
+    const created = (await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('rename-delete') })).body;
+    const title = uniqueTopic('Requested New Title');
+    const token = 'promoted-' + crypto.randomUUID();
+    await pool.query('INSERT INTO discussion_moderators (discussion_id, user_id, token) VALUES ($1, $2, $3)', [created.id, 'promoted-renamer', token]);
+    const socket = await connectSocket();
+    const blocker = await pool.connect();
+    let deleting;
+    let renaming;
+    const waitForLocks = async count => {
+      const deadline = Date.now() + 5000;
+      while (Date.now() < deadline) {
+        const result = await pool.query("SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname = current_database() AND state = 'active' AND wait_event_type = 'Lock'");
+        if (result.rows[0].n >= count) return;
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+      throw new Error('Timed out waiting for rename/deletion operations');
+    };
+    try {
+      await blocker.query('BEGIN');
+      await blocker.query('SELECT id FROM discussions WHERE id = $1 FOR UPDATE', [created.id]);
+      if (order === 'delete-first') deleting = jsonRequest('DELETE', `/api/discussions/${created.slug}`, { adminToken: created.adminToken });
+      else renaming = emitWithAck(socket, 'setTopic', created.slug, title, token);
+      await waitForLocks(1);
+      if (order === 'delete-first') renaming = emitWithAck(socket, 'setTopic', created.slug, title, token);
+      else deleting = jsonRequest('DELETE', `/api/discussions/${created.slug}`, { adminToken: created.adminToken });
+      await waitForLocks(2);
+      await blocker.query('COMMIT');
+      const [deleted, renamed] = await Promise.all([deleting, renaming]);
+      assert.equal(deleted.status, 200);
+      assert.equal(renamed.updated, order === 'rename-first');
+      assert.equal((await jsonRequest('GET', `/api/discussions/resolve/${encodeURIComponent(title)}`)).status, order === 'rename-first' ? 410 : 404);
+      assert.equal((await pool.query('SELECT count(*)::int AS n FROM discussions WHERE id = $1', [created.id])).rows[0].n, 0);
+    } finally {
+      await blocker.query('ROLLBACK');
+      await Promise.allSettled([deleting, renaming].filter(Boolean));
+      blocker.release();
+      socket.disconnect();
+    }
+  });
+}
+
 test('deleting rooms with swapped title aliases does not invert lifecycle locks', async () => {
   const a = (await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('swap-a') })).body;
   const b = (await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('swap-b') })).body;

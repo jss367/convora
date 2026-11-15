@@ -1081,21 +1081,24 @@ io.on('connection', (socket) => {
     const discussionSlug = slugifyTopic(topic);
     const reply = (result) => { if (typeof ack === 'function') ack(result); };
     try {
-      const discussionId = await verifyAdmin(discussionSlug, token);
-      if (!discussionId) {
-        socket.emit('error', { message: 'Not authorized to moderate this discussion.' });
-        reply({ updated: false, reason: 'not_authorized' });
+      const outcome = await withTransaction(async client => {
+        // Take the shared route lock and canonical slug lock before any row
+        // access. Deletion either waits for this committed title, or wins and
+        // the rename must report failure rather than updating a vanished row.
+        if (await lockDiscussionSlug(client, discussionSlug)) return 'not_found';
+        const discussionId = await verifyAdmin(discussionSlug, token, client);
+        if (!discussionId) return 'not_authorized';
+        // formatTopicTitle substitutes a placeholder for blank input.
+        const title = formatTopicTitle(newTopic);
+        if (!String(newTopic || '').trim() || title.length > MAX_TOPIC_LENGTH) return 'invalid';
+        const updated = await client.query('UPDATE discussions SET topic = $1 WHERE id = $2', [title, discussionId]);
+        return updated.rowCount === 1 ? 'updated' : 'not_found';
+      });
+      if (outcome !== 'updated') {
+        if (outcome === 'not_authorized') socket.emit('error', { message: 'Not authorized to moderate this discussion.' });
+        reply({ updated: false, reason: outcome });
         return;
       }
-      // formatTopicTitle substitutes 'Discussion' for blank input, so guard on
-      // the raw value first: a blank submission is invalid, not a silent rename
-      // to the placeholder. Also bound the length to match the client input.
-      const title = formatTopicTitle(newTopic);
-      if (!String(newTopic || '').trim() || title.length > MAX_TOPIC_LENGTH) {
-        reply({ updated: false, reason: 'invalid' });
-        return;
-      }
-      await pool.query('UPDATE discussions SET topic = $1 WHERE id = $2', [title, discussionId]);
       audience(discussionSlug).emit('discussion', await getDiscussionBySlug(discussionSlug));
       reply({ updated: true });
     } catch (error) {
@@ -2072,10 +2075,10 @@ async function addQuestion(topic, question) {
 // is valid if it's the discussion's creator admin_token OR a per-user token
 // granted to a promoted moderator (discussion_moderators). Returns the
 // discussion id when valid, or null otherwise.
-async function verifyAdmin(topic, token) {
+async function verifyAdmin(topic, token, db = pool) {
   if (!token) return null;
   const slug = slugifyTopic(topic);
-  const result = await pool.query(
+  const result = await db.query(
     `SELECT d.id
        FROM discussions d
       WHERE d.slug = $1
