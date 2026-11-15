@@ -1628,6 +1628,46 @@ app.get('/api/discussions/resolve/:topic', async (req, res) => {
   }
 });
 
+// Only the creator credential can permanently delete a discussion. Lock the
+// parent and questions before removing children so concurrent inserts cannot
+// slip between the deletes. All other dependent tables cascade automatically.
+app.delete('/api/discussions/:topic', async (req, res) => {
+  const token = req.body?.adminToken;
+  if (typeof token !== 'string' || !token) {
+    return res.status(403).json({ error: 'Only the creator can delete this discussion.' });
+  }
+  const slug = slugifyTopic(req.params.topic);
+  let client;
+  try {
+    client = await pool.connect();
+    await client.query('BEGIN');
+    const result = await client.query(
+      'SELECT id FROM discussions WHERE slug = $1 AND admin_token = $2 FOR UPDATE',
+      [slug, token]
+    );
+    if (!result.rows.length) {
+      await client.query('ROLLBACK');
+      return res.status(403).json({ error: 'Only the creator can delete this discussion.' });
+    }
+    const id = result.rows[0].id;
+    await client.query('SELECT id FROM questions WHERE discussion_id = $1 ORDER BY id FOR UPDATE', [id]);
+    await client.query('DELETE FROM votes WHERE question_id IN (SELECT id FROM questions WHERE discussion_id = $1)', [id]);
+    await client.query('DELETE FROM questions WHERE discussion_id = $1', [id]);
+    await client.query('DELETE FROM discussions WHERE id = $1', [id]);
+    await client.query('COMMIT');
+    io.to(slug).emit('discussionDeleted', { slug });
+    io.to(slug).emit('discussion', null);
+    io.to(slug).emit('questions', []);
+    res.json({ deleted: true });
+  } catch (error) {
+    if (client) await client.query('ROLLBACK');
+    logError('Error deleting discussion:', error);
+    res.status(500).json({ error: 'Could not delete the discussion. Please try again.' });
+  } finally {
+    if (client) client.release();
+  }
+});
+
 app.post('/api/discussions/:topic/short-link', async (req, res) => {
   try {
     const result = await generateDiscussionShortCode(req.params.topic, req.body?.adminToken, req.body?.shortCode);

@@ -68,6 +68,44 @@ test('server startup creates schema and applies the pseudonym migration', async 
   assert.deepEqual(columns.rows.map((row) => row.column_name), ['short_code', 'pseudonym']);
 });
 
+test('only the creator can delete a discussion, removing all contents and notifying viewers', async () => {
+  const created = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('delete') });
+  const other = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('keep') });
+  const { id, slug, adminToken } = created.body;
+  const q = (await pool.query("INSERT INTO questions (discussion_id, text, type) VALUES ($1, 'Idea', 'Brainstorm') RETURNING id", [id])).rows[0].id;
+  const v = (await pool.query("INSERT INTO votes (question_id, value, user_id) VALUES ($1, 'Response', 'person') RETURNING id", [q])).rows[0].id;
+  await pool.query("INSERT INTO response_votes (response_id, user_id) VALUES ($1, 'other')", [v]);
+  await pool.query("INSERT INTO response_ratings (response_id, user_id, quality) VALUES ($1, 'other', 1)", [v]);
+  await pool.query("INSERT INTO response_reactions (response_id, user_id, reaction) VALUES ($1, 'other', 'follows')", [v]);
+  await pool.query("INSERT INTO response_comments (response_id, user_id, body) VALUES ($1, 'other', 'Comment')", [v]);
+  await pool.query("INSERT INTO opinion_snapshots (discussion_id, name, data) VALUES ($1, 'Snapshot', '{}')", [id]);
+  await pool.query("INSERT INTO discussion_moderators (discussion_id, user_id, token) VALUES ($1, 'other', 'promoted-token')", [id]);
+  await pool.query("INSERT INTO discussion_pseudonyms (discussion_id, user_id, pseudonym) VALUES ($1, 'person', 'Happy Fox')", [id]);
+  const endpoint = `/api/discussions/${slug}`;
+  for (const token of [undefined, '', {}, 'wrong', 'promoted-token', other.body.adminToken]) {
+    assert.equal((await jsonRequest('DELETE', endpoint, { adminToken: token })).status, 403);
+  }
+  assert.equal((await pool.query('SELECT id FROM votes WHERE id = $1', [v])).rowCount, 1);
+  const socket = await connectSocket();
+  try {
+    const joined = once(socket, 'discussion');
+    socket.emit('joinDiscussion', slug);
+    await joined;
+    const deleted = once(socket, 'discussionDeleted');
+    const result = await jsonRequest('DELETE', endpoint, { adminToken });
+    assert.equal(result.status, 200);
+    assert.deepEqual(result.body, { deleted: true });
+    assert.deepEqual((await deleted)[0], { slug });
+    for (const table of ['questions', 'votes', 'response_votes', 'response_ratings', 'response_reactions', 'response_comments', 'opinion_snapshots', 'discussion_moderators', 'discussion_pseudonyms']) {
+      assert.equal((await pool.query(`SELECT * FROM ${table}`)).rowCount, 0, table);
+    }
+    assert.deepEqual((await pool.query('SELECT id FROM discussions')).rows.map(row => row.id), [other.body.id]);
+    assert.equal((await jsonRequest('DELETE', endpoint, { adminToken })).status, 403);
+  } finally {
+    socket.disconnect();
+  }
+});
+
 test('initialization adds the vote lookup index to existing databases idempotently', async () => {
   await pool.query('DROP INDEX IF EXISTS votes_question_id_idx');
   await initializeDatabase(pool);
