@@ -13,16 +13,27 @@ export default function useScreenWakeLock() {
         if (typeof navigator === 'undefined' || !navigator.wakeLock) return undefined;
         let lock = null;
         let active = true;
+        // Only one request at a time: every lock the browser grants stays held
+        // until released, so a second overlapping request would leave one we
+        // never release.
+        let requesting = false;
 
         const request = async () => {
-            if (document.visibilityState !== 'visible' || (lock && !lock.released)) return;
+            if (requesting || document.visibilityState !== 'visible' || (lock && !lock.released)) return;
+            requesting = true;
+            let granted = null;
             try {
-                const next = await navigator.wakeLock.request('screen');
-                if (active) lock = next;
-                else next.release().catch(() => {});
+                granted = await navigator.wakeLock.request('screen');
+                if (active) lock = granted;
+                else granted.release().catch(() => {});
             } catch {
                 // Refused; the screen sleeps as it normally would.
+            } finally {
+                requesting = false;
             }
+            // The tab may have been hidden and shown again while the request was
+            // pending, which drops the lock just granted; ask again if so.
+            if (active && granted?.released) request();
         };
 
         request();

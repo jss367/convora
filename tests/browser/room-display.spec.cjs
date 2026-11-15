@@ -114,17 +114,20 @@ test('the room display preserves a numerical range ending at zero', async ({ pag
   await expect(bars.last()).toHaveAttribute('title', '1 response');
 });
 
-test('the room display keeps the screen awake, and asks again after the tab was hidden', async ({ page, rooms }) => {
-  const room = await rooms.create('Wake lock room', 'Agreement');
-  // A fake Screen Wake Lock API that counts the locks held, and releases them
-  // when the tab is hidden as browsers do.
-  await page.addInitScript(() => {
+// A fake Screen Wake Lock API that counts the locks held, and releases them
+// when the tab is hidden as browsers do. With deferred, requests stay pending
+// until the test calls window.__wakeLock.grant().
+async function fakeWakeLock(page, { deferred = false } = {}) {
+  await page.addInitScript(deferredRequests => {
     let visibility = 'visible';
     Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => visibility });
     const locks = [];
+    const pending = [];
     window.__wakeLock = {
       requests: 0,
+      pending: () => pending.length,
       held: () => locks.filter(lock => !lock.released).length,
+      grant: () => pending.splice(0).forEach(resolve => resolve()),
       setVisibility(next) {
         visibility = next;
         if (next === 'hidden') locks.forEach(lock => { lock.released = true; });
@@ -137,13 +140,24 @@ test('the room display keeps the screen awake, and asks again after the tab was 
         request: async type => {
           if (type !== 'screen') throw new Error('unexpected wake lock type');
           window.__wakeLock.requests += 1;
+          if (deferredRequests) await new Promise(resolve => pending.push(resolve));
           const lock = { released: false, release: async () => { lock.released = true; } };
           locks.push(lock);
           return lock;
         },
       },
     });
-  });
+  }, deferred);
+}
+
+const leaveDisplay = page => page.evaluate(() => {
+  window.history.pushState({}, '', '/');
+  window.dispatchEvent(new PopStateEvent('popstate'));
+});
+
+test('the room display keeps the screen awake, and asks again after the tab was hidden', async ({ page, rooms }) => {
+  const room = await rooms.create('Wake lock room', 'Agreement');
+  await fakeWakeLock(page);
 
   await page.goto(`/discussion/${room.slug}/display`);
   await expect(page.getByTestId('display-question')).toBeVisible();
@@ -156,9 +170,28 @@ test('the room display keeps the screen awake, and asks again after the tab was 
   expect(await page.evaluate(() => window.__wakeLock.requests)).toBe(2);
 
   // Leaving the display for a participant page lets the screen sleep again.
+  await leaveDisplay(page);
+  await expect.poll(() => page.evaluate(() => window.__wakeLock.held())).toBe(0);
+});
+
+test('the room display never holds two wake locks when the tab flips during a request', async ({ page, rooms }) => {
+  const room = await rooms.create('Wake lock race room', 'Agreement');
+  await fakeWakeLock(page, { deferred: true });
+  await page.goto(`/discussion/${room.slug}/display`);
+  await expect(page.getByTestId('display-question')).toBeVisible();
+  await expect.poll(() => page.evaluate(() => window.__wakeLock.pending())).toBe(1);
+
+  // Hidden and shown again before the first request is granted: no second
+  // request starts alongside it.
   await page.evaluate(() => {
-    window.history.pushState({}, '', '/');
-    window.dispatchEvent(new PopStateEvent('popstate'));
+    window.__wakeLock.setVisibility('hidden');
+    window.__wakeLock.setVisibility('visible');
   });
+  expect(await page.evaluate(() => window.__wakeLock.requests)).toBe(1);
+  await page.evaluate(() => window.__wakeLock.grant());
+  await expect.poll(() => page.evaluate(() => window.__wakeLock.held())).toBe(1);
+  expect(await page.evaluate(() => window.__wakeLock.requests)).toBe(1);
+
+  await leaveDisplay(page);
   await expect.poll(() => page.evaluate(() => window.__wakeLock.held())).toBe(0);
 });
