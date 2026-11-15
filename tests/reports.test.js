@@ -116,5 +116,7 @@ test('a hidden Multiple Choice summary keeps its options but no counts', () => {
     id: 1, text: 'p(doom)?', type: 'Multiple Choice', createdAt: '2026-01-01T00:00:00Z',
     options: ['Higher', 'Lower'], resultsHidden: true,
   }]);
-  assert.match(renderReportHtml(summary), /Hidden until you vote/);
+  const html = renderReportHtml(summary);
+  assert.match(html, /Options: Higher \/ Lower\. Results hidden until you vote/);
+  assert.doesNotMatch(html, /Higher: \d/);
 });

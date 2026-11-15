@@ -2886,7 +2886,11 @@ function redactSnapshot(snapshot, hiddenIds) {
       // With one question hidden, the participant total would bound its count.
       participantCount: null,
       questions: questions.map(q => (
-        hiddenIds.has(q.id) ? { id: q.id, text: q.text, type: q.type, resultsHidden: true } : q
+        hiddenIds.has(q.id)
+          // A Multiple Choice question's options are part of the question, not
+          // its results, so they survive redaction; the counts do not.
+          ? { id: q.id, text: q.text, type: q.type, ...(Array.isArray(q.options) ? { options: q.options } : {}), resultsHidden: true }
+          : q
       )),
     },
   };

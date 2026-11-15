@@ -53,6 +53,15 @@ export function QuestionComparison({ before, after, comparing, beforeName, after
                     <span className="text-xs text-gray-500">{question.type}</span>
                 </div>
                 <p className="text-sm text-gray-600">{RESULTS_HIDDEN_HINT}. Answer this question, then choose Refresh.</p>
+                {Array.isArray(question.options) && question.options.length > 0 && (
+                    // Multiple Choice options are part of the question, so they
+                    // are listed while the counts stay hidden.
+                    <ul className="mt-2 flex flex-wrap gap-2" aria-label="Answer options">
+                        {question.options.map(option => (
+                            <li key={option} className="rounded-full bg-gray-100 px-3 py-1 text-sm text-gray-700">{option}</li>
+                        ))}
+                    </ul>
+                )}
             </article>
         );
     }

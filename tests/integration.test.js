@@ -213,9 +213,14 @@ test('persisted categorical snapshots render ordered labels, zero counts, and al
   const cases = [
     { type: 'Agreement', labels: ['Strongly Disagree', 'Disagree', 'Unsure', 'Agree', 'Strongly Agree'], before: [1, 0, 1, 0, 2], after: [0, 2, 0, 1, 1] },
     { type: 'Yes/No', labels: ['No', 'Yes'], before: [1, 0], after: [0, 2] },
+    // Author-written options keep the author's order, not alphabetical or key order.
+    { type: 'Multiple Choice', labels: ['Lower', 'About the same', 'Higher'], before: [2, 0, 1], after: [0, 1, 2], choice: true },
   ];
   for (const item of cases) {
-    const added = await pool.query('INSERT INTO questions (discussion_id, text, type) VALUES ($1, $2, $3) RETURNING id', [id, `Saved ${item.type} opinions`, item.type]);
+    const added = await pool.query(
+      'INSERT INTO questions (discussion_id, text, type, options) VALUES ($1, $2, $3, $4) RETURNING id',
+      [id, `Saved ${item.type} opinions`, item.type, item.choice ? JSON.stringify(item.labels) : null]
+    );
     item.id = added.rows[0].id;
   }
   const setResponses = async phase => {
@@ -251,6 +256,21 @@ test('persisted categorical snapshots render ordered labels, zero counts, and al
       }));
     assert.deepEqual(rows, item.labels.map((label, index) => ({ label, counts: [item.before[index], item.after[index]] })));
   }
+
+  // Someone who has not answered gets each Multiple Choice snapshot without its
+  // counts, but still sees the options it asked about.
+  const choice = cases.find(item => item.choice);
+  const { snapshots: [hiddenBefore, hiddenAfter] } = (await jsonRequest('GET', url, undefined, asUser('snapshot-stranger'))).body;
+  const hiddenEarlier = hiddenBefore.data.questions.find(q => q.id === choice.id);
+  assert.deepEqual(hiddenEarlier, {
+    id: choice.id, text: 'Saved Multiple Choice opinions', type: 'Multiple Choice', options: choice.labels, resultsHidden: true,
+  });
+  const hiddenHtml = renderToStaticMarkup(React.createElement(QuestionComparison, {
+    before: hiddenEarlier, after: hiddenAfter.data.questions.find(q => q.id === choice.id),
+    comparing: true, beforeName: hiddenBefore.name, afterName: hiddenAfter.name,
+  }));
+  assert.deepEqual([...hiddenHtml.matchAll(/<li[^>]*>([^<]*)<\/li>/g)].map(match => match[1]), choice.labels);
+  assert.doesNotMatch(hiddenHtml, /<table|\d+%/);
 });
 
 test('snapshots support empty responses, numerical bounds, locked rooms, and promoted moderators', async () => {
@@ -1017,7 +1037,10 @@ test('Multiple Choice results stay hidden until a participant votes, and snapsho
   // A participant who has not answered gets the snapshot without its tallies.
   const redacted = (await jsonRequest('GET', url, undefined, asUser('mc-stranger'))).body.snapshots[0];
   assert.deepEqual(redacted.data.questions.find(q => q.id === questionId),
-    { id: questionId, text: 'p(doom) over the last year?', type: 'Multiple Choice', resultsHidden: true });
+    {
+      id: questionId, text: 'p(doom) over the last year?', type: 'Multiple Choice',
+      options: ['Higher', 'Lower', 'About the same'], resultsHidden: true,
+    });
 
   // A moderator can reveal a Multiple Choice question's results to everyone.
   const moderator = await connectSocket();

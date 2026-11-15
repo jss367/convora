@@ -416,7 +416,9 @@ function renderReportHtml(summary) {
         <td>${escapeHtml(question.text)}</td>
         <td>${escapeHtml(question.type)}</td>
         <td>-</td>
-        <td class="muted">Hidden until you vote</td>
+        <td class="muted">${Array.isArray(question.options) && question.options.length
+          ? `Options: ${escapeHtml(question.options.join(' / '))}. Results hidden until you vote`
+          : 'Hidden until you vote'}</td>
       </tr>`;
     }
     const label = question.label ? `<span class="pill">${escapeHtml(question.label)}</span>` : '';
