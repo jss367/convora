@@ -21,6 +21,7 @@ import OpenEndedQuestion from './questions/OpenEndedQuestion';
 import NumericalResults from './questions/NumericalResults';
 import { clampNumericalValue, sortQuestionsMostRecent, validateChoiceOptions } from './questions/questionHelpers.mjs';
 import { guessQuestionType } from './questions/guessQuestionType.mjs';
+import QuestionTextBox from './QuestionTextBox';
 import {
     QuestionTypes, QuestionTypeDescriptions, VoteOptions, YesNoOptions,
     ALL_REACTION_KEYS, MULTIPLE_CHOICE_LIMITS,
@@ -1855,9 +1856,8 @@ const DiscussionPage = () => {
                 onFocus={() => setComposerOpen(true)}
                 className={`${composerCollapsed ? 'hidden sm:block ' : ''}bg-white shadow-lg rounded-lg p-6 mb-8`}
             >
-                <input
+                <QuestionTextBox
                     ref={questionInputRef}
-                    type="text"
                     value={newQuestion}
                     onChange={(e) => updateQuestionText(e.target.value)}
                     // Holding Enter auto-repeats; submit once per key press.
