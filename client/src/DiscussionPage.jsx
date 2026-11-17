@@ -19,7 +19,7 @@ import { AgreementResults, YesNoResults, MultipleChoiceResults } from './questio
 import ChoiceOptionsEditor from './questions/ChoiceOptionsEditor';
 import OpenEndedQuestion from './questions/OpenEndedQuestion';
 import NumericalResults from './questions/NumericalResults';
-import { clampNumericalValue, sortQuestionsMostRecent, validateChoiceOptions } from './questions/questionHelpers.mjs';
+import { clampNumericalValue, getNumericalRange, validateNumericalRange, sortQuestionsMostRecent, validateChoiceOptions } from './questions/questionHelpers.mjs';
 import { guessQuestionType } from './questions/guessQuestionType.mjs';
 import QuestionTextBox from './QuestionTextBox';
 import {
@@ -693,25 +693,13 @@ const DiscussionPage = () => {
             const nextMap = new Map();
             updatedQuestions.forEach(q => {
                 const prev = prevMap.get(q.id);
-                if (prev) {
-                    // Merge the new question data with the existing data,
-                    // ensuring we keep the votes array and handle numerical values
-                    nextMap.set(q.id, {
-                        ...prev,
-                        ...q,
-                        minValue: q.type === QuestionTypes.NUMERICAL ? parseInt(q.minValue) : undefined,
-                        maxValue: q.type === QuestionTypes.NUMERICAL ? parseInt(q.maxValue) : undefined,
-                        votes: q.votes || prev.votes || []
-                    });
-                } else {
-                    nextMap.set(q.id, {
-                        ...q,
-                        timestamp: Date.now(),
-                        votes: q.votes || [],
-                        minValue: q.type === QuestionTypes.NUMERICAL ? parseInt(q.minValue) : undefined,
-                        maxValue: q.type === QuestionTypes.NUMERICAL ? parseInt(q.maxValue) : undefined
-                    });
-                }
+                nextMap.set(q.id, {
+                    timestamp: Date.now(),
+                    ...prev,
+                    ...q,
+                    ...(q.type === QuestionTypes.NUMERICAL ? getNumericalRange(q) : {}),
+                    votes: q.votes || prev?.votes || [],
+                });
             });
             return Array.from(nextMap.values());
         });
@@ -772,13 +760,12 @@ const DiscussionPage = () => {
 
         // Handle numerical questions
         if (questionType === QuestionTypes.NUMERICAL) {
-            if (minValue >= maxValue) {
-                console.error('Failed to add question: Min value must be less than max value.');
-                setError('Minimum value must be less than maximum value.');
+            const range = validateNumericalRange(minValue, maxValue);
+            if (range.error) {
+                setError(range.error);
                 return;
             }
-            question.minValue = parseInt(minValue);
-            question.maxValue = parseInt(maxValue);
+            Object.assign(question, range);
         }
 
         if (questionType === QuestionTypes.MULTIPLE_CHOICE) {
@@ -822,7 +809,8 @@ const DiscussionPage = () => {
                                 && ((Number(current.maxResponses) || null) !== (Number(question.maxResponses) || null)
                                     || (current.showAttribution !== false) !== (question.showAttribution !== false)))
                             || (question.type === QuestionTypes.NUMERICAL
-                                && (current.minValue !== question.minValue || current.maxValue !== question.maxValue))
+                                && (current.minValue === '' || current.maxValue === ''
+                                    || Number(current.minValue) !== question.minValue || Number(current.maxValue) !== question.maxValue))
                             || (question.type === QuestionTypes.MULTIPLE_CHOICE
                                 && validateChoiceOptions(current.options, MULTIPLE_CHOICE_LIMITS).options?.join('\n')
                                     !== question.options.join('\n'))) return current;
@@ -1076,8 +1064,7 @@ const DiscussionPage = () => {
                     </div>
                 );
             case QuestionTypes.NUMERICAL: {
-                const minValue = parseInt(question.minValue || question.min_value) || 0;
-                const maxValue = parseInt(question.maxValue || question.max_value) || 100;
+                const { minValue, maxValue } = question;
 
                 // sliderValues[id] is undefined until the participant touches the
                 // slider or the number box ('' while the box is cleared). Until
@@ -1910,7 +1897,7 @@ const DiscussionPage = () => {
                             <input
                                 type="number"
                                 value={minValue}
-                                onChange={(e) => chooseQuestionSetting('minValue', parseInt(e.target.value))}
+                                onChange={(e) => chooseQuestionSetting('minValue', e.target.value)}
                                 className="w-full p-3 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary"
                             />
                         </div>
@@ -1919,7 +1906,7 @@ const DiscussionPage = () => {
                             <input
                                 type="number"
                                 value={maxValue}
-                                onChange={(e) => chooseQuestionSetting('maxValue', parseInt(e.target.value))}
+                                onChange={(e) => chooseQuestionSetting('maxValue', e.target.value)}
                                 className="w-full p-3 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary"
                             />
                         </div>

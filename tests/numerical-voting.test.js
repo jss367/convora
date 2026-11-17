@@ -24,7 +24,7 @@ async function controls({ saved } = {}) {
   vm.createContext(context);
   vm.runInContext(code, context);
   const question = {
-    id: 7, text: 'Temperature', type: 'Numerical', min_value: -100, max_value: 100,
+    id: 7, text: 'Temperature', type: 'Numerical', minValue: -100, maxValue: 100,
     votes: saved === undefined ? [] : [{ value: String(saved) }],
   };
   const render = () => {

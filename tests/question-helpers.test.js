@@ -78,3 +78,20 @@ test('validateChoiceOptions matches the server rules for Multiple Choice options
   assert.match(validateChoiceOptions(['Higher', 'higher'], limits).error, /different/);
   assert.match(validateChoiceOptions(undefined, limits).error, /2 to 6/);
 });
+
+test('numerical question forms and server accept the full database range and reject invalid bounds', async () => {
+  const { validateNumericalRange } = await helpers;
+  const { normalizeQuestionPayload } = require('../question-data');
+  const question = { text: 'Temperature?', type: 'Numerical' };
+  for (const [minValue, maxValue] of [['-2147483648', '2147483647'], ['-10', '0']]) {
+    const expected = { minValue: Number(minValue), maxValue: Number(maxValue) };
+    assert.deepEqual(validateNumericalRange(minValue, maxValue), expected);
+    const stored = normalizeQuestionPayload({ ...question, minValue, maxValue });
+    assert.equal(stored.minValue, expected.minValue);
+    assert.equal(stored.maxValue, expected.maxValue);
+  }
+  for (const [minValue, maxValue] of [['', 10], [-10, ''], [-1.5, 0], [-2147483649, 0], [0, 2147483648], [1, 1], [2, 1]]) {
+    assert.ok(validateNumericalRange(minValue, maxValue).error);
+    assert.equal(normalizeQuestionPayload({ ...question, minValue, maxValue }), null);
+  }
+});

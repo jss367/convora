@@ -3,7 +3,7 @@ import PropTypes from 'prop-types';
 import React, { useState } from 'react';
 import { MULTIPLE_CHOICE_LIMITS, QuestionTypes, QuestionTypeDescriptions } from './config';
 import ChoiceOptionsEditor from './ChoiceOptionsEditor';
-import { validateChoiceOptions } from './questionHelpers.mjs';
+import { validateChoiceOptions, validateNumericalRange } from './questionHelpers.mjs';
 import QuestionTextBox from '../QuestionTextBox';
 
 // Inline moderator editor for a question's wording/type, mirroring the fields of
@@ -31,14 +31,12 @@ const QuestionEditor = ({ question, onSave, onCancel }) => {
         }
         const updates = { text: trimmed, type, ...settings };
         if (type === QuestionTypes.NUMERICAL) {
-            const min = parseInt(minValue, 10);
-            const max = parseInt(maxValue, 10);
-            if (!Number.isInteger(min) || !Number.isInteger(max) || min >= max) {
-                setError('Minimum value must be less than maximum value.');
+            const range = validateNumericalRange(minValue, maxValue);
+            if (range.error) {
+                setError(range.error);
                 return;
             }
-            updates.minValue = min;
-            updates.maxValue = max;
+            Object.assign(updates, range);
         }
         if (type === QuestionTypes.MULTIPLE_CHOICE) {
             const result = validateChoiceOptions(options, MULTIPLE_CHOICE_LIMITS);
