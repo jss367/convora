@@ -4,6 +4,7 @@ import React, { useState } from 'react';
 import { MULTIPLE_CHOICE_LIMITS, QuestionTypes, QuestionTypeDescriptions } from './config';
 import ChoiceOptionsEditor from './ChoiceOptionsEditor';
 import { validateChoiceOptions } from './questionHelpers.mjs';
+import QuestionTextBox from '../QuestionTextBox';
 
 // Inline moderator editor for a question's wording/type, mirroring the fields of
 // the "add question" form. Only mounted for questions with no responses yet; the
@@ -64,8 +65,7 @@ const QuestionEditor = ({ question, onSave, onCancel }) => {
 
     return (
         <div>
-            <input
-                type="text"
+            <QuestionTextBox
                 value={text}
                 onChange={(e) => setText(e.target.value)}
                 placeholder="Enter a new question or statement"
