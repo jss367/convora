@@ -1,3 +1,4 @@
+import { getNumericalRange } from './questions/questionHelpers.mjs';
 import PropTypes from 'prop-types';
 import { QRCodeSVG } from 'qrcode.react';
 import React, { useEffect, useState } from 'react';
@@ -48,10 +49,7 @@ const TalliedResults = ({ question, focus }) => {
     if (question.type === QuestionTypes.AGREEMENT) return <AgreementChart question={question} focus={focus} />;
     if (question.type === QuestionTypes.YES_NO) return <YesNoChart question={question} focus={focus} />;
     if (question.type === QuestionTypes.MULTIPLE_CHOICE) return <MultipleChoiceChart question={question} focus={focus} />;
-    const parsedMin = parseInt(question.minValue ?? question.min_value);
-    const parsedMax = parseInt(question.maxValue ?? question.max_value);
-    const minValue = Number.isNaN(parsedMin) ? 0 : parsedMin;
-    const maxValue = Number.isNaN(parsedMax) ? 100 : parsedMax;
+    const { minValue, maxValue } = getNumericalRange(question);
     return <NumericalChart question={question} minValue={minValue} maxValue={maxValue} focus={focus} />;
 };
 TalliedResults.propTypes = { question: PropTypes.object.isRequired, focus: PropTypes.bool };

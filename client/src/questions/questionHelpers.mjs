@@ -19,6 +19,27 @@ export function sortQuestionsMostRecent(questions) {
     return [...questions].sort((a, b) => getQuestionSortTime(b) - getQuestionSortTime(a));
 }
 
+// Older snapshots may use database field names or omit numerical bounds.
+export function getNumericalRange(question) {
+    const min = Number.parseInt(question.minValue ?? question.min_value, 10);
+    const max = Number.parseInt(question.maxValue ?? question.max_value, 10);
+    return {
+        minValue: Number.isNaN(min) ? 0 : min,
+        maxValue: Number.isNaN(max) ? 100 : max,
+    };
+}
+
+export function validateNumericalRange(rawMin, rawMax) {
+    const minValue = Number(String(rawMin).trim() || NaN);
+    const maxValue = Number(String(rawMax).trim() || NaN);
+    if (!Number.isInteger(minValue) || !Number.isInteger(maxValue)
+        || Math.min(minValue, maxValue) < -2147483648 || Math.max(minValue, maxValue) > 2147483647) {
+        return { error: 'Enter whole numbers between -2147483648 and 2147483647 for both bounds.' };
+    }
+    if (minValue >= maxValue) return { error: 'Minimum value must be less than maximum value.' };
+    return { minValue, maxValue };
+}
+
 // Turns a slider/number-input value into a whole number within [min, max].
 // Returns null when there is no usable number (untouched, cleared, or
 // mid-typing input such as "-"), which callers treat as "nothing selected".

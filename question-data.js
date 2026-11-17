@@ -134,7 +134,7 @@ function normalizeQuestionPayload(question) {
   if (type === 'Numerical') {
     minValue = parseIntegerInput(question.minValue);
     maxValue = parseIntegerInput(question.maxValue);
-    if (!Number.isInteger(minValue) || !Number.isInteger(maxValue) || minValue >= maxValue) {
+    if (!Number.isInteger(minValue) || !Number.isInteger(maxValue) || minValue < -2147483648 || maxValue > 2147483647 || minValue >= maxValue) {
       return null;
     }
   }

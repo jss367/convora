@@ -10,13 +10,14 @@ test('negative numerical answers preserve a lone minus through controlled rerend
   });
   try {
     await pool.query(
-      "INSERT INTO questions (discussion_id, text, type, min_value, max_value) VALUES ($1, 'Temperature', 'Numerical', -100, 100)",
+      "INSERT INTO questions (discussion_id, text, type, min_value, max_value) VALUES ($1, 'Temperature', 'Numerical', -100, 0)",
       [discussion.id]
     );
     await page.goto(`/discussion/${discussion.slug}`);
     const input = page.getByRole('textbox', { name: 'Type your answer to: Temperature' });
     const slider = page.getByRole('slider');
     const submit = page.getByRole('button', { name: 'Submit', exact: true });
+    await expect(slider).toHaveAttribute('max', '0');
     await input.pressSequentially('-');
     await expect(input).toHaveValue('-');
     await expect(submit).toBeDisabled();
