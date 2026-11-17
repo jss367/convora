@@ -6,6 +6,7 @@ import React, { forwardRef, useCallback, useEffect, useLayoutEffect, useRef } fr
 // would) and pasted line breaks become spaces.
 const QuestionTextBox = forwardRef(function QuestionTextBox({ value, onChange, onKeyDown, className = '', ...props }, forwardedRef) {
     const innerRef = useRef(null);
+    const pendingSelection = useRef(null);
     const setRefs = useCallback((node) => {
         innerRef.current = node;
         if (typeof forwardedRef === 'function') forwardedRef(node);
@@ -21,7 +22,15 @@ const QuestionTextBox = forwardRef(function QuestionTextBox({ value, onChange, o
         box.style.height = `${box.scrollHeight + borders}px`;
     }, []);
 
-    useLayoutEffect(fitHeight, [value, fitHeight]);
+    useLayoutEffect(() => {
+        fitHeight();
+        const selection = pendingSelection.current;
+        const box = innerRef.current;
+        if (selection && box && box.value === selection.value) {
+            box.setSelectionRange(selection.start, selection.end, selection.direction);
+        }
+        pendingSelection.current = null;
+    }, [value, fitHeight]);
 
     // The box can change width (window resize, composer expanding from
     // hidden), which changes how many lines the text wraps to.
@@ -44,13 +53,23 @@ const QuestionTextBox = forwardRef(function QuestionTextBox({ value, onChange, o
             rows={1}
             value={value}
             onChange={(e) => {
-                e.target.value = e.target.value.replace(/\r?\n/g, ' ');
+                const box = e.target;
+                const before = box.value;
+                const normalized = before.replace(/\r?\n/g, ' ');
+                if (normalized !== before) {
+                    const { selectionStart, selectionEnd, selectionDirection } = box;
+                    const mappedOffset = offset => before.slice(0, offset).replace(/\r?\n/g, ' ').length;
+                    const start = mappedOffset(selectionStart), end = mappedOffset(selectionEnd);
+                    pendingSelection.current = { value: normalized, start, end, direction: selectionDirection };
+                    box.value = normalized;
+                    box.setSelectionRange(start, end, selectionDirection);
+                }
                 onChange(e);
             }}
             onKeyDown={(e) => {
                 onKeyDown?.(e);
                 if (e.defaultPrevented) return;
-                if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+                if (e.key === 'Enter' && !e.nativeEvent.isComposing && e.nativeEvent.keyCode !== 229) {
                     e.preventDefault();
                     e.currentTarget.form?.requestSubmit();
                 }
