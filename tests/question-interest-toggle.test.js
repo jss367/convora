@@ -313,3 +313,44 @@ test('recovery errors and out-of-order recovery replies cannot release a newer p
   assert.equal(hook.writes()[1][3], true);
   hook.unmount();
 });
+
+test('a deleted question stops recovery and ignores late callbacks and expired timers', () => {
+  const hook = mount(); hook.frame([]); hook.current().toggle(7); hook.expire();
+  const lateTimer = [...hook.timers.values()][0];
+  hook.render({ questions: [], interestedQuestionIds: new Set(), interestReady: true });
+  const reply = hook.recoveries()[0].at(-1);
+  reply(null, { error: 'not_found' }); hook.render();
+  assert.equal(hook.current().pending.has(7), false);
+  assert.equal(hook.timers.size, 0);
+  const count = hook.recoveries().length;
+  lateTimer(); hook.expire(); hook.ack(0); reply(null, { interested: true }); hook.render();
+  assert.equal(hook.current().pending.has(7), false);
+  assert.equal(hook.recoveries().length, count);
+  assert.equal(hook.timers.size, 0);
+  hook.unmount();
+});
+
+test('a stale not-found response cannot retire a newer recovery or write', () => {
+  const hook = mount(); hook.frame([]); hook.current().toggle(7); hook.expire(); hook.expire();
+  hook.recoveries()[0].at(-1)(null, { error: 'not_found' }); hook.render();
+  assert.equal(hook.current().pending.has(7), true);
+  const reply = hook.recoveries()[1].at(-1);
+  hook.recovered(1, true); hook.frame([7]); hook.current().toggle(7);
+  reply(null, { error: 'not_found' }); hook.render();
+  assert.equal(hook.current().pending.has(7), true);
+  assert.equal(hook.writes().length, 2);
+  hook.unmount();
+});
+
+test('transient recovery failures retain their timer and can still reconcile', () => {
+  const hook = mount(); hook.frame([]); hook.current().toggle(7); hook.expire();
+  hook.recoveries()[0].at(-1)(null, { error: 'unavailable' }); hook.render();
+  assert.equal(hook.current().pending.has(7), true);
+  assert.equal(hook.timers.size, 1);
+  hook.expire();
+  assert.equal(hook.recoveries().length, 2);
+  hook.recovered(1, true); hook.frame([7]);
+  assert.equal(hook.current().pending.has(7), false);
+  assert.equal(hook.timers.size, 0);
+  hook.unmount();
+});

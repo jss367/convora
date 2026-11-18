@@ -46,7 +46,12 @@ export function useQuestionInterest(socket, { discussionSlug, userId, questions,
             }, SETTLEMENT_TIMEOUT);
             socket.timeout(SETTLEMENT_TIMEOUT).volatile.emit('getQuestionInterestState', discussionSlug, id, userId, (error, result) => {
                 if (!isActive() || active.entries.get(id) !== entry || entry.generation !== generation) return;
-                if (error || typeof result?.interested !== 'boolean') return;
+                if (error) return;
+                if (result?.error === 'not_found') {
+                    forget(id, entry);
+                    return;
+                }
+                if (typeof result?.interested !== 'boolean') return;
                 entry.recovering = false;
                 entry.acked = true;
                 entry.desired = result.interested;
