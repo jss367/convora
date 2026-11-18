@@ -37,6 +37,21 @@ test('the client timestamp is only a fallback when created_at is missing or inva
   assert.equal(getQuestionSortTime({ created_at: 'not a date' }), 0);
 });
 
+test('"Most Interesting" sorts by interest count, then newest first', async () => {
+  const { sortQuestionsMostInteresting } = await helpers;
+  const questions = [
+    { text: 'old, no marks', created_at: '2026-01-01T10:00:00.000Z', interestCount: 0 },
+    { text: 'old, two marks', created_at: '2026-01-01T10:05:00.000Z', interestCount: 2 },
+    { text: 'new, two marks', created_at: '2026-01-01T10:10:00.000Z', interestCount: 2 },
+    { text: 'five marks', created_at: '2026-01-01T10:15:00.000Z', interestCount: 5 },
+    // A payload from an older server has no count; it ranks as zero.
+    { text: 'new, no count', created_at: '2026-01-01T10:20:00.000Z' },
+  ];
+  assert.deepEqual(sortQuestionsMostInteresting(questions).map(q => q.text),
+    ['five marks', 'new, two marks', 'old, two marks', 'new, no count', 'old, no marks']);
+  assert.equal(questions[0].text, 'old, no marks');
+});
+
 test('clampNumericalValue keeps typed and slider values inside the question range', async () => {
   const { clampNumericalValue } = await helpers;
   assert.equal(clampNumericalValue(50, 0, 100), 50);

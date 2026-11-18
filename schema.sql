@@ -48,6 +48,15 @@ CREATE TABLE IF NOT EXISTS votes (
 -- Restrict duplicate-idea checks to one question, including on existing databases.
 CREATE INDEX IF NOT EXISTS votes_question_id_idx ON votes(question_id);
 
+-- One row per participant who marked a question as interesting. The count
+-- ranks questions under the "Most Interesting" sort.
+CREATE TABLE IF NOT EXISTS question_interest (
+  id          SERIAL PRIMARY KEY,
+  question_id INTEGER NOT NULL REFERENCES questions(id) ON DELETE CASCADE,
+  user_id     TEXT NOT NULL,
+  UNIQUE (question_id, user_id)
+);
+
 -- Immutable aggregates: snapshots survive later vote updates and question edits
 -- or deletions without retaining participant identities or individual answers.
 CREATE TABLE IF NOT EXISTS opinion_snapshots (
