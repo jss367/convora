@@ -5156,14 +5156,22 @@ test('a queued question reaches moderators only, and nobody can answer it, until
     // Now it can be answered.
     assert.deepEqual(await emitWithAck(participant, 'vote', slug, queued.id, 'Agree', 'queue-participant', 'P', undefined), { ok: true });
 
-    // A duplicate keeps the rest of the agenda queued.
-    const copy = await jsonRequest('POST', '/api/duplicate-discussion', { originalTopic: slug, newTopic: uniqueTopic('queue-copy') });
-    const copied = await pool.query(
+    // A moderator's duplicate keeps the rest of the agenda queued.
+    const copiedQuestions = async newSlug => (await pool.query(
       'SELECT q.text, q.queued FROM questions q JOIN discussions d ON d.id = q.discussion_id WHERE d.slug = $1 ORDER BY q.id',
-      [copy.body.newSlug]
-    );
-    assert.deepEqual(copied.rows.map(row => row.queued), [false, false, true]);
-    assert.equal(copied.rows[2].text, 'Takeover within a year is likely!');
+      [newSlug]
+    )).rows;
+    const copy = await jsonRequest('POST', '/api/duplicate-discussion', { originalTopic: slug, newTopic: uniqueTopic('queue-copy'), adminToken });
+    const copied = await copiedQuestions(copy.body.newSlug);
+    assert.deepEqual(copied.map(row => row.queued), [false, false, true]);
+    assert.equal(copied[2].text, 'Takeover within a year is likely!');
+    // Anyone can duplicate a discussion and moderates the copy, so a duplicate
+    // made without the original's moderator token leaves the queue behind.
+    for (const body of [{}, { adminToken: 'not-the-token' }, { adminToken: copy.body.adminToken }]) {
+      const stranger = await jsonRequest('POST', '/api/duplicate-discussion', { originalTopic: slug, newTopic: uniqueTopic('queue-stranger-copy'), ...body });
+      assert.equal(stranger.status, 200);
+      assert.deepEqual((await copiedQuestions(stranger.body.newSlug)).map(row => row.queued), [false, false]);
+    }
 
     // Locking closes new questions, and publishing would add one for the room.
     const lockedState = waitForEvent(mod, 'discussionState', state => state.locked === true);
@@ -5189,5 +5197,89 @@ test('existing questions are published when the queue column is added', async ()
     assert.equal((await pool.query("SELECT queued FROM questions WHERE text = 'Older question'")).rows[0].queued, false);
   } finally {
     await startServer();
+  }
+});
+
+test('a moderator chooses which question the room display shows on its own', async () => {
+  const created = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('display-question') });
+  const other = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('display-question-other') });
+  const { slug, adminToken } = created.body;
+  const mod = await joinAsModerator(slug, adminToken);
+  const display = await connectSocket();
+  const add = async (socket, where, token, question) => {
+    assert.deepEqual(await emitWithAck(socket, 'addQuestion', where, { type: 'Agreement', options: [], ...question }, true, token), { added: true });
+    return (await pool.query('SELECT id FROM questions WHERE text = $1', [question.text])).rows[0].id;
+  };
+  const stateWhere = predicate => waitForEvent(display, 'discussionState', predicate);
+  const refusal = pattern => waitForEvent(mod, 'error', error => pattern.test(error.message));
+  try {
+    const first = await add(mod, slug, adminToken, { text: 'First statement' });
+    const second = await add(mod, slug, adminToken, { text: 'Second statement' });
+    const queued = await add(mod, slug, adminToken, { text: 'Queued statement', queued: true });
+    const foreign = await add(mod, other.body.slug, other.body.adminToken, { text: 'Another room' });
+
+    const initial = stateWhere(() => true);
+    display.emit('joinDisplay', slug);
+    assert.equal((await initial).displayQuestionId, null);
+
+    // Choosing a question also switches a display that lists every question to
+    // the one-question view, so one click puts the question on the screen.
+    let changed = stateWhere(state => state.displayQuestionId === first);
+    mod.emit('setDisplaySettings', slug, { questionId: first }, adminToken);
+    assert.equal((await changed).displayLayout, 'focus');
+
+    // An explicit layout wins, and the choice is kept for when the moderator
+    // goes back to one question.
+    changed = stateWhere(state => state.displayQuestionId === second);
+    mod.emit('setDisplaySettings', slug, { questionId: second, layout: 'all' }, adminToken);
+    assert.equal((await changed).displayLayout, 'all');
+    changed = stateWhere(state => state.displayLayout === 'focus');
+    mod.emit('setDisplaySettings', slug, { layout: 'focus' }, adminToken);
+    assert.equal((await changed).displayQuestionId, second);
+
+    // Other settings leave the chosen question alone.
+    changed = stateWhere(state => state.displayQr === 'hidden');
+    mod.emit('setDisplaySettings', slug, { qr: 'hidden' }, adminToken);
+    assert.equal((await changed).displayQuestionId, second);
+
+    // Only a published question of this discussion can be chosen.
+    for (const [questionId, pattern] of [
+      [queued, /cannot be shown/i], [foreign, /cannot be shown/i], [999999999, /cannot be shown/i],
+      ['7', /room display setting/i], [1.5, /room display setting/i], [0, /room display setting/i],
+    ]) {
+      const refused = refusal(pattern);
+      mod.emit('setDisplaySettings', slug, { questionId }, adminToken);
+      await refused;
+    }
+    const outsider = await connectSocket();
+    try {
+      const refused = waitForEvent(outsider, 'error', error => /not authorized/i.test(error.message));
+      outsider.emit('setDisplaySettings', slug, { questionId: first }, 'not-the-token');
+      await refused;
+    } finally {
+      outsider.disconnect();
+    }
+    assert.equal((await pool.query('SELECT display_question_id FROM discussions WHERE slug = $1', [slug])).rows[0].display_question_id, second);
+
+    // A new question from the room does not take over the screen.
+    await add(mod, slug, undefined, { text: 'A participant statement' });
+    assert.equal((await pool.query('SELECT display_question_id FROM discussions WHERE slug = $1', [slug])).rows[0].display_question_id, second);
+
+    // Clearing the choice keeps the layout.
+    changed = stateWhere(state => state.displayQuestionId === null);
+    mod.emit('setDisplaySettings', slug, { questionId: null }, adminToken);
+    assert.equal((await changed).displayLayout, 'focus');
+
+    // Deleting the chosen question clears the choice for everyone watching.
+    changed = stateWhere(state => state.displayQuestionId === first);
+    mod.emit('setDisplaySettings', slug, { questionId: first }, adminToken);
+    await changed;
+    changed = stateWhere(state => state.displayQuestionId === null);
+    mod.emit('deleteQuestion', slug, first, adminToken);
+    await changed;
+    assert.equal((await pool.query('SELECT display_question_id FROM discussions WHERE slug = $1', [slug])).rows[0].display_question_id, null);
+  } finally {
+    mod.disconnect();
+    display.disconnect();
   }
 });

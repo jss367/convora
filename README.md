@@ -56,8 +56,9 @@ Recent**. Publishing cannot be undone, because hiding a question again would
 hide the answers people gave to it; delete the question instead. A locked
 discussion publishes nothing until it is unlocked.
 
-Duplicating a discussion keeps its queued questions queued, so a prepared
-agenda can be reused.
+When a moderator duplicates a discussion, the copy keeps its queued questions
+queued, so a prepared agenda can be reused. A copy made by anyone else leaves
+the queued questions out.
 
 ## Discussions are unlisted unless you list them
 
@@ -137,9 +138,16 @@ sitting, so nobody has to touch the shared screen:
 
 - **Display QR**: the join QR code and link **Large** in a sidebar (the
   default), **Small, in a corner** of the header, or **Hidden**.
-- **Display shows**: **All questions** (the default), or **One question**: the
-  first pinned question, or the newest one when nothing is pinned, filling the
-  screen. Pin a question to put it on the display.
+- **Display shows**: **All questions** (the default), or **One question**
+  filling the screen.
+
+To choose the one question, click **Show on display** on it from your own
+moderator page. The display switches to the one-question view if it was listing
+every question, and the button reads **On display** on the question the room is
+looking at. The question stays on the screen until you choose another one, so a
+new question from a participant does not replace it. Click **On display** to
+stop showing it; the display then shows the first pinned question, or the
+newest one when nothing is pinned. It does the same if you delete the question.
 
 To put one question's results on the screen, click **Show results** on that
 question from your own moderator page, phone or laptop. The display updates at

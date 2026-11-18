@@ -180,9 +180,11 @@ async function getDiscussionState(topic) {
   const result = await pool.query(
     `SELECT locked, moderator_only_questions, theme, reaction_keys, results_visibility, listed,
             display_qr, display_layout,
+            (SELECT q.id FROM questions q
+              WHERE q.id = d.display_question_id AND q.discussion_id = d.id AND NOT q.queued) AS display_question_id,
             admin_token IS NOT NULL AS has_moderator,
             reactions_enabled, reactions_visible, comments_enabled
-       FROM discussions WHERE slug = $1`,
+       FROM discussions d WHERE slug = $1`,
     [slug]
   );
   if (result.rows.length === 0) {
@@ -194,6 +196,7 @@ async function getDiscussionState(topic) {
       listed: false,
       displayQr: DISPLAY_QR_MODES[0],
       displayLayout: DISPLAY_LAYOUTS[0],
+      displayQuestionId: null,
     };
   }
   const row = result.rows[0];
@@ -210,14 +213,18 @@ async function getDiscussionState(topic) {
     listed: row.listed === true,
     displayQr: DISPLAY_QR_MODES.includes(row.display_qr) ? row.display_qr : DISPLAY_QR_MODES[0],
     displayLayout: DISPLAY_LAYOUTS.includes(row.display_layout) ? row.display_layout : DISPLAY_LAYOUTS[0],
+    // The question a moderator put on the display, or null when they chose
+    // none or it has since been deleted.
+    displayQuestionId: row.display_question_id ?? null,
   };
 }
 
 // The room display's presentation, chosen by the moderator so nobody has to
 // touch the shared screen. The first entry of each is the default.
 // displayQr: the join QR code large in a sidebar, small in a corner, or hidden.
-// displayLayout: every question, or one at a time (the first pinned question,
-// otherwise the newest).
+// displayLayout: every question, or one at a time. The one question is the one
+// a moderator chose with "Show on display" (displayQuestionId); when they chose
+// none it is the first pinned question, otherwise the newest.
 const DISPLAY_QR_MODES = ['full', 'corner', 'hidden'];
 const DISPLAY_LAYOUTS = ['all', 'focus'];
 
@@ -973,15 +980,25 @@ io.on('connection', (socket) => {
       );
       await pool.query('DELETE FROM questions WHERE id = $1 AND discussion_id = $2', [questionId, discussionId]);
       await emitQuestions(discussionSlug);
+      // If this was the question chosen for the room display, the display goes
+      // back to the first pinned or newest question.
+      const cleared = await pool.query(
+        'UPDATE discussions SET display_question_id = NULL WHERE id = $1 AND display_question_id = $2',
+        [discussionId, questionId]
+      );
+      if (cleared.rowCount > 0) await emitDiscussionState(discussionSlug);
     } catch (error) {
       logError('Error deleting question:', error);
       socket.emit('error', { message: 'Failed to delete question' });
     }
   });
 
-  // Moderator-only: change how the room display presents itself. Either field
-  // may be left out to keep its current value. The settings ride
-  // discussionState, which the display's room receives too.
+  // Moderator-only: change how the room display presents itself. Any field may
+  // be left out to keep its current value. `questionId` is the question to show
+  // in the one-question view, or null to go back to the first pinned or newest
+  // question; choosing a question while the display lists every question also
+  // switches it to the one-question view, unless `layout` says otherwise. The
+  // settings ride discussionState, which the display's room receives too.
   socket.on('setDisplaySettings', async (topic, settings, token) => {
     const discussionSlug = slugifyTopic(topic);
     try {
@@ -990,19 +1007,34 @@ io.on('connection', (socket) => {
         socket.emit('error', { message: 'Not authorized to moderate this discussion.' });
         return;
       }
-      const { qr, layout } = settings && typeof settings === 'object' ? settings : {};
+      const { qr, layout, questionId } = settings && typeof settings === 'object' ? settings : {};
+      const validQuestionId = questionId === undefined || questionId === null
+        || (Number.isInteger(questionId) && questionId > 0 && questionId <= 2147483647);
       if ((qr !== undefined && !DISPLAY_QR_MODES.includes(qr))
           || (layout !== undefined && !DISPLAY_LAYOUTS.includes(layout))
-          || (qr === undefined && layout === undefined)) {
+          || !validQuestionId
+          || (qr === undefined && layout === undefined && questionId === undefined)) {
         socket.emit('error', { message: 'Unknown room display setting.' });
         return;
+      }
+      if (questionId != null) {
+        // Only a published question of this discussion can go on the display.
+        const question = await pool.query(
+          'SELECT 1 FROM questions WHERE id = $1 AND discussion_id = $2 AND NOT queued',
+          [questionId, discussionId]
+        );
+        if (!question.rows.length) {
+          socket.emit('error', { message: 'That question cannot be shown on the room display.' });
+          return;
+        }
       }
       await pool.query(
         `UPDATE discussions
             SET display_qr = COALESCE($1, display_qr),
-                display_layout = COALESCE($2, display_layout)
+                display_layout = COALESCE($2, CASE WHEN $4::int IS NOT NULL AND display_layout = 'all' THEN 'focus' ELSE display_layout END),
+                display_question_id = CASE WHEN $5 THEN $4::int ELSE display_question_id END
           WHERE id = $3`,
-        [qr ?? null, layout ?? null, discussionId]
+        [qr ?? null, layout ?? null, discussionId, questionId ?? null, questionId !== undefined]
       );
       await emitDiscussionState(discussionSlug);
     } catch (error) {
@@ -3433,6 +3465,11 @@ app.post('/api/duplicate-discussion', async (req, res) => {
 
     const originalDiscussion = originalDiscussionResult.rows[0];
     const originalDiscussionId = originalDiscussion.id;
+    // Anyone with the link may duplicate a discussion and becomes the copy's
+    // moderator, so the copy gets the original's queued questions only when the
+    // caller proves they already moderate the original. Otherwise duplicating
+    // would be a way to read a queue that only moderators are sent.
+    const copyQueued = !!(await verifyAdmin(originalTopic, req.body.adminToken, client));
 
     // Create new discussion. Duplicating into an existing topic would merge
     // questions into that discussion, so treat the unique conflict as a user
@@ -3489,9 +3526,9 @@ app.post('/api/duplicate-discussion', async (req, res) => {
       INSERT INTO questions (discussion_id, text, type, min_value, max_value, options, max_responses, show_attribution, queued)
       SELECT $1, text, type, min_value, max_value, options, max_responses, show_attribution, queued
       FROM questions
-      WHERE discussion_id = $2
+      WHERE discussion_id = $2 AND ($3 OR NOT queued)
       ORDER BY id
-    `, [newDiscussionId, originalDiscussionId]);
+    `, [newDiscussionId, originalDiscussionId, copyQueued]);
 
     // Carry the session-level reaction set (see reaction_keys) for the same
     // reason as the per-question flags above: a duplicate should preserve the

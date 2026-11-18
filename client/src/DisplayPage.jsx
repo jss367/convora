@@ -149,9 +149,12 @@ QuestionCard.propTypes = {
     focus: PropTypes.bool,
 };
 
-// The one-question view shows the first pinned question (the server sends
-// pinned questions first), otherwise the newest.
-const focusQuestionOf = questions => questions.find(q => q.pinned) || questions[questions.length - 1];
+// The one-question view shows the question the moderator chose with "Show on
+// display". When they chose none (or it was deleted), it shows the first pinned
+// question (the server sends pinned questions first), otherwise the newest.
+const focusQuestionOf = (questions, chosenId) => questions.find(q => q.id === chosenId)
+    || questions.find(q => q.pinned)
+    || questions[questions.length - 1];
 
 const JoinCard = ({ linkUrl, linkText, title, compact }) => (
     <div
@@ -293,7 +296,7 @@ const DisplayPage = () => {
     } else if (questions.length === 0) {
         body = <p className="text-4xl text-gray-500">No questions yet</p>;
     } else if (focus) {
-        body = <QuestionCard question={focusQuestionOf(questions)} reactionKeys={reactionKeys} focus />;
+        body = <QuestionCard question={focusQuestionOf(questions, state.displayQuestionId)} reactionKeys={reactionKeys} focus />;
     } else {
         body = (
             <ol className={`grid grid-cols-1 gap-8 ${qrMode === 'full' ? '2xl:grid-cols-2' : 'xl:grid-cols-2'}`}>

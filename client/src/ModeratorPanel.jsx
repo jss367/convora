@@ -237,7 +237,7 @@ const ModeratorPanel = ({
                         />
                         <SelectSetting
                             label="Display shows"
-                            title="One question shows the first pinned question, or the newest one when nothing is pinned"
+                            title="One question shows the question you chose with Show on display. If you chose none, it shows the first pinned question, or the newest one when nothing is pinned"
                             value={state.displayLayout || 'all'}
                             onChange={(layout) => onSetDisplaySettings({ layout })}
                             options={[['all', 'All questions'], ['focus', 'One question']]}
@@ -355,6 +355,7 @@ ModeratorPanel.propTypes = {
         resultsVisibility: PropTypes.string,
         displayQr: PropTypes.string,
         displayLayout: PropTypes.string,
+        displayQuestionId: PropTypes.number,
         reactionsEnabled: PropTypes.bool,
         reactionsVisible: PropTypes.bool,
         commentsEnabled: PropTypes.bool,

@@ -442,6 +442,13 @@ const DiscussionPage = () => {
         socket.emit('setPinned', discussionSlug, questionId, !pinned, adminToken);
     };
 
+    // Put one question on the room display, in its one-question view, or stop
+    // showing it there (the display then falls back to the first pinned or the
+    // newest question).
+    const handleShowOnDisplay = (questionId) => {
+        socket.emit('setDisplaySettings', discussionSlug, { questionId }, adminToken);
+    };
+
     // Show a queued question to everyone and open it for answers.
     const handlePublishQuestion = (questionId) => {
         socket.emit('publishQuestion', discussionSlug, questionId, adminToken);
@@ -666,7 +673,9 @@ const DiscussionPage = () => {
                 headers: {
                     'Content-Type': 'application/json',
                 },
-                body: JSON.stringify({ originalTopic: discussionSlug, newTopic: newTopicName }),
+                // The moderator token lets the copy keep this discussion's
+                // queued questions; without it they are left out.
+                body: JSON.stringify({ originalTopic: discussionSlug, newTopic: newTopicName, adminToken: adminToken || undefined }),
             });
 
             if (response.ok) {
@@ -2062,6 +2071,8 @@ const DiscussionPage = () => {
                 const interestCount = question.interestCount || 0;
                 const isInterested = interestedQuestionIds.has(question.id);
                 const interestPending = questionInterest.pending.has(question.id);
+                // Whether the room display is showing this question on its own.
+                const onDisplay = discussionState.displayLayout === 'focus' && discussionState.displayQuestionId === question.id;
                 return (
                 <div key={question.id} className="bg-white shadow-lg rounded-lg p-6 mb-6">
                     {isEditing ? (
@@ -2104,7 +2115,7 @@ const DiscussionPage = () => {
                             </h2>
                         </div>
                         {isAdmin && (
-                            <div className="flex gap-2 ml-auto shrink-0">
+                            <div className="flex flex-wrap justify-end gap-2 ml-auto max-w-full">
                                 {!hasResponses && (
                                     <button
                                         onClick={() => setEditingQuestionId(question.id)}
@@ -2126,6 +2137,18 @@ const DiscussionPage = () => {
                                         {question.resultsRevealed ? 'Hide results' : 'Show results'}
                                     </button>
                                 )}
+                                <button
+                                    onClick={() => handleShowOnDisplay(onDisplay ? null : question.id)}
+                                    aria-pressed={onDisplay}
+                                    title={onDisplay
+                                        ? 'Stop showing this question on its own on the room display'
+                                        : 'Show this question on its own on the room display'}
+                                    className={`text-xs px-2 py-1 rounded border border-indigo-300 ${onDisplay
+                                        ? 'bg-indigo-600 text-white hover:bg-indigo-700'
+                                        : 'text-indigo-700 hover:bg-indigo-50'}`}
+                                >
+                                    {onDisplay ? 'On display' : 'Show on display'}
+                                </button>
                                 <button
                                     onClick={() => handleTogglePin(question.id, question.pinned)}
                                     className="text-xs px-2 py-1 rounded border border-gray-300 text-gray-600 hover:bg-gray-100"
