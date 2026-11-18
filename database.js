@@ -348,6 +348,14 @@ async function initializeDatabase(pool) {
     // key: the id is checked against the discussion's questions when it is read,
     // so deleting a question needs no lock on its discussion.
     await pool.query('ALTER TABLE discussions ADD COLUMN IF NOT EXISTS display_question_id INTEGER');
+    // Set on a snapshot the server saved by itself, just before this question's
+    // results were first shown to everyone (see saveSnapshotBeforeReveal in
+    // server.js). The unique index keeps that to one snapshot per question.
+    await pool.query('ALTER TABLE opinion_snapshots ADD COLUMN IF NOT EXISTS auto_question_id INTEGER');
+    await pool.query(
+      `CREATE UNIQUE INDEX IF NOT EXISTS opinion_snapshots_auto_question_idx
+         ON opinion_snapshots (auto_question_id) WHERE auto_question_id IS NOT NULL`
+    );
     // A queued question is one a moderator has written but not published yet.
     // Only moderators receive it, and nobody can answer it, until a moderator
     // publishes it (see publishQuestion in server.js).

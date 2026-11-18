@@ -132,7 +132,10 @@ QuestionComparison.propTypes = {
     beforeName: PropTypes.string.isRequired, afterName: PropTypes.string.isRequired,
 };
 
-export default function OpinionSnapshots({ discussionSlug, adminToken, userId }) {
+// `refreshSignal` changes whenever the server reports a new snapshot (one a
+// moderator saved, or the one saved by itself before a question's results are
+// first shown), and the list is loaded again.
+export default function OpinionSnapshots({ discussionSlug, adminToken, userId, refreshSignal }) {
     const [snapshots, setSnapshots] = useState([]);
     const [beforeId, setBeforeId] = useState('');
     const [afterId, setAfterId] = useState('');
@@ -166,7 +169,7 @@ export default function OpinionSnapshots({ discussionSlug, adminToken, userId })
             if (!controller.signal.aborted) setLoading(false);
         });
         return () => controller.abort();
-    }, [endpoint, userId, adminToken, refresh]);
+    }, [endpoint, userId, adminToken, refresh, refreshSignal]);
 
     const saveSnapshot = async event => {
         event.preventDefault();
@@ -181,7 +184,9 @@ export default function OpinionSnapshots({ discussionSlug, adminToken, userId })
             });
             const saved = await response.json();
             if (!response.ok) throw new Error(saved.error || 'Could not save the snapshot.');
-            setSnapshots(current => [...current, saved]);
+            // The server's "snapshots changed" notice may already have reloaded
+            // the list with this snapshot in it.
+            setSnapshots(current => (current.some(item => item.id === saved.id) ? current : [...current, saved]));
             if (!beforeId) setBeforeId(String(saved.id));
             else setAfterId(String(saved.id));
             setName('');
@@ -202,7 +207,7 @@ export default function OpinionSnapshots({ discussionSlug, adminToken, userId })
                 <h2 id="snapshot-heading" className="text-2xl font-bold text-gray-800">Opinion snapshots</h2>
                 <button type="button" onClick={() => setRefresh(value => value + 1)} disabled={loading || saving} className="text-sm text-primary hover:underline disabled:opacity-50">Refresh</button>
             </div>
-            <p className="text-sm text-gray-600 mb-4">Save the room’s opinions before discussion, then ask everyone to update their answers and save another snapshot. Each snapshot preserves numerical, agreement, and yes/no results.</p>
+            <p className="text-sm text-gray-600 mb-4">Save the room’s opinions before discussion, then ask everyone to update their answers and save another snapshot. Each snapshot preserves numerical, agreement, yes/no, and multiple choice results. The first time you show a question’s results to everyone, a snapshot named “Before results shown” is saved for you.</p>
             {adminToken ? (
                 <form onSubmit={saveSnapshot} className="mb-5">
                     <label htmlFor="snapshot-name" className="block text-sm font-medium mb-2">Snapshot name</label>
@@ -215,7 +220,7 @@ export default function OpinionSnapshots({ discussionSlug, adminToken, userId })
             ) : <p className="text-sm text-gray-500 mb-4">Only moderators can save snapshots. Everyone can view and compare them.</p>}
             {error && <p role="alert" className="text-red-600 mb-3">{error}</p>}
             <p role="status" className="text-sm text-green-700 mb-3">{status}</p>
-            {loading ? <p className="text-gray-500">Loading snapshots…</p> : snapshots.length === 0 ? (
+            {loading && snapshots.length === 0 ? <p className="text-gray-500">Loading snapshots…</p> : snapshots.length === 0 ? (
                 <p className="text-gray-500">No snapshots saved yet. Save one after the initial votes and another at the end.</p>
             ) : (
                 <>
@@ -251,4 +256,4 @@ export default function OpinionSnapshots({ discussionSlug, adminToken, userId })
         </section>
     );
 }
-OpinionSnapshots.propTypes = { discussionSlug: PropTypes.string.isRequired, adminToken: PropTypes.string, userId: PropTypes.string };
+OpinionSnapshots.propTypes = { discussionSlug: PropTypes.string.isRequired, adminToken: PropTypes.string, userId: PropTypes.string, refreshSignal: PropTypes.number };

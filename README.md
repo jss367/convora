@@ -176,11 +176,22 @@ Answers can be decimals, so a participant can enter 0.5 for half a percent.
 Collect initial answers, save the first snapshot, then invite people to update
 their answers after discussing and save the second snapshot.
 
+A "before" snapshot is also saved without anyone asking. The first time a
+moderator clicks **Show results** on a question, the room's answers are saved
+as **Before results shown: _the question_** just before the results appear.
+People start changing their answers once they have seen how the room voted, so
+this keeps what they thought beforehand even if nobody remembered to save it.
+Like any snapshot it covers every tallied question, not only the one being
+shown. It is saved once per question: hiding the results and showing them again
+saves nothing new. Nothing is saved for a question with no answers yet, or
+while the discussion always shows results.
+
 Choose an earlier and later snapshot to compare response counts, distributions,
 and numerical averages. Agreement, yes/no, and multiple choice questions are
 included too. Everyone
 can view the saved results; only moderators can save snapshots, including after
-voting closes. Use **Refresh** to load snapshots saved by another moderator.
+voting closes. An open snapshot list updates when a snapshot is saved; **Refresh**
+reloads it by hand, for example after you answer a question whose results were hidden.
 
 Snapshots preserve aggregate results even when answers are updated or questions
 are edited or deleted. They do not retain participant identities or individual

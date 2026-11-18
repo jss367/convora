@@ -132,6 +132,14 @@ const DiscussionPage = () => {
     const [showShareModal, setShowShareModal] = useState(false);
     const [showActionsMenu, setShowActionsMenu] = useState(false);
     const [showSnapshots, setShowSnapshots] = useState(false);
+    // Bumped when the server reports a new opinion snapshot, so an open
+    // snapshot panel loads it without anyone choosing Refresh.
+    const [snapshotRefreshSignal, setSnapshotRefreshSignal] = useState(0);
+    useEffect(() => {
+        const refreshSnapshots = () => setSnapshotRefreshSignal(value => value + 1);
+        socket.on('snapshotsChanged', refreshSnapshots);
+        return () => socket.off('snapshotsChanged', refreshSnapshots);
+    }, [socket]);
     const [presence, setPresence] = useState(0);
     const [copied, setCopied] = useState(false);
     const [shortShareUrl, setShortShareUrl] = useState('');
@@ -1198,11 +1206,11 @@ const DiscussionPage = () => {
         }
     };
 
+    const sortedAndFilteredQuestions = filterQuestions(sortQuestions(questions.filter(question => !question.queued)));
     // Queued questions reach moderators only (the server sends them to nobody
     // else). They are listed apart from the live questions, in the order they
     // were written, which is the order a moderator would publish them in.
     const queuedQuestions = questions.filter(question => question.queued).sort((a, b) => a.id - b.id);
-    const sortedAndFilteredQuestions = filterQuestions(sortQuestions(questions.filter(question => !question.queued)));
     // Pinned questions float to the top, preserving the chosen sort within each
     // group (Array.prototype.sort is stable).
     const orderedQuestions = [...sortedAndFilteredQuestions].sort(
@@ -1485,7 +1493,7 @@ const DiscussionPage = () => {
                 </div>
             </div>
 
-            {showSnapshots && <OpinionSnapshots key={discussionSlug} discussionSlug={discussionSlug} adminToken={adminToken} userId={userId} />}
+            {showSnapshots && <OpinionSnapshots key={discussionSlug} discussionSlug={discussionSlug} adminToken={adminToken} userId={userId} refreshSignal={snapshotRefreshSignal} />}
 
             {showDeleteModal && (
                 <div className="fixed inset-0 z-50 bg-gray-600 bg-opacity-50 overflow-y-auto flex items-center justify-center p-4">
@@ -2131,7 +2139,7 @@ const DiscussionPage = () => {
                                         aria-pressed={question.resultsRevealed === true}
                                         title={question.resultsRevealed
                                             ? 'Go back to showing results only to people who have voted'
-                                            : 'Show the results to everyone now, including on the room display'}
+                                            : 'Show the results to everyone now, including on the room display. The first time, a “before” snapshot of the room’s answers is saved.'}
                                         className="text-xs px-2 py-1 rounded border border-indigo-300 text-indigo-700 hover:bg-indigo-50"
                                     >
                                         {question.resultsRevealed ? 'Hide results' : 'Show results'}

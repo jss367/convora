@@ -5283,3 +5283,106 @@ test('a moderator chooses which question the room display shows on its own', asy
     display.disconnect();
   }
 });
+
+test('showing a question\'s results for the first time saves a "before" snapshot by itself', async () => {
+  const seed = await seedResultsDiscussion('auto-snapshot');
+  const { slug, adminToken } = seed;
+  const url = `/api/discussions/${slug}/snapshots`;
+  const mod = await joinAsModerator(slug, adminToken);
+  const { socket: voter } = await joinAs(slug, 'seed-c');
+  const { socket: display } = await joinDisplay(slug);
+  const snapshots = async (headers = asModerator(adminToken)) => (await jsonRequest('GET', url, undefined, headers)).body.snapshots;
+  // Show or hide a question's results and wait until the room has been told.
+  const setRevealed = async (questionId, revealed) => {
+    const told = waitForQuestions(mod, qs => byId(qs, questionId)?.resultsRevealed === revealed, `results ${revealed ? 'shown' : 'hidden'}`);
+    mod.emit('setResultsRevealed', slug, questionId, revealed, adminToken);
+    await told;
+  };
+  try {
+    assert.deepEqual(await snapshots(), []);
+
+    // Everyone watching is told, so an open snapshot panel and the room display reload.
+    const voterTold = waitForEvent(voter, 'snapshotsChanged');
+    const displayTold = waitForEvent(display, 'snapshotsChanged');
+    await setRevealed(seed.agreement, true);
+    await Promise.all([voterTold, displayTold]);
+    const [first, ...rest] = await snapshots();
+    assert.deepEqual(rest, []);
+    assert.equal(first.name, 'Before results shown: We should proceed');
+    // Like any snapshot, it covers every tallied question, as the room stood.
+    assert.deepEqual(first.data.questions.map(q => [q.id, q.responseCount]), [[seed.agreement, 2], [seed.yesNo, 2], [seed.numerical, 2]]);
+    assert.doesNotMatch(JSON.stringify(first), /seed-a|seed-b|Seed A|Seed B|auto_question_id|autoQuestionId/);
+    // The revealed question's saved results are open to everyone, like its live ones.
+    const forDisplay = (await snapshots({}))[0].data.questions;
+    assert.equal(byId(forDisplay, seed.agreement).responseCount, 2);
+    assert.equal(byId(forDisplay, seed.yesNo).resultsHidden, true);
+
+    // Answers change once people have seen the results. Hiding and showing the
+    // same question again keeps the one snapshot from before.
+    assert.deepEqual(await emitWithAck(voter, 'vote', slug, seed.agreement, 'Strongly Agree', 'seed-c', 'Seed C', undefined), { ok: true });
+    await setRevealed(seed.agreement, false);
+    await setRevealed(seed.agreement, true);
+    assert.deepEqual(await snapshots(), [first]);
+
+    // Nothing is saved for a question nobody has answered yet...
+    const added = waitForQuestions(mod, qs => qs.some(q => q.text === 'Nobody answered this'), 'unanswered question added');
+    mod.emit('addQuestion', slug, { text: 'Nobody answered this', type: 'Yes/No', options: [] }, true, adminToken);
+    const unanswered = (await added).find(q => q.text === 'Nobody answered this').id;
+    await setRevealed(unanswered, true);
+    assert.deepEqual(await snapshots(), [first]);
+    // ...but once it has answers, its first showing after that does save one.
+    await setRevealed(unanswered, false);
+    assert.deepEqual(await emitWithAck(voter, 'vote', slug, unanswered, 'Yes', 'seed-c', 'Seed C', undefined), { ok: true });
+    await setRevealed(unanswered, true);
+    const afterUnanswered = await snapshots();
+    assert.deepEqual(afterUnanswered.map(snapshot => snapshot.name), [first.name, 'Before results shown: Nobody answered this']);
+    // It records the earlier question as it is now, after people updated.
+    assert.equal(byId(afterUnanswered[1].data.questions, seed.agreement).responseCount, 3);
+
+    // Someone without a moderator token changes nothing.
+    const refused = waitForEvent(voter, 'error', error => /not authorized/i.test(error.message));
+    voter.emit('setResultsRevealed', slug, seed.yesNo, true, 'not-the-token');
+    await refused;
+    assert.equal((await snapshots()).length, 2);
+
+    // While results are always shown there is no "before" to keep.
+    const always = waitForEvent(mod, 'discussionState', state => state.resultsVisibility === 'always');
+    mod.emit('setResultsVisibility', slug, 'always', adminToken);
+    await always;
+    await setRevealed(seed.yesNo, true);
+    assert.equal((await snapshots()).length, 2);
+    await setRevealed(seed.yesNo, false);
+    const afterVote = waitForEvent(mod, 'discussionState', state => state.resultsVisibility === 'after_vote');
+    mod.emit('setResultsVisibility', slug, 'after_vote', adminToken);
+    await afterVote;
+    await setRevealed(seed.yesNo, true);
+    assert.equal((await snapshots()).length, 3);
+
+    // Written questions have no tally, so showing "results" for one saves nothing.
+    mod.emit('setResultsRevealed', slug, seed.written, true, adminToken);
+    // A long question is cut to fit the 120-character snapshot name.
+    const longText = `How likely is it that ${'the room changes its mind '.repeat(8)}after talking?`;
+    const longAdded = waitForQuestions(mod, qs => qs.some(q => q.text === longText.trim()), 'long question added');
+    mod.emit('addQuestion', slug, { text: longText, type: 'Numerical', minValue: 0, maxValue: 100, options: [] }, true, adminToken);
+    const longId = (await longAdded).find(q => q.text === longText.trim()).id;
+    assert.deepEqual(await emitWithAck(voter, 'vote', slug, longId, 12.5, 'seed-c', 'Seed C', undefined), { ok: true });
+    await setRevealed(longId, true);
+    const all = await snapshots();
+    assert.equal(all.length, 4);
+    assert.equal(all[3].name.length, 120);
+    assert.match(all[3].name, /^Before results shown: How likely is it that the room changes its mind .*…$/);
+    assert.equal(byId(all[3].data.questions, longId).average, 12.5);
+
+    // A snapshot a moderator saves by hand is announced the same way and is
+    // unaffected by the one-per-question rule.
+    const told = waitForEvent(voter, 'snapshotsChanged');
+    const manual = await jsonRequest('POST', url, { name: 'After discussion', adminToken });
+    assert.equal(manual.status, 201);
+    await told;
+    assert.deepEqual((await snapshots()).map(snapshot => snapshot.id), [...all.map(snapshot => snapshot.id), manual.body.id]);
+  } finally {
+    mod.disconnect();
+    voter.disconnect();
+    display.disconnect();
+  }
+});

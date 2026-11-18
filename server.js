@@ -1185,7 +1185,8 @@ io.on('connection', (socket) => {
   });
 
   // Moderator-only: show one question's results to everyone now, voted or not,
-  // or go back to showing them only after voting. Anyone with the link can open
+  // or go back to showing them only after voting. The first time a question is
+  // shown, a "before" snapshot is saved by itself. Anyone with the link can open
   // the room display, so a result revealed on the room's screen cannot stay
   // hidden from anyone; this is the one switch for both. Has no visible effect
   // while the discussion always shows results.
@@ -1197,6 +1198,10 @@ io.on('connection', (socket) => {
         socket.emit('error', { message: 'Not authorized to moderate this discussion.' });
         return;
       }
+      // Keep what the room thought before it sees the answer (see
+      // saveSnapshotBeforeReveal). This runs first, so the snapshot holds only
+      // answers given before anyone was shown the results.
+      if (revealed === true) await saveSnapshotBeforeReveal(discussionSlug, discussionId, questionId);
       await pool.query(
         'UPDATE questions SET results_revealed = $1 WHERE id = $2 AND discussion_id = $3',
         [revealed === true, questionId, discussionId]
@@ -3230,18 +3235,17 @@ app.get('/api/discussions/:topic/snapshots', async (req, res) => {
   }
 });
 
-app.post('/api/discussions/:topic/snapshots', async (req, res) => {
-  let client;
+const MAX_SNAPSHOT_NAME_LENGTH = 120;
+
+// Save a snapshot of a discussion's published tallied questions as they stand
+// now. Returns { snapshot }, or { empty: true } when there is nothing to save.
+// `autoQuestionId` marks a snapshot the server saves by itself before that
+// question's results are first shown: it is skipped ({ empty: true }) when the
+// question has no responses, or when it already has such a snapshot.
+async function saveOpinionSnapshot(discussionId, name, { autoQuestionId = null } = {}) {
+  const client = await pool.connect();
   let releaseError;
   try {
-    const discussionId = await verifyAdmin(req.params.topic, req.body?.adminToken);
-    if (!discussionId) return res.status(403).json({ error: 'Only a moderator can save a snapshot.' });
-    const name = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
-    if (!name || name.length > 120) {
-      return res.status(400).json({ error: 'Enter a snapshot name of 1–120 characters.' });
-    }
-
-    client = await pool.connect();
     // Both reads see one consistent database state, even while participants are
     // voting. Saving never closes voting or changes anyone's current response.
     await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ');
@@ -3252,7 +3256,7 @@ app.post('/api/discussions/:topic/snapshots', async (req, res) => {
     );
     if (!questions.rows.length) {
       await client.query('ROLLBACK');
-      return res.status(400).json({ error: 'Add a numerical, agreement, yes/no, or multiple choice question before saving a snapshot.' });
+      return { empty: true };
     }
     const votes = await client.query(
       `SELECT v.id, v.question_id, v.value, v.user_id FROM votes v
@@ -3265,29 +3269,86 @@ app.post('/api/discussions/:topic/snapshots', async (req, res) => {
       if (!votesByQuestion.has(vote.question_id)) votesByQuestion.set(vote.question_id, []);
       votesByQuestion.get(vote.question_id).push(vote);
     });
+    if (autoQuestionId !== null && !votesByQuestion.has(autoQuestionId)) {
+      await client.query('ROLLBACK');
+      return { empty: true };
+    }
     const data = buildOpinionSnapshot(questions.rows.map(question => ({
       ...question, votes: votesByQuestion.get(question.id) || [],
     })));
     const saved = await client.query(
-      `INSERT INTO opinion_snapshots (discussion_id, name, data) VALUES ($1, $2, $3)
+      `INSERT INTO opinion_snapshots (discussion_id, name, data, auto_question_id) VALUES ($1, $2, $3, $4)
+       ON CONFLICT (auto_question_id) WHERE auto_question_id IS NOT NULL DO NOTHING
        RETURNING id, name, created_at AS "createdAt", data`,
-      [discussionId, name, JSON.stringify(data)]
+      [discussionId, name, JSON.stringify(data), autoQuestionId]
     );
     await client.query('COMMIT');
-    res.status(201).json(saved.rows[0]);
+    return saved.rows.length ? { snapshot: saved.rows[0] } : { empty: true };
   } catch (err) {
-    if (client) {
-      try {
-        await client.query('ROLLBACK');
-      } catch (rollbackErr) {
-        logError('Error rolling back opinion snapshot transaction:', rollbackErr);
-        releaseError = rollbackErr;
-      }
+    try {
+      await client.query('ROLLBACK');
+    } catch (rollbackErr) {
+      logError('Error rolling back opinion snapshot transaction:', rollbackErr);
+      releaseError = rollbackErr;
     }
+    throw err;
+  } finally {
+    client.release(releaseError);
+  }
+}
+
+// The name of the snapshot saved before a question's results are first shown.
+function snapshotNameBeforeReveal(questionText) {
+  const prefix = 'Before results shown: ';
+  const text = String(questionText).replace(/\s+/g, ' ').trim();
+  const room = MAX_SNAPSHOT_NAME_LENGTH - prefix.length;
+  return prefix + (text.length > room ? `${text.slice(0, room - 1).trimEnd()}…` : text);
+}
+
+// Called just before a moderator shows one question's results to everyone.
+// Once the room has seen how it answered, people start changing their answers,
+// and what they thought beforehand can no longer be recovered. So the first
+// time a question is shown, a snapshot is saved by itself, for a moderator who
+// did not think to save one. It covers every published tallied question, like
+// any snapshot. Nothing is saved when results are always shown (there was no
+// "before" to keep), when the question has no responses yet, or when it was
+// shown before. A failure here is logged and never stops the reveal.
+async function saveSnapshotBeforeReveal(discussionSlug, discussionId, questionId) {
+  try {
+    if (!Number.isInteger(questionId)) return;
+    const found = await pool.query(
+      `SELECT q.text FROM questions q JOIN discussions d ON d.id = q.discussion_id
+        WHERE q.id = $1 AND d.id = $2 AND NOT q.queued AND NOT q.results_revealed
+          AND q.type = ANY($3::text[]) AND d.results_visibility IS DISTINCT FROM 'always'
+          AND NOT EXISTS (SELECT 1 FROM opinion_snapshots s WHERE s.auto_question_id = q.id)`,
+      [questionId, discussionId, OPINION_TYPES]
+    );
+    if (!found.rows.length) return;
+    const saved = await saveOpinionSnapshot(discussionId, snapshotNameBeforeReveal(found.rows[0].text), { autoQuestionId: questionId });
+    if (saved.snapshot) audience(discussionSlug).emit('snapshotsChanged');
+  } catch (error) {
+    logError('Error saving a snapshot before showing results:', error);
+  }
+}
+
+app.post('/api/discussions/:topic/snapshots', async (req, res) => {
+  try {
+    const discussionId = await verifyAdmin(req.params.topic, req.body?.adminToken);
+    if (!discussionId) return res.status(403).json({ error: 'Only a moderator can save a snapshot.' });
+    const name = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
+    if (!name || name.length > MAX_SNAPSHOT_NAME_LENGTH) {
+      return res.status(400).json({ error: 'Enter a snapshot name of 1–120 characters.' });
+    }
+    const saved = await saveOpinionSnapshot(discussionId, name);
+    if (saved.empty) {
+      return res.status(400).json({ error: 'Add a numerical, agreement, yes/no, or multiple choice question before saving a snapshot.' });
+    }
+    // Open snapshot panels and the room display reload their list.
+    audience(slugifyTopic(req.params.topic)).emit('snapshotsChanged');
+    res.status(201).json(saved.snapshot);
+  } catch (err) {
     logError('Error saving opinion snapshot:', err);
     res.status(500).json({ error: 'Could not save the opinion snapshot. Try again.' });
-  } finally {
-    if (client) client.release(releaseError);
   }
 });
 
