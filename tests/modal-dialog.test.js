@@ -142,13 +142,13 @@ for (const [nested, withToken] of [[false, false], [true, false], [false, true],
       duplicateReturnFocusRef, actionsMenuButtonRef, discussionContentRef: { current: destination },
       fetch: async (url, request) => {
         assert.equal(JSON.parse(request.body).adminToken, withToken ? 'source-token' : undefined);
-        return { ok: true, json: async () => ({ newSlug: 'destination', adminToken: withToken ? 'new-token' : null }) };
+        return { ok: true, json: async () => ({ newSlug: 'destination', adminToken: 'new-token' }) };
       },
       localStorage: { setItem(key, token) { assert.equal(key, 'convora_admin_destination'); assert.equal(token, 'new-token'); } },
       moderatorLinkPromptState: slug => ({ moderatorLinkPrompt: slug }),
       navigate: (path, options) => {
         assert.equal(path, '/discussion/destination');
-        assert.equal(options?.state?.moderatorLinkPrompt, withToken ? 'destination' : undefined);
+        assert.equal(options?.state?.moderatorLinkPrompt, 'destination');
         // React Router reuses DiscussionPage; its More ref now targets the
         // destination control when dialog cleanup runs.
         actionsMenuButtonRef.current = destinationMore;

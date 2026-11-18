@@ -97,8 +97,11 @@ const NUMERICAL_DECIMALS = 2;
 // from the same values whatever precision a caller sent. The bounds are whole
 // numbers, so rounding never moves an in-range answer out of range.
 function normalizeNumericalVote(vote) {
-  const scale = 10 ** NUMERICAL_DECIMALS;
-  return Math.round(Number(vote) * scale) / scale + 0;
+  const shift = (value, places) => {
+    const [coefficient, exponent = 0] = String(value).split('e');
+    return Number(`${coefficient}e${Number(exponent) + places}`);
+  };
+  return shift(Math.round(shift(Number(vote), NUMERICAL_DECIMALS)), -NUMERICAL_DECIMALS) + 0;
 }
 
 function parseIntegerInput(value) {

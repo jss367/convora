@@ -140,7 +140,7 @@ const ComparisonCard = ({ before, after, beforeName, afterName, focus }) => {
     } else if (changed) {
         body = (
             <>
-                <p className={`${s.note} mb-4 text-amber-800`}>This question changed between the two snapshots, so each is shown on its own.</p>
+                <p className={`${s.note} mb-4 text-amber-800`}>The question or its histogram bins changed between snapshots, so each is shown on its own.</p>
                 <div className="space-y-8">
                     {sides.map(side => (
                         <ComparisonRows key={side.series} rows={distributionRows(side.question)} sides={[side]} s={s} />

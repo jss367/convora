@@ -89,6 +89,7 @@ const DiscussionPage = () => {
     const updateQuestionText = (text) => setQuestionDraft(current => ({
         ...current,
         text,
+        queued: text.trim() !== '' && (current.queued || (isAdmin && queueNewQuestions)),
         type: current.typeChosen ? current.type : guessQuestionType(text) ?? QuestionTypes.AGREEMENT,
     }));
     // Changing the type or the numerical range by hand is a deliberate choice,
@@ -168,6 +169,8 @@ const DiscussionPage = () => {
     const [adminLinkCopied, setAdminLinkCopied] = useState(false);
     // Id of the question a moderator is currently editing inline (null when none).
     const [editingQuestionId, setEditingQuestionId] = useState(null);
+    const [editingDrafts, setEditingDrafts] = useState({});
+    const closeQuestionEditor = () => { setEditingQuestionId(null); setEditingDrafts({}); };
     // Experimental "opinion groups" view, hidden behind a ?clusters=1 flag so it
     // can be evaluated on a real discussion without exposing it to everyone. Once
     // enabled it's remembered per browser so the link survives navigation.
@@ -469,7 +472,7 @@ const DiscussionPage = () => {
     // close the inline editor, otherwise the editor stays open to show the error.
     const handleEditQuestion = (questionId, updates, onResult) => {
         socket.emit('editQuestion', discussionSlug, questionId, updates, adminToken, (resp) => {
-            if (resp && resp.updated) setEditingQuestionId(null);
+            if (resp && resp.updated) closeQuestionEditor();
             if (typeof onResult === 'function') onResult(resp);
         });
     };
@@ -810,7 +813,11 @@ const DiscussionPage = () => {
             question.options = options;
         }
 
-        if (isAdmin && queueNewQuestions) question.queued = true;
+        if (questionDraft.queued && !isAdmin) {
+            setError('This draft is private to the moderator queue. Moderator access is required to submit it.');
+            return;
+        }
+        if (questionDraft.queued || (isAdmin && queueNewQuestions)) question.queued = true;
 
         submitQuestion(question, false);
     };
@@ -1975,7 +1982,7 @@ const DiscussionPage = () => {
                         <input
                             type="checkbox"
                             checked={queueNewQuestions}
-                            onChange={(e) => setQueueNewQuestions(e.target.checked)}
+                            onChange={(e) => { setQueueNewQuestions(e.target.checked); updateQuestionDraft('queued', e.target.checked); }}
                             className="mt-1"
                         />
                         <span>
@@ -2020,8 +2027,10 @@ const DiscussionPage = () => {
                                 {editingQuestionId === question.id ? (
                                     <QuestionEditor
                                         question={question}
+                            draft={editingDrafts[question.id]}
+                            onDraftChange={draft => setEditingDrafts(current => ({ ...current, [question.id]: draft }))}
                                         onSave={handleEditQuestion}
-                                        onCancel={() => setEditingQuestionId(null)}
+                                        onCancel={closeQuestionEditor}
                                     />
                                 ) : (
                                     <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
@@ -2102,8 +2111,10 @@ const DiscussionPage = () => {
                     {isEditing ? (
                         <QuestionEditor
                             question={question}
+                            draft={editingDrafts[question.id]}
+                            onDraftChange={draft => setEditingDrafts(current => ({ ...current, [question.id]: draft }))}
                             onSave={handleEditQuestion}
-                            onCancel={() => setEditingQuestionId(null)}
+                            onCancel={closeQuestionEditor}
                         />
                     ) : (
                     <>

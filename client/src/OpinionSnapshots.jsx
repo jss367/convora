@@ -37,6 +37,8 @@ export function distributionRows(question) {
 export function snapshotQuestionChanged(before, after) {
     return Boolean(before && after && (before.text !== after.text || before.type !== after.type
         || before.minValue !== after.minValue || before.maxValue !== after.maxValue
+        || (before.type === 'Numerical' && JSON.stringify(before.distribution?.map(({ min, max }) => [min, max]))
+            !== JSON.stringify(after.distribution?.map(({ min, max }) => [min, max])))
         || JSON.stringify(before.options ?? null) !== JSON.stringify(after.options ?? null)));
 }
 
@@ -126,7 +128,7 @@ export function QuestionComparison({ before, after, comparing, beforeName, after
             )}
             {changed ? (
                 <>
-                    <p className="text-sm text-amber-800 mb-3">The question wording, type, scale, or answer options changed. Results are shown separately; no change is calculated.</p>
+                    <p className="text-sm text-amber-800 mb-3">The question wording, type, scale, answer options, or histogram bins changed. Results are shown separately; no change is calculated.</p>
                     <p className="text-sm mb-2">Earlier wording: {before.text}</p>
                     {renderTable(beforeRows, before, null, ' (earlier scale)')}
                     {renderTable(afterRows, null, after, ' (later scale)')}

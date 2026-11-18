@@ -469,9 +469,11 @@ async function sendQuestions(slug, room, { onlySocket = null, isCurrent = () => 
 async function resendQuestionsIfPersonalized(socket, { moderatorChanged = false } = {}) {
   const slug = socket.data.topic;
   if (!slug) return;
+  const visit = socket.data.discussionVisit;
+  const current = () => socket.data.topic === slug && socket.data.discussionVisit === visit;
   try {
     if (!moderatorChanged && (await getResultsAccess(slug)).alwaysShow) return;
-    await emitQuestions(slug, socket);
+    if (current()) await emitQuestions(slug, socket, current);
   } catch (error) {
     logError('Error resending questions:', error);
   }
@@ -566,6 +568,7 @@ io.on('connection', (socket) => {
 
   socket.on('joinDiscussion', async (topic) => {
     const discussionSlug = slugifyTopic(topic);
+    socket.data.discussionVisit = (socket.data.discussionVisit || 0) + 1;
     // If this socket was viewing another discussion, leave it so presence
     // counts stay accurate as the user navigates within the SPA.
     const previousTopic = socket.data.topic;
@@ -631,6 +634,7 @@ io.on('connection', (socket) => {
     if (!roomToLeave) return;
     socket.leave(roomToLeave);
     if (socket.data.topic === roomToLeave) {
+      socket.data.discussionVisit = (socket.data.discussionVisit || 0) + 1;
       socket.data.topic = null;
     }
     emitPresence(roomToLeave);
@@ -703,7 +707,11 @@ io.on('connection', (socket) => {
         }
       }
 
-      await addQuestion(discussionSlug, normalizedQuestion, { queued });
+      const added = await addQuestion(discussionSlug, normalizedQuestion, { queued });
+      if (added.locked) {
+        reply({ added: false, reason: 'locked' });
+        return;
+      }
       audience(discussionSlug).emit('discussion', await getDiscussionBySlug(discussionSlug));
       await emitQuestions(discussionSlug);
       reply({ added: true });
@@ -1036,44 +1044,56 @@ io.on('connection', (socket) => {
         socket.emit('error', { message: 'Unknown room display setting.' });
         return;
       }
-      if (questionId != null) {
-        // Only a published question of this discussion can go on the display.
-        const question = await pool.query(
-          'SELECT 1 FROM questions WHERE id = $1 AND discussion_id = $2 AND NOT queued',
-          [questionId, discussionId]
-        );
-        if (!question.rows.length) {
-          socket.emit('error', { message: 'That question cannot be shown on the room display.' });
-          return;
+      const changed = await withTransaction(async client => {
+        const current = await client.query('SELECT display_before_snapshot_id, display_after_snapshot_id FROM discussions WHERE id = $1 FOR UPDATE', [discussionId]);
+        if (!current.rows.length) return false;
+        const effectiveBefore = beforeSnapshotId === undefined ? current.rows[0].display_before_snapshot_id : beforeSnapshotId;
+        const effectiveAfter = afterSnapshotId === undefined ? current.rows[0].display_after_snapshot_id : afterSnapshotId;
+        if ((beforeSnapshotId !== undefined || afterSnapshotId !== undefined)
+            && effectiveBefore != null && effectiveAfter != null && effectiveAfter <= effectiveBefore) {
+          socket.emit('error', { message: 'Unknown room display setting.' });
+          return false;
         }
-      }
-      const snapshotIds = [beforeSnapshotId, afterSnapshotId].filter(id => id != null);
-      if (snapshotIds.length) {
-        const found = await pool.query(
-          'SELECT id FROM opinion_snapshots WHERE discussion_id = $1 AND id = ANY($2::int[])',
-          [discussionId, snapshotIds]
-        );
-        if (found.rows.length !== snapshotIds.length) {
-          socket.emit('error', { message: 'That snapshot cannot be shown on the room display.' });
-          return;
+        if (questionId != null) {
+          // Only a published question of this discussion can go on the display.
+          const question = await client.query(
+            'SELECT 1 FROM questions WHERE id = $1 AND discussion_id = $2 AND NOT queued',
+            [questionId, discussionId]
+          );
+          if (!question.rows.length) {
+            socket.emit('error', { message: 'That question cannot be shown on the room display.' });
+            return;
+          }
         }
-      }
-      await pool.query(
-        `UPDATE discussions
-            SET display_qr = COALESCE($1, display_qr),
-                display_layout = COALESCE($2, CASE WHEN $4::int IS NOT NULL AND display_layout = 'all' THEN 'focus' ELSE display_layout END),
-                display_question_id = CASE WHEN $5 THEN $4::int ELSE display_question_id END,
-                display_before_snapshot_id = CASE WHEN $7 THEN $6::int ELSE display_before_snapshot_id END,
-                display_after_snapshot_id = CASE WHEN $9 THEN $8::int ELSE display_after_snapshot_id END
-          WHERE id = $3`,
-        [
-          qr ?? null, layout ?? null, discussionId,
-          questionId ?? null, questionId !== undefined,
-          beforeSnapshotId ?? null, beforeSnapshotId !== undefined,
-          afterSnapshotId ?? null, afterSnapshotId !== undefined,
-        ]
-      );
-      await emitDiscussionState(discussionSlug);
+        const snapshotIds = [beforeSnapshotId, afterSnapshotId].filter(id => id != null);
+        if (snapshotIds.length) {
+          const found = await client.query(
+            'SELECT id FROM opinion_snapshots WHERE discussion_id = $1 AND id = ANY($2::int[])',
+            [discussionId, snapshotIds]
+          );
+          if (found.rows.length !== snapshotIds.length) {
+            socket.emit('error', { message: 'That snapshot cannot be shown on the room display.' });
+            return;
+          }
+        }
+        await client.query(
+          `UPDATE discussions
+              SET display_qr = COALESCE($1, display_qr),
+                  display_layout = COALESCE($2, CASE WHEN $4::int IS NOT NULL AND display_layout = 'all' THEN 'focus' ELSE display_layout END),
+                  display_question_id = CASE WHEN $5 THEN $4::int ELSE display_question_id END,
+                  display_before_snapshot_id = CASE WHEN $7 THEN $6::int ELSE display_before_snapshot_id END,
+                  display_after_snapshot_id = CASE WHEN $9 THEN $8::int ELSE display_after_snapshot_id END
+            WHERE id = $3`,
+          [
+            qr ?? null, layout ?? null, discussionId,
+            questionId ?? null, questionId !== undefined,
+            beforeSnapshotId ?? null, beforeSnapshotId !== undefined,
+            afterSnapshotId ?? null, afterSnapshotId !== undefined,
+          ]
+        );
+        return true;
+      });
+      if (changed) await emitDiscussionState(discussionSlug);
     } catch (error) {
       logError('Error setting room display settings:', error);
       socket.emit('error', { message: 'Failed to update discussion' });
@@ -1235,14 +1255,16 @@ io.on('connection', (socket) => {
         socket.emit('error', { message: 'Not authorized to moderate this discussion.' });
         return;
       }
-      // Keep what the room thought before it sees the answer (see
-      // saveSnapshotBeforeReveal). This runs first, so the snapshot holds only
-      // answers given before anyone was shown the results.
-      if (revealed === true) await saveSnapshotBeforeReveal(discussionSlug, discussionId, questionId);
-      await pool.query(
-        'UPDATE questions SET results_revealed = $1 WHERE id = $2 AND discussion_id = $3',
-        [revealed === true, questionId, discussionId]
-      );
+      const snapshotSaved = await withTransaction(async client => {
+        const target = await client.query('SELECT id FROM questions WHERE id = $1 AND discussion_id = $2 FOR UPDATE', [questionId, discussionId]);
+        if (!target.rows.length) return false;
+        const saved = revealed === true
+          ? await saveSnapshotBeforeReveal(discussionSlug, discussionId, questionId, client) : false;
+        await client.query('UPDATE questions SET results_revealed = $1 WHERE id = $2 AND discussion_id = $3',
+          [revealed === true, questionId, discussionId]);
+        return saved;
+      }, { repeatableRead: true });
+      if (snapshotSaved) audience(discussionSlug).emit('snapshotsChanged');
       await emitQuestions(discussionSlug);
     } catch (error) {
       logError('Error revealing results:', error);
@@ -1273,15 +1295,26 @@ io.on('connection', (socket) => {
         return;
       }
       const validId = Number.isInteger(questionId) && questionId > 0 && questionId <= 2147483647;
-      // The lock is checked again in the write itself, in case it was set since.
-      const updated = validId ? await pool.query(
-        `UPDATE questions q SET queued = FALSE, created_at = now()
-           FROM discussions d
-          WHERE q.id = $1 AND q.discussion_id = $2 AND q.queued AND d.id = q.discussion_id AND NOT d.locked`,
-        [questionId, discussionId]
-      ) : { rowCount: 0 };
-      if (updated.rowCount > 0) await emitQuestions(discussionSlug);
-      reply({ published: updated.rowCount > 0 });
+      const outcome = validId ? await withTransaction(async client => {
+        const discussion = await client.query('SELECT locked FROM discussions WHERE id = $1 FOR SHARE', [discussionId]);
+        if (!discussion.rows.length || discussion.rows[0].locked) return { locked: true };
+        const target = await client.query('SELECT queued FROM questions WHERE id = $1 AND discussion_id = $2 FOR UPDATE', [questionId, discussionId]);
+        if (!target.rows.length) return { exists: false, changed: false };
+        if (!target.rows[0].queued) return { exists: true, changed: false };
+        await client.query('UPDATE questions SET queued = FALSE, created_at = now() WHERE id = $1 AND discussion_id = $2', [questionId, discussionId]);
+        return { exists: true, changed: true };
+      }) : { exists: false, changed: false };
+      if (outcome.locked) {
+        reply({ published: false, reason: 'locked' });
+        return;
+      }
+      // An authorized repeat repairs failed delivery without republishing or
+      // changing created_at. Delivery failure cannot undo a committed publish.
+      if (outcome.exists) {
+        try { await emitQuestions(discussionSlug); }
+        catch (error) { logError('Error broadcasting published question:', error); }
+      }
+      reply({ published: outcome.changed });
     } catch (error) {
       logError('Error publishing question:', error);
       socket.emit('error', { message: 'Failed to publish question' });
@@ -2249,11 +2282,11 @@ function ownerToken(idPart, userId) {
 
 // Run `work(client)` in a transaction on one pooled connection: commit when it
 // returns, roll back when it throws, and always release the connection.
-async function withTransaction(work) {
+async function withTransaction(work, { repeatableRead = false } = {}) {
   const client = await pool.connect();
   let releaseError;
   try {
-    await client.query('BEGIN');
+    await client.query(repeatableRead ? 'BEGIN ISOLATION LEVEL REPEATABLE READ' : 'BEGIN');
     const result = await work(client);
     await client.query('COMMIT');
     return result;
@@ -2282,6 +2315,11 @@ async function addQuestion(topic, question, { queued = false } = {}) {
 
     const discussion = await getOrCreateDiscussionForSlug(client, topic);
     const discussionId = discussion.id;
+    const locked = await client.query('SELECT locked FROM discussions WHERE id = $1 FOR SHARE', [discussionId]);
+    if (!locked.rows.length || locked.rows[0].locked) {
+      await client.query('ROLLBACK');
+      return { locked: true };
+    }
 
     // Ensure options is a valid JSON array
     const optionsJson = JSON.stringify(normalizedQuestion.options);
@@ -3279,20 +3317,20 @@ const MAX_SNAPSHOT_NAME_LENGTH = 120;
 // `autoQuestionId` marks a snapshot the server saves by itself before that
 // question's results are first shown: it is skipped ({ empty: true }) when the
 // question has no responses, or when it already has such a snapshot.
-async function saveOpinionSnapshot(discussionId, name, { autoQuestionId = null } = {}) {
-  const client = await pool.connect();
+async function saveOpinionSnapshot(discussionId, name, { autoQuestionId = null, transactionClient = null } = {}) {
+  const client = transactionClient || await pool.connect();
   let releaseError;
   try {
     // Both reads see one consistent database state, even while participants are
     // voting. Saving never closes voting or changes anyone's current response.
-    await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ');
+    if (!transactionClient) await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ');
     const questions = await client.query(
       `SELECT id, text, type, min_value, max_value, options FROM questions
        WHERE discussion_id = $1 AND type = ANY($2::text[]) AND NOT queued ORDER BY id`,
       [discussionId, OPINION_TYPES]
     );
     if (!questions.rows.length) {
-      await client.query('ROLLBACK');
+      if (!transactionClient) await client.query('ROLLBACK');
       return { empty: true };
     }
     const votes = await client.query(
@@ -3307,7 +3345,7 @@ async function saveOpinionSnapshot(discussionId, name, { autoQuestionId = null }
       votesByQuestion.get(vote.question_id).push(vote);
     });
     if (autoQuestionId !== null && !votesByQuestion.has(autoQuestionId)) {
-      await client.query('ROLLBACK');
+      if (!transactionClient) await client.query('ROLLBACK');
       return { empty: true };
     }
     const data = buildOpinionSnapshot(questions.rows.map(question => ({
@@ -3319,18 +3357,18 @@ async function saveOpinionSnapshot(discussionId, name, { autoQuestionId = null }
        RETURNING id, name, created_at AS "createdAt", data`,
       [discussionId, name, JSON.stringify(data), autoQuestionId]
     );
-    await client.query('COMMIT');
+    if (!transactionClient) await client.query('COMMIT');
     return saved.rows.length ? { snapshot: saved.rows[0] } : { empty: true };
   } catch (err) {
     try {
-      await client.query('ROLLBACK');
+      if (!transactionClient) await client.query('ROLLBACK');
     } catch (rollbackErr) {
       logError('Error rolling back opinion snapshot transaction:', rollbackErr);
       releaseError = rollbackErr;
     }
     throw err;
   } finally {
-    client.release(releaseError);
+    if (!transactionClient) client.release(releaseError);
   }
 }
 
@@ -3349,22 +3387,31 @@ function snapshotNameBeforeReveal(questionText) {
 // did not think to save one. It covers every published tallied question, like
 // any snapshot. Nothing is saved when results are always shown (there was no
 // "before" to keep), when the question has no responses yet, or when it was
-// shown before. A failure here is logged and never stops the reveal.
-async function saveSnapshotBeforeReveal(discussionSlug, discussionId, questionId) {
+// shown before. A failed capture rolls back to its savepoint so the reveal may continue.
+// The caller commits capture and reveal together and announces only after commit.
+async function saveSnapshotBeforeReveal(discussionSlug, discussionId, questionId, client) {
+  if (!Number.isInteger(questionId)) return false;
+  await client.query('SAVEPOINT automatic_baseline');
   try {
-    if (!Number.isInteger(questionId)) return;
-    const found = await pool.query(
+    const found = await client.query(
       `SELECT q.text FROM questions q JOIN discussions d ON d.id = q.discussion_id
         WHERE q.id = $1 AND d.id = $2 AND NOT q.queued AND NOT q.results_revealed
           AND q.type = ANY($3::text[]) AND d.results_visibility IS DISTINCT FROM 'always'
           AND NOT EXISTS (SELECT 1 FROM opinion_snapshots s WHERE s.auto_question_id = q.id)`,
       [questionId, discussionId, OPINION_TYPES]
     );
-    if (!found.rows.length) return;
-    const saved = await saveOpinionSnapshot(discussionId, snapshotNameBeforeReveal(found.rows[0].text), { autoQuestionId: questionId });
-    if (saved.snapshot) audience(discussionSlug).emit('snapshotsChanged');
+    if (!found.rows.length) {
+      await client.query('RELEASE SAVEPOINT automatic_baseline');
+      return false;
+    }
+    const saved = await saveOpinionSnapshot(discussionId, snapshotNameBeforeReveal(found.rows[0].text), { autoQuestionId: questionId, transactionClient: client });
+    await client.query('RELEASE SAVEPOINT automatic_baseline');
+    return Boolean(saved.snapshot);
   } catch (error) {
     logError('Error saving a snapshot before showing results:', error);
+    await client.query('ROLLBACK TO SAVEPOINT automatic_baseline');
+    await client.query('RELEASE SAVEPOINT automatic_baseline');
+    return false;
   }
 }
 

@@ -173,6 +173,7 @@ const comparisonOf = (snapshots, beforeId, afterId) => {
 // shown to everyone. `reloadKey` changes when that set might have changed.
 // Returns null while loading, or { snapshots } / { failed: true }.
 const useSnapshots = (socket, discussionSlug, enabled, reloadKey) => {
+    const visibilityContext = JSON.stringify([discussionSlug, reloadKey]);
     const [result, setResult] = useState(null);
     const [version, setVersion] = useState(0);
     useEffect(() => {
@@ -196,12 +197,12 @@ const useSnapshots = (socket, discussionSlug, enabled, reloadKey) => {
             .then(async response => {
                 if (!response.ok) throw new Error(`Snapshots failed with status ${response.status}`);
                 const { snapshots } = await response.json();
-                if (!controller.signal.aborted) setResult({ snapshots: Array.isArray(snapshots) ? snapshots : [] });
+                if (!controller.signal.aborted) setResult({ visibilityContext, snapshots: Array.isArray(snapshots) ? snapshots : [] });
             })
             .catch(() => {
                 if (controller.signal.aborted) return;
                 // Keep a list already on screen; nobody is there to retry by hand.
-                setResult(current => current?.snapshots ? current : { failed: true });
+                setResult(current => current?.visibilityContext === visibilityContext && current.snapshots ? current : { visibilityContext, failed: true });
                 retry = setTimeout(() => setVersion(value => value + 1), RETRY_DELAY_MS);
             });
         return () => {
@@ -209,7 +210,7 @@ const useSnapshots = (socket, discussionSlug, enabled, reloadKey) => {
             clearTimeout(retry);
         };
     }, [discussionSlug, enabled, reloadKey, version]);
-    return result;
+    return enabled && result?.visibilityContext === visibilityContext ? result : null;
 };
 
 const JoinCard = ({ linkUrl, linkText, title, compact }) => (

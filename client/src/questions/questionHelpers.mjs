@@ -65,9 +65,12 @@ export function clampNumericalValue(raw, min, max) {
     if (!Number.isFinite(parsed)) {
         return null;
     }
-    const scale = 10 ** NUMERICAL_DECIMALS;
-    // `+ 0` turns a rounded -0 into 0.
-    const rounded = Math.round(parsed * scale) / scale + 0;
+    const shift = (value, places) => {
+        const [coefficient, exponent = 0] = String(value).split('e');
+        return Number(`${coefficient}e${Number(exponent) + places}`);
+    };
+    // `+ 0` turns a rounded -0 into 0; exponent shifts preserve decimal ties.
+    const rounded = shift(Math.round(shift(parsed, NUMERICAL_DECIMALS)), -NUMERICAL_DECIMALS) + 0;
     return Math.min(max, Math.max(min, rounded));
 }
 
