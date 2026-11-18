@@ -1,6 +1,7 @@
 import PropTypes from 'prop-types';
 import React from 'react';
 import { AGREEMENT_SCALE, VoteOptions, YesNoOptions } from '../questions/config';
+import { formatNumerical, numericalBinIndex, parseNumericalVote } from '../questions/questionHelpers.mjs';
 
 // Charts drawn for the room display: read from across a room on a TV or
 // projector, with nobody hovering to find a number. Every bar carries its own
@@ -159,14 +160,15 @@ export const MultipleChoiceChart = ({ question, focus }) => {
 };
 MultipleChoiceChart.propTypes = { question: PropTypes.object.isRequired, focus: PropTypes.bool };
 
-const formatNumber = n => (Number.isInteger(n) ? String(n) : n.toFixed(1));
+const formatNumber = n => (Number.isInteger(n) ? String(n) : formatNumerical(n));
 
 // Bins match the phone view's NumericalResults: up to 10 across [min, max].
-// Bin i holds the integers v with floor((v - min) / range * binCount) === i, so
-// it starts at min + ceil(i * range / binCount).
+// Over a long range, bin i holds the answers v with
+// floor((v - min) / range * binCount) === i, so its first whole number is
+// min + ceil(i * range / binCount). See numericalBinIndex.
 export const NumericalChart = ({ question, minValue, maxValue, focus }) => {
     const s = sizes(focus);
-    const values = (question.votes || []).map(v => parseInt(v.value)).filter(n => !Number.isNaN(n));
+    const values = (question.votes || []).map(v => parseNumericalVote(v.value)).filter(n => Number.isFinite(n));
     const total = values.length;
     if (total === 0) return <NoResponses focus={focus} />;
 
@@ -174,8 +176,7 @@ export const NumericalChart = ({ question, minValue, maxValue, focus }) => {
     const binCount = Math.min(10, range + 1);
     const bins = new Array(binCount).fill(0);
     values.forEach(n => {
-        const clamped = Math.min(Math.max(n, minValue), maxValue);
-        bins[Math.min(binCount - 1, Math.floor(((clamped - minValue) / range) * binCount))] += 1;
+        bins[numericalBinIndex(n, minValue, maxValue, binCount)] += 1;
     });
     // A short whole-number range (1-5, 0-10) gets one bin per value: each bar is
     // labelled with its value, centered under it. A longer range is labelled at

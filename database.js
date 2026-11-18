@@ -339,10 +339,34 @@ async function initializeDatabase(pool) {
     await pool.query('ALTER TABLE discussions ADD COLUMN IF NOT EXISTS listed BOOLEAN NOT NULL DEFAULT FALSE');
     // How the room display presents itself: the join QR code large in a sidebar,
     // small in a corner, or hidden ('full', 'corner', 'hidden'), and whether it
-    // shows every question or one at a time ('all', 'focus'). See
+    // shows every question, one at a time, or two opinion snapshots side by side
+    // ('all', 'focus', 'compare'). See
     // DISPLAY_QR_MODES and DISPLAY_LAYOUTS in server.js.
     await pool.query("ALTER TABLE discussions ADD COLUMN IF NOT EXISTS display_qr TEXT NOT NULL DEFAULT 'full'");
     await pool.query("ALTER TABLE discussions ADD COLUMN IF NOT EXISTS display_layout TEXT NOT NULL DEFAULT 'all'");
+    // The question a moderator chose to show on the room display in its
+    // one-question view (see setDisplaySettings in server.js). Not a foreign
+    // key: the id is checked against the discussion's questions when it is read,
+    // so deleting a question needs no lock on its discussion.
+    await pool.query('ALTER TABLE discussions ADD COLUMN IF NOT EXISTS display_question_id INTEGER');
+    // Set on a snapshot the server saved by itself, just before this question's
+    // results were first shown to everyone (see saveSnapshotBeforeReveal in
+    // server.js). The unique index keeps that to one snapshot per question.
+    await pool.query('ALTER TABLE opinion_snapshots ADD COLUMN IF NOT EXISTS auto_question_id INTEGER');
+    await pool.query(
+      `CREATE UNIQUE INDEX IF NOT EXISTS opinion_snapshots_auto_question_idx
+         ON opinion_snapshots (auto_question_id) WHERE auto_question_id IS NOT NULL`
+    );
+    // The two opinion snapshots the room display compares in its before-and-after
+    // view (display_layout 'compare'). Either may be null: the display then uses
+    // the first snapshot and the latest one. Checked against the discussion's
+    // snapshots when read, like display_question_id.
+    await pool.query('ALTER TABLE discussions ADD COLUMN IF NOT EXISTS display_before_snapshot_id INTEGER');
+    await pool.query('ALTER TABLE discussions ADD COLUMN IF NOT EXISTS display_after_snapshot_id INTEGER');
+    // A queued question is one a moderator has written but not published yet.
+    // Only moderators receive it, and nobody can answer it, until a moderator
+    // publishes it (see publishQuestion in server.js).
+    await pool.query('ALTER TABLE questions ADD COLUMN IF NOT EXISTS queued BOOLEAN NOT NULL DEFAULT FALSE');
 
     try {
       await pool.query('CREATE EXTENSION IF NOT EXISTS pg_trgm');

@@ -89,6 +89,7 @@ const DiscussionPage = () => {
     const updateQuestionText = (text) => setQuestionDraft(current => ({
         ...current,
         text,
+        queued: text.trim() !== '' && (current.queued || (isAdmin && queueNewQuestions)),
         type: current.typeChosen ? current.type : guessQuestionType(text) ?? QuestionTypes.AGREEMENT,
     }));
     // Changing the type or the numerical range by hand is a deliberate choice,
@@ -96,6 +97,10 @@ const DiscussionPage = () => {
     const chooseQuestionSetting = (field, value) => setQuestionDraft(current => ({ ...current, [field]: value, typeChosen: true }));
     const typeGuessed = !questionDraft.typeChosen && guessQuestionType(newQuestion) !== null;
     const updateQuestionDraft = (field, value) => setQuestionDraft(current => ({ ...current, [field]: value }));
+    // Moderators only: add the next questions to the queue instead of publishing
+    // them. It stays set from one question to the next, so a moderator can
+    // prepare a whole agenda in a row.
+    const [queueNewQuestions, setQueueNewQuestions] = useState(false);
     const [sliderValues, setSliderValues] = useState({});
     const [sortOption, setSortOption] = useState(SortOptions.MOST_RECENT);
     const [showUnansweredOnly, setShowUnansweredOnly] = useState(false);
@@ -128,6 +133,14 @@ const DiscussionPage = () => {
     const [showShareModal, setShowShareModal] = useState(false);
     const [showActionsMenu, setShowActionsMenu] = useState(false);
     const [showSnapshots, setShowSnapshots] = useState(false);
+    // Bumped when the server reports a new opinion snapshot, so an open
+    // snapshot panel loads it without anyone choosing Refresh.
+    const [snapshotRefreshSignal, setSnapshotRefreshSignal] = useState(0);
+    useEffect(() => {
+        const refreshSnapshots = () => setSnapshotRefreshSignal(value => value + 1);
+        socket.on('snapshotsChanged', refreshSnapshots);
+        return () => socket.off('snapshotsChanged', refreshSnapshots);
+    }, [socket]);
     const [presence, setPresence] = useState(0);
     const [copied, setCopied] = useState(false);
     const [shortShareUrl, setShortShareUrl] = useState('');
@@ -156,6 +169,8 @@ const DiscussionPage = () => {
     const [adminLinkCopied, setAdminLinkCopied] = useState(false);
     // Id of the question a moderator is currently editing inline (null when none).
     const [editingQuestionId, setEditingQuestionId] = useState(null);
+    const [editingDrafts, setEditingDrafts] = useState({});
+    const closeQuestionEditor = () => { setEditingQuestionId(null); setEditingDrafts({}); };
     // Experimental "opinion groups" view, hidden behind a ?clusters=1 flag so it
     // can be evaluated on a real discussion without exposing it to everyone. Once
     // enabled it's remembered per browser so the link survives navigation.
@@ -438,6 +453,18 @@ const DiscussionPage = () => {
         socket.emit('setPinned', discussionSlug, questionId, !pinned, adminToken);
     };
 
+    // Put one question on the room display, in its one-question view, or stop
+    // showing it there (the display then falls back to the first pinned or the
+    // newest question).
+    const handleShowOnDisplay = (questionId) => {
+        socket.emit('setDisplaySettings', discussionSlug, { questionId }, adminToken);
+    };
+
+    // Show a queued question to everyone and open it for answers.
+    const handlePublishQuestion = (questionId) => {
+        socket.emit('publishQuestion', discussionSlug, questionId, adminToken);
+    };
+
     const handleToggleInterest = questionInterest.toggle;
 
     // Save a moderator's edit to a question. The server only accepts it while the
@@ -445,7 +472,7 @@ const DiscussionPage = () => {
     // close the inline editor, otherwise the editor stays open to show the error.
     const handleEditQuestion = (questionId, updates, onResult) => {
         socket.emit('editQuestion', discussionSlug, questionId, updates, adminToken, (resp) => {
-            if (resp && resp.updated) setEditingQuestionId(null);
+            if (resp && resp.updated) closeQuestionEditor();
             if (typeof onResult === 'function') onResult(resp);
         });
     };
@@ -657,7 +684,9 @@ const DiscussionPage = () => {
                 headers: {
                     'Content-Type': 'application/json',
                 },
-                body: JSON.stringify({ originalTopic: discussionSlug, newTopic: newTopicName }),
+                // The moderator token lets the copy keep this discussion's
+                // queued questions; without it they are left out.
+                body: JSON.stringify({ originalTopic: discussionSlug, newTopic: newTopicName, adminToken: adminToken || undefined }),
             });
 
             if (response.ok) {
@@ -784,6 +813,12 @@ const DiscussionPage = () => {
             question.options = options;
         }
 
+        if (questionDraft.queued && !isAdmin) {
+            setError('This draft is private to the moderator queue. Moderator access is required to submit it.');
+            return;
+        }
+        if (questionDraft.queued || (isAdmin && queueNewQuestions)) question.queued = true;
+
         submitQuestion(question, false);
     };
 
@@ -825,6 +860,8 @@ const DiscussionPage = () => {
                     });
                 } else if (resp && resp.reason === 'moderator_only') {
                     setError('Only the moderator can add questions right now.');
+                } else if (resp && resp.reason === 'not_authorized') {
+                    setError('Only a moderator can add a question to the queue.');
                 }
             });
         } catch (error) {
@@ -1083,9 +1120,9 @@ const DiscussionPage = () => {
                 const draftValue = sliderValues[question.id];
                 const inputValue = draftValue !== undefined
                     ? draftValue
-                    : (userVote ? parseInt(userVote.value) : '');
-                // What Submit would send: the draft clamped into range, or null
-                // when nothing is selected.
+                    : (userVote ? Number(userVote.value) : '');
+                // What Submit would send: the draft clamped into range and
+                // rounded to two decimal places, or null when nothing is selected.
                 const sliderValue = clampNumericalValue(inputValue, minValue, maxValue);
                 const isUnset = sliderValue === null;
                 const canSubmit = draftValue !== undefined && !isUnset
@@ -1122,7 +1159,8 @@ const DiscussionPage = () => {
                                         aria-label={`Type your answer to: ${question.text}`}
                                         className="w-24 p-2 border border-gray-300 rounded-md text-center focus:outline-none focus:ring-2 focus:ring-primary"
                                         // Keep what is typed as-is so multi-digit
-                                        // entry isn't clamped mid-keystroke; the
+                                        // or decimal entry ("0." on the way to
+                                        // "0.5") isn't clamped mid-keystroke; the
                                         // slider and Submit use the clamped value,
                                         // and blur snaps the box to it.
                                         onChange={(e) => handleSliderChange(question.id, e.target.value)}
@@ -1175,7 +1213,11 @@ const DiscussionPage = () => {
         }
     };
 
-    const sortedAndFilteredQuestions = filterQuestions(sortQuestions(questions));
+    const sortedAndFilteredQuestions = filterQuestions(sortQuestions(questions.filter(question => !question.queued)));
+    // Queued questions reach moderators only (the server sends them to nobody
+    // else). They are listed apart from the live questions, in the order they
+    // were written, which is the order a moderator would publish them in.
+    const queuedQuestions = questions.filter(question => question.queued).sort((a, b) => a.id - b.id);
     // Pinned questions float to the top, preserving the chosen sort within each
     // group (Array.prototype.sort is stable).
     const orderedQuestions = [...sortedAndFilteredQuestions].sort(
@@ -1458,7 +1500,21 @@ const DiscussionPage = () => {
                 </div>
             </div>
 
-            {showSnapshots && <OpinionSnapshots key={discussionSlug} discussionSlug={discussionSlug} adminToken={adminToken} userId={userId} />}
+            {showSnapshots && (
+                <OpinionSnapshots
+                    key={discussionSlug}
+                    discussionSlug={discussionSlug}
+                    adminToken={adminToken}
+                    userId={userId}
+                    refreshSignal={snapshotRefreshSignal}
+                    display={{
+                        layout: discussionState.displayLayout,
+                        beforeId: discussionState.displayBeforeSnapshotId ?? undefined,
+                        afterId: discussionState.displayAfterSnapshotId ?? undefined,
+                    }}
+                    onDisplay={isAdmin ? (settings) => socket.emit('setDisplaySettings', discussionSlug, settings, adminToken) : undefined}
+                />
+            )}
 
             {showDeleteModal && (
                 <div className="fixed inset-0 z-50 bg-gray-600 bg-opacity-50 overflow-y-auto flex items-center justify-center p-4">
@@ -1921,11 +1977,25 @@ const DiscussionPage = () => {
                         </div>
                     </div>
                 )}
+                {isAdmin && (
+                    <label className="mb-4 flex items-start gap-2 text-sm text-gray-700">
+                        <input
+                            type="checkbox"
+                            checked={queueNewQuestions}
+                            onChange={(e) => { setQueueNewQuestions(e.target.checked); updateQuestionDraft('queued', e.target.checked); }}
+                            className="mt-1"
+                        />
+                        <span>
+                            <span className="font-medium">Add to the queue</span>
+                            <span className="block text-gray-500">Only moderators see a queued question until you publish it.</span>
+                        </span>
+                    </label>
+                )}
                 <button
                     type="submit"
                     className="w-full bg-primary text-white py-3 rounded-md hover:bg-opacity-90 transition duration-300"
                 >
-                    Add Question
+                    {isAdmin && queueNewQuestions ? 'Add to Queue' : 'Add Question'}
                 </button>
             </form>
             )}
@@ -1937,6 +2007,69 @@ const DiscussionPage = () => {
                 >
                     Connection lost. Reconnecting…
                 </div>
+            )}
+            {/* The moderator's queue: questions written ahead of time and not
+                published yet. */}
+            {isAdmin && queuedQuestions.length > 0 && (
+                <section
+                    aria-labelledby="queued-questions-heading"
+                    className="mb-8 rounded-lg border border-dashed border-indigo-300 bg-indigo-50 p-4"
+                >
+                    <h2 id="queued-questions-heading" className="text-lg font-semibold text-indigo-900">
+                        Queued questions ({queuedQuestions.length})
+                    </h2>
+                    <p className="mb-3 text-sm text-indigo-800">
+                        Only moderators see these. Publish one to show it to everyone and open it for answers.
+                    </p>
+                    <ol className="space-y-3">
+                        {queuedQuestions.map((question) => (
+                            <li key={question.id} className="rounded-md border border-indigo-100 bg-white p-4" data-testid="queued-question">
+                                {editingQuestionId === question.id ? (
+                                    <QuestionEditor
+                                        question={question}
+                            draft={editingDrafts[question.id]}
+                            onDraftChange={draft => setEditingDrafts(current => ({ ...current, [question.id]: draft }))}
+                                        onSave={handleEditQuestion}
+                                        onCancel={closeQuestionEditor}
+                                    />
+                                ) : (
+                                    <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
+                                        <div className="min-w-0 flex-1 basis-64">
+                                            <h3 className="font-semibold break-words">{question.text}</h3>
+                                            <p className="text-sm text-gray-500 break-words">
+                                                Type: {question.type}
+                                                {question.type === QuestionTypes.NUMERICAL && ` (${question.minValue} to ${question.maxValue})`}
+                                                {question.type === QuestionTypes.MULTIPLE_CHOICE && ` (${(question.options || []).join(' · ')})`}
+                                            </p>
+                                        </div>
+                                        <div className="flex gap-2 ml-auto shrink-0">
+                                            <button
+                                                onClick={() => handlePublishQuestion(question.id)}
+                                                disabled={locked}
+                                                title={locked ? 'Unlock the discussion to publish questions' : 'Show this question to everyone and open it for answers'}
+                                                className="text-xs px-2 py-1 rounded bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                                            >
+                                                Publish
+                                            </button>
+                                            <button
+                                                onClick={() => setEditingQuestionId(question.id)}
+                                                className="text-xs px-2 py-1 rounded border border-gray-300 text-gray-600 hover:bg-gray-100"
+                                            >
+                                                Edit
+                                            </button>
+                                            <button
+                                                onClick={() => handleDeleteQuestion(question.id)}
+                                                className="text-xs px-2 py-1 rounded border border-red-300 text-red-600 hover:bg-red-50"
+                                            >
+                                                Delete
+                                            </button>
+                                        </div>
+                                    </div>
+                                )}
+                            </li>
+                        ))}
+                    </ol>
+                </section>
             )}
             {/* Sorting and filtering controls */}
             <div className="mb-6 flex justify-between items-center">
@@ -1969,13 +2102,19 @@ const DiscussionPage = () => {
                 const interestCount = question.interestCount || 0;
                 const isInterested = interestedQuestionIds.has(question.id);
                 const interestPending = questionInterest.pending.has(question.id);
+                // Whether the room display is showing this question on its own: its
+                // live results, or its before-and-after comparison.
+                const onDisplay = ['focus', 'compare'].includes(discussionState.displayLayout)
+                    && discussionState.displayQuestionId === question.id;
                 return (
                 <div key={question.id} className="bg-white shadow-lg rounded-lg p-6 mb-6">
                     {isEditing ? (
                         <QuestionEditor
                             question={question}
+                            draft={editingDrafts[question.id]}
+                            onDraftChange={draft => setEditingDrafts(current => ({ ...current, [question.id]: draft }))}
                             onSave={handleEditQuestion}
-                            onCancel={() => setEditingQuestionId(null)}
+                            onCancel={closeQuestionEditor}
                         />
                     ) : (
                     <>
@@ -2011,7 +2150,7 @@ const DiscussionPage = () => {
                             </h2>
                         </div>
                         {isAdmin && (
-                            <div className="flex gap-2 ml-auto shrink-0">
+                            <div className="flex flex-wrap justify-end gap-2 ml-auto max-w-full">
                                 {!hasResponses && (
                                     <button
                                         onClick={() => setEditingQuestionId(question.id)}
@@ -2027,12 +2166,24 @@ const DiscussionPage = () => {
                                         aria-pressed={question.resultsRevealed === true}
                                         title={question.resultsRevealed
                                             ? 'Go back to showing results only to people who have voted'
-                                            : 'Show the results to everyone now, including on the room display'}
+                                            : 'Show the results to everyone now, including on the room display. The first time, a “before” snapshot of the room’s answers is saved.'}
                                         className="text-xs px-2 py-1 rounded border border-indigo-300 text-indigo-700 hover:bg-indigo-50"
                                     >
                                         {question.resultsRevealed ? 'Hide results' : 'Show results'}
                                     </button>
                                 )}
+                                <button
+                                    onClick={() => handleShowOnDisplay(onDisplay ? null : question.id)}
+                                    aria-pressed={onDisplay}
+                                    title={onDisplay
+                                        ? 'Stop showing this question on its own on the room display'
+                                        : 'Show this question on its own on the room display'}
+                                    className={`text-xs px-2 py-1 rounded border border-indigo-300 ${onDisplay
+                                        ? 'bg-indigo-600 text-white hover:bg-indigo-700'
+                                        : 'text-indigo-700 hover:bg-indigo-50'}`}
+                                >
+                                    {onDisplay ? 'On display' : 'Show on display'}
+                                </button>
                                 <button
                                     onClick={() => handleTogglePin(question.id, question.pinned)}
                                     className="text-xs px-2 py-1 rounded border border-gray-300 text-gray-600 hover:bg-gray-100"

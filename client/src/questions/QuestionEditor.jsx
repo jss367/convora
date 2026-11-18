@@ -9,17 +9,25 @@ import QuestionTextBox from '../QuestionTextBox';
 // Inline moderator editor for a question's wording/type, mirroring the fields of
 // the "add question" form. Only mounted for questions with no responses yet; the
 // server enforces that same rule, so a stale view can't slip an edit through.
-const QuestionEditor = ({ question, onSave, onCancel }) => {
-    const [text, setText] = useState(question.text);
-    const [type, setType] = useState(question.type);
-    const [minValue, setMinValue] = useState(question.minValue ?? 0);
-    const [maxValue, setMaxValue] = useState(question.maxValue ?? 100);
-    const [settings, setSettings] = useState({ maxResponses: question.maxResponses, showAttribution: question.showAttribution });
-    const [options, setOptions] = useState(
-        Array.isArray(question.options) && question.options.length >= MULTIPLE_CHOICE_LIMITS.MIN_OPTIONS
-            ? question.options
-            : ['', '']
-    );
+const QuestionEditor = ({ question, onSave, onCancel, draft, onDraftChange }) => {
+    const [localDraft, setLocalDraft] = useState(() => ({
+        text: question.text, type: question.type, minValue: question.minValue ?? 0, maxValue: question.maxValue ?? 100,
+        settings: { maxResponses: question.maxResponses, showAttribution: question.showAttribution },
+        options: Array.isArray(question.options) && question.options.length >= MULTIPLE_CHOICE_LIMITS.MIN_OPTIONS
+            ? question.options : ['', ''],
+    }));
+    const currentDraft = draft || localDraft;
+    const { text, type, minValue, maxValue, settings, options } = currentDraft;
+    const update = (key, value) => {
+        const next = { ...currentDraft, [key]: typeof value === 'function' ? value(currentDraft[key]) : value };
+        if (onDraftChange) onDraftChange(next); else setLocalDraft(next);
+    };
+    const setText = value => update('text', value);
+    const setType = value => update('type', value);
+    const setMinValue = value => update('minValue', value);
+    const setMaxValue = value => update('maxValue', value);
+    const setSettings = value => update('settings', value);
+    const setOptions = value => update('options', value);
     const [error, setError] = useState(null);
     const [saving, setSaving] = useState(false);
 
@@ -132,6 +140,8 @@ const QuestionEditor = ({ question, onSave, onCancel }) => {
 };
 QuestionEditor.propTypes = {
     question: PropTypes.object.isRequired,
+    draft: PropTypes.object,
+    onDraftChange: PropTypes.func,
     onSave: PropTypes.func.isRequired,
     onCancel: PropTypes.func.isRequired,
 };

@@ -2267,6 +2267,46 @@ test('a Numerical vote outside the question range (or non-numeric) is rejected, 
   }
 });
 
+test('a Numerical vote may be a decimal and is stored to two places', async () => {
+  const created = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('numerical-decimals') });
+  const { slug, adminToken } = created.body;
+  const first = await connectSocket();
+  const second = await connectSocket();
+  try {
+    first.emit('joinDiscussion', slug);
+    const added = waitForQuestions(first, qs => qs.some(q => q.text === 'Chance of rain?'), 'numerical added');
+    first.emit('addQuestion', slug, { text: 'Chance of rain?', type: 'Numerical', minValue: 0, maxValue: 100, options: [] });
+    const question = (await added).find(q => q.text === 'Chance of rain?');
+
+    // A probability below 1% keeps its value instead of becoming 0 or 1.
+    assert.deepEqual(await emitWithAck(first, 'vote', slug, question.id, 0.5, 'decimal-a', 'A', undefined), { ok: true });
+    // More precision than two places is rounded, whether sent as a number or text.
+    assert.deepEqual(await emitWithAck(second, 'vote', slug, question.id, '33.337', 'decimal-b', 'B', undefined), { ok: true });
+    assert.deepEqual((await storedVotes(question.id)).map(vote => vote.value), ['0.5', '33.34']);
+
+    // Rounding cannot carry an answer past the bounds, and the bounds still hold.
+    const tooHigh = waitForEvent(second, 'error', e => /invalid vote/i.test(e.message));
+    second.emit('vote', slug, question.id, 100.004, 'decimal-b', 'B');
+    await tooHigh;
+    assert.deepEqual(await emitWithAck(second, 'vote', slug, question.id, 99.999, 'decimal-b', 'B', undefined), { ok: true });
+    assert.deepEqual((await storedVotes(question.id)).map(vote => vote.value), ['0.5', '100']);
+
+    // Averages and snapshots are built from the decimals, not from truncated values.
+    const saved = await jsonRequest('POST', `/api/discussions/${slug}/snapshots`, { name: 'Decimals', adminToken });
+    const snapshot = saved.body.data.questions.find(q => q.id === question.id);
+    assert.equal(snapshot.average, 50.25);
+    assert.equal(snapshot.distribution[0].count, 1);
+    assert.equal(snapshot.distribution[9].count, 1);
+    const summary = await jsonRequest('GET', `/api/discussions/${slug}/summary`, undefined, asModerator(adminToken));
+    const summarized = summary.body.questions.find(q => q.id === question.id);
+    assert.equal(summarized.average, 50.25);
+    assert.equal(summarized.minResponse, 0.5);
+  } finally {
+    first.disconnect();
+    second.disconnect();
+  }
+});
+
 test('Socket.IO sanitizes display names: anonymous stores null, long names are clamped', async () => {
   const topic = uniqueTopic('names');
   const author = await connectSocket();
@@ -4986,5 +5026,512 @@ test('deleting a question or its discussion removes the interest marks', async (
     assert.equal(await interestCount(seed.written), 0);
   } finally {
     socket.disconnect();
+  }
+});
+
+// A moderator socket: joined, identified by nothing but its proven token.
+async function joinAsModerator(slug, adminToken) {
+  const { socket } = await joinAs(slug, null);
+  assert.equal((await emitWithAck(socket, 'checkModerator', slug, adminToken)).isModerator, true);
+  return socket;
+}
+
+test('a queued question reaches moderators only, and nobody can answer it, until it is published', async () => {
+  const created = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('queue') });
+  const { slug, adminToken } = created.body;
+  const mod = await joinAsModerator(slug, adminToken);
+  const { socket: participant } = await joinAs(slug, 'queue-participant');
+  const { socket: display } = await joinDisplay(slug);
+  try {
+    const queuedPayload = { text: 'Takeover within a year is likely', type: 'Agreement', options: [], queued: true };
+
+    // Only a moderator can queue. A refused request adds nothing, because
+    // adding it unqueued would show the question to the whole room.
+    assert.deepEqual(
+      await emitWithAck(participant, 'addQuestion', slug, queuedPayload, false, undefined),
+      { added: false, reason: 'not_authorized' }
+    );
+    assert.deepEqual(
+      await emitWithAck(participant, 'addQuestion', slug, queuedPayload, false, 'not-the-token'),
+      { added: false, reason: 'not_authorized' }
+    );
+    assert.equal((await pool.query('SELECT count(*)::int AS n FROM questions')).rows[0].n, 0);
+
+    const modSees = waitForQuestions(mod, qs => qs.length === 1, 'moderator receives the queued question');
+    const participantSees = nextQuestions(participant, 'participant broadcast after queueing');
+    const displaySees = nextQuestions(display, 'display broadcast after queueing');
+    assert.deepEqual(await emitWithAck(mod, 'addQuestion', slug, queuedPayload, false, adminToken), { added: true });
+    const [queued] = await modSees;
+    assert.equal(queued.queued, true);
+    assert.deepEqual(await participantSees, []);
+    assert.deepEqual(await displaySees, []);
+
+    // Its id is easy to guess, so every way to answer it is refused as if the
+    // question did not exist.
+    const refusedVote = waitForEvent(participant, 'error', e => /invalid question/i.test(e.message));
+    assert.deepEqual(await emitWithAck(participant, 'vote', slug, queued.id, 'Agree', 'queue-participant', 'P', undefined), { ok: false });
+    await refusedVote;
+    assert.deepEqual(await emitWithAck(participant, 'clearVote', slug, queued.id, 'queue-participant'), { ok: false });
+    assert.deepEqual(await emitWithAck(participant, 'setQuestionInterest', slug, queued.id, true, 'queue-participant'), { updated: false });
+    assert.deepEqual(await emitWithAck(participant, 'getQuestionInterestState', slug, queued.id, 'queue-participant'), { error: 'not_found' });
+    assert.equal((await pool.query('SELECT count(*)::int AS n FROM votes')).rows[0].n, 0);
+    assert.equal((await pool.query('SELECT count(*)::int AS n FROM question_interest')).rows[0].n, 0);
+
+    // A participant who writes the same statement is not shown the queued
+    // wording as "a similar statement"; theirs is simply added.
+    const publicAdded = waitForQuestions(participant, qs => qs.length === 1, 'participant question added');
+    assert.deepEqual(
+      await emitWithAck(participant, 'addQuestion', slug, { ...queuedPayload, queued: undefined }, false, undefined),
+      { added: true }
+    );
+    const [publicQuestion] = await publicAdded;
+    assert.equal(publicQuestion.queued, false);
+    assert.notEqual(publicQuestion.id, queued.id);
+
+    // A moderator queueing a near-duplicate is asked first, and "Post anyway"
+    // (which sends the echoed question back) still queues it.
+    const similar = waitForEvent(mod, 'similarQuestion');
+    assert.deepEqual(
+      await emitWithAck(mod, 'addQuestion', slug, { ...queuedPayload, text: 'Takeover within a year is likely!' }, false, adminToken),
+      { added: false, reason: 'similar' }
+    );
+    const echoed = (await similar).question;
+    assert.equal(echoed.queued, true);
+    assert.deepEqual(await emitWithAck(mod, 'addQuestion', slug, echoed, true, adminToken), { added: true });
+    const flags = async () => (await pool.query('SELECT text, queued FROM questions ORDER BY id')).rows.map(row => row.queued);
+    assert.deepEqual(await flags(), [true, false, true]);
+
+    // Summaries, exports and snapshots leave queued questions out for everyone.
+    const base = `/api/discussions/${slug}`;
+    for (const headers of [{}, asUser('queue-participant'), asModerator(adminToken)]) {
+      const summary = (await jsonRequest('GET', `${base}/summary`, undefined, headers)).body;
+      assert.deepEqual(summary.questions.map(q => q.id), [publicQuestion.id]);
+      assert.equal(summary.counts.questions, 1);
+      const csv = await fetch(`${baseUrl}${base}/export.csv`, { headers });
+      assert.equal((await csv.text()).split('\n').length, 2, 'header and the one published question');
+    }
+    const snapshot = await jsonRequest('POST', `${base}/snapshots`, { name: 'Queue', adminToken });
+    assert.deepEqual(snapshot.body.data.questions.map(q => q.id), [publicQuestion.id]);
+
+    // Showing results to everyone does not show queued questions to everyone.
+    const alwaysForParticipant = waitForEvent(participant, 'discussionState', state => state.resultsVisibility === 'always');
+    const alwaysQuestions = nextQuestions(participant, 'participant broadcast in always mode');
+    const alwaysForMod = nextQuestions(mod, 'moderator broadcast in always mode');
+    const alwaysForDisplay = nextQuestions(display, 'display broadcast in always mode');
+    mod.emit('setResultsVisibility', slug, 'always', adminToken);
+    await alwaysForParticipant;
+    assert.deepEqual((await alwaysQuestions).map(q => q.id), [publicQuestion.id]);
+    assert.deepEqual((await alwaysForDisplay).map(q => q.id), [publicQuestion.id]);
+    assert.equal((await alwaysForMod).length, 3);
+    // Someone who joins or proves a moderator token in that mode gets the right list.
+    const late = await joinAs(slug, 'queue-latecomer');
+    try {
+      assert.deepEqual(late.questions.map(q => q.id), [publicQuestion.id]);
+      const promoted = waitForQuestions(late.socket, qs => qs.length === 3, 'queued questions after proving a token');
+      assert.equal((await emitWithAck(late.socket, 'checkModerator', slug, adminToken)).isModerator, true);
+      await promoted;
+    } finally {
+      late.socket.disconnect();
+    }
+
+    // Only a moderator can publish.
+    const refusedPublish = waitForEvent(participant, 'error', e => /not authorized/i.test(e.message));
+    assert.deepEqual(await emitWithAck(participant, 'publishQuestion', slug, queued.id, 'not-the-token'), { published: false, reason: 'not_authorized' });
+    await refusedPublish;
+    assert.deepEqual(await flags(), [true, false, true]);
+
+    // Publishing shows the question to everyone as the newest one.
+    const published = waitForQuestions(participant, qs => qs.length === 2, 'participant receives the published question');
+    const publishedOnDisplay = waitForQuestions(display, qs => qs.length === 2, 'display receives the published question');
+    assert.deepEqual(await emitWithAck(mod, 'publishQuestion', slug, queued.id, adminToken), { published: true });
+    assert.deepEqual((await published).map(q => q.id), [publicQuestion.id, queued.id]);
+    const onDisplay = await publishedOnDisplay;
+    assert.deepEqual(onDisplay.map(q => q.id), [publicQuestion.id, queued.id]);
+    assert.equal(onDisplay[1].queued, false);
+    assert.ok(Date.parse(onDisplay[1].created_at) > Date.parse(onDisplay[0].created_at), 'published now, so it sorts as the most recent');
+    // Publishing twice changes nothing, and neither does an id from elsewhere.
+    assert.deepEqual(await emitWithAck(mod, 'publishQuestion', slug, queued.id, adminToken), { published: false });
+    assert.deepEqual(await emitWithAck(mod, 'publishQuestion', slug, 'not-an-id', adminToken), { published: false });
+
+    // Now it can be answered.
+    assert.deepEqual(await emitWithAck(participant, 'vote', slug, queued.id, 'Agree', 'queue-participant', 'P', undefined), { ok: true });
+
+    // A moderator's duplicate keeps the rest of the agenda queued.
+    const copiedQuestions = async newSlug => (await pool.query(
+      'SELECT q.text, q.queued FROM questions q JOIN discussions d ON d.id = q.discussion_id WHERE d.slug = $1 ORDER BY q.id',
+      [newSlug]
+    )).rows;
+    const copy = await jsonRequest('POST', '/api/duplicate-discussion', { originalTopic: slug, newTopic: uniqueTopic('queue-copy'), adminToken });
+    const copied = await copiedQuestions(copy.body.newSlug);
+    assert.deepEqual(copied.map(row => row.queued), [false, false, true]);
+    assert.equal(copied[2].text, 'Takeover within a year is likely!');
+    // Anyone can duplicate a discussion and moderates the copy, so a duplicate
+    // made without the original's moderator token leaves the queue behind.
+    for (const body of [{}, { adminToken: 'not-the-token' }, { adminToken: copy.body.adminToken }]) {
+      const stranger = await jsonRequest('POST', '/api/duplicate-discussion', { originalTopic: slug, newTopic: uniqueTopic('queue-stranger-copy'), ...body });
+      assert.equal(stranger.status, 200);
+      assert.deepEqual((await copiedQuestions(stranger.body.newSlug)).map(row => row.queued), [false, false]);
+    }
+
+    // Locking closes new questions, and publishing would add one for the room.
+    const lockedState = waitForEvent(mod, 'discussionState', state => state.locked === true);
+    mod.emit('setLocked', slug, true, adminToken);
+    await lockedState;
+    const remaining = (await pool.query('SELECT id FROM questions WHERE queued AND discussion_id = $1', [created.body.id])).rows[0].id;
+    assert.deepEqual(await emitWithAck(mod, 'publishQuestion', slug, remaining, adminToken), { published: false, reason: 'locked' });
+    assert.equal((await pool.query('SELECT queued FROM questions WHERE id = $1', [remaining])).rows[0].queued, true);
+  } finally {
+    mod.disconnect();
+    participant.disconnect();
+    display.disconnect();
+  }
+});
+
+test('existing questions are published when the queue column is added', async () => {
+  await stopServer();
+  try {
+    const discussion = await pool.query("INSERT INTO discussions (topic, slug) VALUES ('Before the queue', 'before-the-queue') RETURNING id");
+    await pool.query('ALTER TABLE questions DROP COLUMN queued');
+    await pool.query("INSERT INTO questions (discussion_id, text, type) VALUES ($1, 'Older question', 'Agreement')", [discussion.rows[0].id]);
+    await initializeDatabase(pool);
+    assert.equal((await pool.query("SELECT queued FROM questions WHERE text = 'Older question'")).rows[0].queued, false);
+  } finally {
+    await startServer();
+  }
+});
+
+test('a moderator chooses which question the room display shows on its own', async () => {
+  const created = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('display-question') });
+  const other = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('display-question-other') });
+  const { slug, adminToken } = created.body;
+  const mod = await joinAsModerator(slug, adminToken);
+  const display = await connectSocket();
+  const add = async (socket, where, token, question) => {
+    assert.deepEqual(await emitWithAck(socket, 'addQuestion', where, { type: 'Agreement', options: [], ...question }, true, token), { added: true });
+    return (await pool.query('SELECT id FROM questions WHERE text = $1', [question.text])).rows[0].id;
+  };
+  const stateWhere = predicate => waitForEvent(display, 'discussionState', predicate);
+  const refusal = pattern => waitForEvent(mod, 'error', error => pattern.test(error.message));
+  try {
+    const first = await add(mod, slug, adminToken, { text: 'First statement' });
+    const second = await add(mod, slug, adminToken, { text: 'Second statement' });
+    const queued = await add(mod, slug, adminToken, { text: 'Queued statement', queued: true });
+    const foreign = await add(mod, other.body.slug, other.body.adminToken, { text: 'Another room' });
+
+    const initial = stateWhere(() => true);
+    display.emit('joinDisplay', slug);
+    assert.equal((await initial).displayQuestionId, null);
+
+    // Choosing a question also switches a display that lists every question to
+    // the one-question view, so one click puts the question on the screen.
+    let changed = stateWhere(state => state.displayQuestionId === first);
+    mod.emit('setDisplaySettings', slug, { questionId: first }, adminToken);
+    assert.equal((await changed).displayLayout, 'focus');
+
+    // An explicit layout wins, and the choice is kept for when the moderator
+    // goes back to one question.
+    changed = stateWhere(state => state.displayQuestionId === second);
+    mod.emit('setDisplaySettings', slug, { questionId: second, layout: 'all' }, adminToken);
+    assert.equal((await changed).displayLayout, 'all');
+    changed = stateWhere(state => state.displayLayout === 'focus');
+    mod.emit('setDisplaySettings', slug, { layout: 'focus' }, adminToken);
+    assert.equal((await changed).displayQuestionId, second);
+
+    // Other settings leave the chosen question alone.
+    changed = stateWhere(state => state.displayQr === 'hidden');
+    mod.emit('setDisplaySettings', slug, { qr: 'hidden' }, adminToken);
+    assert.equal((await changed).displayQuestionId, second);
+
+    // Only a published question of this discussion can be chosen.
+    for (const [questionId, pattern] of [
+      [queued, /cannot be shown/i], [foreign, /cannot be shown/i], [999999999, /cannot be shown/i],
+      ['7', /room display setting/i], [1.5, /room display setting/i], [0, /room display setting/i],
+    ]) {
+      const refused = refusal(pattern);
+      mod.emit('setDisplaySettings', slug, { questionId }, adminToken);
+      await refused;
+    }
+    const outsider = await connectSocket();
+    try {
+      const refused = waitForEvent(outsider, 'error', error => /not authorized/i.test(error.message));
+      outsider.emit('setDisplaySettings', slug, { questionId: first }, 'not-the-token');
+      await refused;
+    } finally {
+      outsider.disconnect();
+    }
+    assert.equal((await pool.query('SELECT display_question_id FROM discussions WHERE slug = $1', [slug])).rows[0].display_question_id, second);
+
+    // A new question from the room does not take over the screen.
+    await add(mod, slug, undefined, { text: 'A participant statement' });
+    assert.equal((await pool.query('SELECT display_question_id FROM discussions WHERE slug = $1', [slug])).rows[0].display_question_id, second);
+
+    // Clearing the choice keeps the layout.
+    changed = stateWhere(state => state.displayQuestionId === null);
+    mod.emit('setDisplaySettings', slug, { questionId: null }, adminToken);
+    assert.equal((await changed).displayLayout, 'focus');
+
+    // Deleting the chosen question clears the choice for everyone watching.
+    changed = stateWhere(state => state.displayQuestionId === first);
+    mod.emit('setDisplaySettings', slug, { questionId: first }, adminToken);
+    await changed;
+    changed = stateWhere(state => state.displayQuestionId === null);
+    mod.emit('deleteQuestion', slug, first, adminToken);
+    await changed;
+    assert.equal((await pool.query('SELECT display_question_id FROM discussions WHERE slug = $1', [slug])).rows[0].display_question_id, null);
+  } finally {
+    mod.disconnect();
+    display.disconnect();
+  }
+});
+
+test('showing a question\'s results for the first time saves a "before" snapshot by itself', async () => {
+  const seed = await seedResultsDiscussion('auto-snapshot');
+  const { slug, adminToken } = seed;
+  const url = `/api/discussions/${slug}/snapshots`;
+  const mod = await joinAsModerator(slug, adminToken);
+  const { socket: voter } = await joinAs(slug, 'seed-c');
+  const { socket: display } = await joinDisplay(slug);
+  const snapshots = async (headers = asModerator(adminToken)) => (await jsonRequest('GET', url, undefined, headers)).body.snapshots;
+  // Show or hide a question's results and wait until the room has been told.
+  const setRevealed = async (questionId, revealed) => {
+    const told = waitForQuestions(mod, qs => byId(qs, questionId)?.resultsRevealed === revealed, `results ${revealed ? 'shown' : 'hidden'}`);
+    mod.emit('setResultsRevealed', slug, questionId, revealed, adminToken);
+    await told;
+  };
+  try {
+    assert.deepEqual(await snapshots(), []);
+
+    // Everyone watching is told, so an open snapshot panel and the room display reload.
+    const voterTold = waitForEvent(voter, 'snapshotsChanged');
+    const displayTold = waitForEvent(display, 'snapshotsChanged');
+    await setRevealed(seed.agreement, true);
+    await Promise.all([voterTold, displayTold]);
+    const [first, ...rest] = await snapshots();
+    assert.deepEqual(rest, []);
+    assert.equal(first.name, 'Before results shown: We should proceed');
+    // Like any snapshot, it covers every tallied question, as the room stood.
+    assert.deepEqual(first.data.questions.map(q => [q.id, q.responseCount]), [[seed.agreement, 2], [seed.yesNo, 2], [seed.numerical, 2]]);
+    assert.doesNotMatch(JSON.stringify(first), /seed-a|seed-b|Seed A|Seed B|auto_question_id|autoQuestionId/);
+    // The revealed question's saved results are open to everyone, like its live ones.
+    const forDisplay = (await snapshots({}))[0].data.questions;
+    assert.equal(byId(forDisplay, seed.agreement).responseCount, 2);
+    assert.equal(byId(forDisplay, seed.yesNo).resultsHidden, true);
+
+    // Answers change once people have seen the results. Hiding and showing the
+    // same question again keeps the one snapshot from before.
+    assert.deepEqual(await emitWithAck(voter, 'vote', slug, seed.agreement, 'Strongly Agree', 'seed-c', 'Seed C', undefined), { ok: true });
+    await setRevealed(seed.agreement, false);
+    await setRevealed(seed.agreement, true);
+    assert.deepEqual(await snapshots(), [first]);
+
+    // Nothing is saved for a question nobody has answered yet...
+    const added = waitForQuestions(mod, qs => qs.some(q => q.text === 'Nobody answered this'), 'unanswered question added');
+    mod.emit('addQuestion', slug, { text: 'Nobody answered this', type: 'Yes/No', options: [] }, true, adminToken);
+    const unanswered = (await added).find(q => q.text === 'Nobody answered this').id;
+    await setRevealed(unanswered, true);
+    assert.deepEqual(await snapshots(), [first]);
+    // ...but once it has answers, its first showing after that does save one.
+    await setRevealed(unanswered, false);
+    assert.deepEqual(await emitWithAck(voter, 'vote', slug, unanswered, 'Yes', 'seed-c', 'Seed C', undefined), { ok: true });
+    await setRevealed(unanswered, true);
+    const afterUnanswered = await snapshots();
+    assert.deepEqual(afterUnanswered.map(snapshot => snapshot.name), [first.name, 'Before results shown: Nobody answered this']);
+    // It records the earlier question as it is now, after people updated.
+    assert.equal(byId(afterUnanswered[1].data.questions, seed.agreement).responseCount, 3);
+
+    // Someone without a moderator token changes nothing.
+    const refused = waitForEvent(voter, 'error', error => /not authorized/i.test(error.message));
+    voter.emit('setResultsRevealed', slug, seed.yesNo, true, 'not-the-token');
+    await refused;
+    assert.equal((await snapshots()).length, 2);
+
+    // While results are always shown there is no "before" to keep.
+    const always = waitForEvent(mod, 'discussionState', state => state.resultsVisibility === 'always');
+    mod.emit('setResultsVisibility', slug, 'always', adminToken);
+    await always;
+    await setRevealed(seed.yesNo, true);
+    assert.equal((await snapshots()).length, 2);
+    await setRevealed(seed.yesNo, false);
+    const afterVote = waitForEvent(mod, 'discussionState', state => state.resultsVisibility === 'after_vote');
+    mod.emit('setResultsVisibility', slug, 'after_vote', adminToken);
+    await afterVote;
+    await setRevealed(seed.yesNo, true);
+    assert.equal((await snapshots()).length, 3);
+
+    // Written questions have no tally, so showing "results" for one saves nothing.
+    mod.emit('setResultsRevealed', slug, seed.written, true, adminToken);
+    // A long question is cut to fit the 120-character snapshot name.
+    const longText = `How likely is it that ${'the room changes its mind '.repeat(8)}after talking?`;
+    const longAdded = waitForQuestions(mod, qs => qs.some(q => q.text === longText.trim()), 'long question added');
+    mod.emit('addQuestion', slug, { text: longText, type: 'Numerical', minValue: 0, maxValue: 100, options: [] }, true, adminToken);
+    const longId = (await longAdded).find(q => q.text === longText.trim()).id;
+    assert.deepEqual(await emitWithAck(voter, 'vote', slug, longId, 12.5, 'seed-c', 'Seed C', undefined), { ok: true });
+    await setRevealed(longId, true);
+    const all = await snapshots();
+    assert.equal(all.length, 4);
+    assert.equal(all[3].name.length, 120);
+    assert.match(all[3].name, /^Before results shown: How likely is it that the room changes its mind .*…$/);
+    assert.equal(byId(all[3].data.questions, longId).average, 12.5);
+
+    // A snapshot a moderator saves by hand is announced the same way and is
+    // unaffected by the one-per-question rule.
+    const told = waitForEvent(voter, 'snapshotsChanged');
+    const manual = await jsonRequest('POST', url, { name: 'After discussion', adminToken });
+    assert.equal(manual.status, 201);
+    await told;
+    assert.deepEqual((await snapshots()).map(snapshot => snapshot.id), [...all.map(snapshot => snapshot.id), manual.body.id]);
+  } finally {
+    mod.disconnect();
+    voter.disconnect();
+    display.disconnect();
+  }
+});
+
+test('a moderator puts a comparison of two opinion snapshots on the room display', async () => {
+  const seed = await seedResultsDiscussion('display-compare');
+  const other = await seedResultsDiscussion('display-compare-other');
+  const { slug, adminToken } = seed;
+  const mod = await joinAsModerator(slug, adminToken);
+  const display = await connectSocket();
+  const save = async (room, name) => (await jsonRequest('POST', `/api/discussions/${room.slug}/snapshots`, { name, adminToken: room.adminToken })).body.id;
+  const stateWhere = predicate => waitForEvent(display, 'discussionState', predicate);
+  const stored = async () => (await pool.query(
+    'SELECT display_layout, display_question_id, display_before_snapshot_id, display_after_snapshot_id FROM discussions WHERE slug = $1', [slug]
+  )).rows[0];
+  try {
+    const before = await save(seed, 'Before');
+    const middle = await save(seed, 'Middle');
+    const after = await save(seed, 'After');
+    const foreign = await save(other, 'Another room');
+
+    const initial = stateWhere(() => true);
+    display.emit('joinDisplay', slug);
+    const state = await initial;
+    assert.equal(state.displayBeforeSnapshotId, null);
+    assert.equal(state.displayAfterSnapshotId, null);
+
+    // The layout alone: the display picks the first and the latest snapshot.
+    let changed = stateWhere(s => s.displayLayout === 'compare');
+    mod.emit('setDisplaySettings', slug, { layout: 'compare' }, adminToken);
+    assert.equal((await changed).displayBeforeSnapshotId, null);
+
+    // A chosen pair.
+    changed = stateWhere(s => s.displayAfterSnapshotId === after);
+    mod.emit('setDisplaySettings', slug, { beforeSnapshotId: middle, afterSnapshotId: after }, adminToken);
+    assert.equal((await changed).displayBeforeSnapshotId, middle);
+    // Each id changes on its own, and null goes back to the display's own pick.
+    changed = stateWhere(s => s.displayBeforeSnapshotId === before);
+    mod.emit('setDisplaySettings', slug, { beforeSnapshotId: before }, adminToken);
+    assert.equal((await changed).displayAfterSnapshotId, after);
+    changed = stateWhere(s => s.displayAfterSnapshotId === null);
+    mod.emit('setDisplaySettings', slug, { afterSnapshotId: null }, adminToken);
+    assert.equal((await changed).displayBeforeSnapshotId, before);
+
+    // Choosing a question narrows the comparison to it and keeps the layout.
+    changed = stateWhere(s => s.displayQuestionId === seed.numerical);
+    mod.emit('setDisplaySettings', slug, { questionId: seed.numerical }, adminToken);
+    assert.equal((await changed).displayLayout, 'compare');
+
+    // Only this discussion's snapshots, in order, can be chosen.
+    for (const [settings, pattern] of [
+      [{ beforeSnapshotId: foreign }, /snapshot cannot be shown/i],
+      [{ afterSnapshotId: 999999999 }, /snapshot cannot be shown/i],
+      [{ beforeSnapshotId: after, afterSnapshotId: before }, /room display setting/i],
+      [{ beforeSnapshotId: before, afterSnapshotId: before }, /room display setting/i],
+      [{ beforeSnapshotId: String(before) }, /room display setting/i],
+      [{ layout: 'sideways' }, /room display setting/i],
+    ]) {
+      const refused = waitForEvent(mod, 'error', error => pattern.test(error.message));
+      mod.emit('setDisplaySettings', slug, settings, adminToken);
+      await refused;
+    }
+    assert.deepEqual(await stored(), {
+      display_layout: 'compare', display_question_id: seed.numerical,
+      display_before_snapshot_id: before, display_after_snapshot_id: null,
+    });
+
+    // The display reads the snapshots as someone who has answered nothing, so
+    // it gets results only for questions the moderator has shown to everyone.
+    const hidden = (await jsonRequest('GET', `/api/discussions/${slug}/snapshots`)).body.snapshots;
+    assert.deepEqual(hidden.map(snapshot => snapshot.id), [before, middle, after]);
+    assert.ok(hidden[0].data.questions.every(question => question.resultsHidden === true));
+    const revealed = waitForQuestions(mod, qs => byId(qs, seed.numerical)?.resultsRevealed === true, 'numerical results shown');
+    mod.emit('setResultsRevealed', slug, seed.numerical, true, adminToken);
+    await revealed;
+    const shown = (await jsonRequest('GET', `/api/discussions/${slug}/snapshots`)).body.snapshots;
+    assert.equal(byId(shown[0].data.questions, seed.numerical).average, 40);
+    assert.equal(byId(shown[0].data.questions, seed.agreement).resultsHidden, true);
+  } finally {
+    mod.disconnect();
+    display.disconnect();
+  }
+});
+
+test('automatic baseline includes an in-flight vote committed while reveal waits for the question lock', async () => {
+  const { id, slug, adminToken } = (await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('synthetic-reveal-mvcc') })).body;
+  const questionId = (await pool.query(
+    "INSERT INTO questions(discussion_id,text,type,min_value,max_value) VALUES ($1,'Fictional scale','Numerical',0,5) RETURNING id", [id]
+  )).rows[0].id;
+  await pool.query("INSERT INTO votes(question_id,value,user_id) VALUES ($1,'0','fictional-first')", [questionId]);
+  const moderator = await connectSocket();
+  const voter = await pool.connect();
+  let committed = false;
+  try {
+    const joined = waitForQuestions(moderator, questions => questions.some(q => q.id === questionId), 'synthetic question joined');
+    moderator.emit('joinDiscussion', slug); await joined;
+    await voter.query('BEGIN');
+    await voter.query('SELECT id FROM questions WHERE id=$1 FOR SHARE', [questionId]);
+    await voter.query("INSERT INTO votes(question_id,value,user_id) VALUES ($1,'5','fictional-in-flight')", [questionId]);
+    const announced = waitForEvent(moderator, 'snapshotsChanged');
+    const shown = waitForQuestions(moderator, questions => questions.some(q => q.id === questionId && q.votes.length === 2), 'both committed votes shown');
+    moderator.emit('setResultsRevealed', slug, questionId, true, adminToken);
+    const deadline = Date.now() + 5000;
+    let waiting = false;
+    while (Date.now() < deadline) {
+      const result = await pool.query("SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE 'SELECT id FROM questions%FOR UPDATE'");
+      if (result.rows.length) { waiting = true; break; }
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    assert.equal(waiting, true, 'reveal is observably blocked by the in-flight vote');
+    await voter.query('COMMIT'); committed = true;
+    await Promise.all([announced, shown]);
+    const snapshots = (await jsonRequest('GET', `/api/discussions/${slug}/snapshots`, undefined, asModerator(adminToken))).body.snapshots;
+    const baseline = snapshots[0].data.questions.find(q => q.id === questionId);
+    assert.equal(baseline.responseCount, 2);
+    assert.equal(baseline.average, 2.5);
+  } finally {
+    if (!committed) await voter.query('ROLLBACK');
+    voter.release(); moderator.disconnect();
+  }
+});
+
+test('a real failed reveal rolls back its baseline before a successful retry captures changed answers', async () => {
+  const { id, slug, adminToken } = (await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('synthetic-reveal-rollback') })).body;
+  const questionId = (await pool.query(
+    "INSERT INTO questions(discussion_id,text,type,min_value,max_value) VALUES ($1,'Fictional rollback scale','Numerical',0,5) RETURNING id", [id]
+  )).rows[0].id;
+  await pool.query("INSERT INTO votes(question_id,value,user_id) VALUES ($1,'1','fictional-voter')", [questionId]);
+  await pool.query(`CREATE FUNCTION synthetic_reveal_failure() RETURNS trigger LANGUAGE plpgsql AS $$
+    BEGIN RAISE EXCEPTION 'synthetic reveal failure'; END $$`);
+  await pool.query('CREATE TRIGGER synthetic_reveal_failure BEFORE UPDATE OF results_revealed ON questions FOR EACH ROW EXECUTE FUNCTION synthetic_reveal_failure()');
+  const moderator = await connectSocket();
+  try {
+    const joined = waitForQuestions(moderator, questions => questions.some(q => q.id === questionId), 'rollback question joined');
+    moderator.emit('joinDiscussion', slug); await joined;
+    const failed = waitForEvent(moderator, 'error', error => /Failed to update question/.test(error.message));
+    moderator.emit('setResultsRevealed', slug, questionId, true, adminToken); await failed;
+    assert.equal((await pool.query('SELECT count(*)::int AS n FROM opinion_snapshots WHERE discussion_id=$1', [id])).rows[0].n, 0);
+    assert.equal((await pool.query('SELECT results_revealed FROM questions WHERE id=$1', [questionId])).rows[0].results_revealed, false);
+    await pool.query('DROP TRIGGER synthetic_reveal_failure ON questions');
+    await pool.query("UPDATE votes SET value='4' WHERE question_id=$1", [questionId]);
+    const saved = waitForEvent(moderator, 'snapshotsChanged');
+    moderator.emit('setResultsRevealed', slug, questionId, true, adminToken); await saved;
+    const snapshots = (await jsonRequest('GET', `/api/discussions/${slug}/snapshots`, undefined, asModerator(adminToken))).body.snapshots;
+    assert.equal(snapshots.length, 1);
+    assert.equal(snapshots[0].data.questions.find(q => q.id === questionId).average, 4);
+  } finally {
+    await pool.query('DROP TRIGGER IF EXISTS synthetic_reveal_failure ON questions');
+    await pool.query('DROP FUNCTION IF EXISTS synthetic_reveal_failure()');
+    moderator.disconnect();
   }
 });

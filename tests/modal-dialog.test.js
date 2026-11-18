@@ -136,13 +136,19 @@ for (const [nested, withToken] of [[false, false], [true, false], [false, true],
     const end = source.indexOf('    const handleQuestionsUpdate =', start);
     const handler = vm.runInNewContext(`${source.slice(start, end)}\nhandleDuplicateDiscussion`, {
       newTopicName: 'Destination', discussionSlug: 'original', console,
+      // The source discussion's moderator token, sent so the copy keeps its
+      // queued questions; a visitor who does not moderate it sends none.
+      adminToken: withToken ? 'source-token' : null,
       duplicateReturnFocusRef, actionsMenuButtonRef, discussionContentRef: { current: destination },
-      fetch: async () => ({ ok: true, json: async () => ({ newSlug: 'destination', adminToken: withToken ? 'new-token' : null }) }),
+      fetch: async (url, request) => {
+        assert.equal(JSON.parse(request.body).adminToken, withToken ? 'source-token' : undefined);
+        return { ok: true, json: async () => ({ newSlug: 'destination', adminToken: 'new-token' }) };
+      },
       localStorage: { setItem(key, token) { assert.equal(key, 'convora_admin_destination'); assert.equal(token, 'new-token'); } },
       moderatorLinkPromptState: slug => ({ moderatorLinkPrompt: slug }),
       navigate: (path, options) => {
         assert.equal(path, '/discussion/destination');
-        assert.equal(options?.state?.moderatorLinkPrompt, withToken ? 'destination' : undefined);
+        assert.equal(options?.state?.moderatorLinkPrompt, 'destination');
         // React Router reuses DiscussionPage; its More ref now targets the
         // destination control when dialog cleanup runs.
         actionsMenuButtonRef.current = destinationMore;

@@ -22,15 +22,17 @@ function buildOpinionSnapshot(questions) {
       const values = validVotes.map(vote => Number(vote.value));
       // Fixed bins keep the distribution comparable between snapshots of the
       // same scale. The final bin includes the upper bound.
-      const binCount = Math.min(10, Math.max(1, maxValue - minValue));
+      const range = Math.max(1, maxValue - minValue);
+      const binCount = Math.min(10, range + 1);
+      const wholeNumberBins = binCount === range + 1;
       const width = (maxValue - minValue) / binCount;
       const distribution = Array.from({ length: binCount }, (_, index) => ({
-        min: minValue + index * width,
-        max: minValue + (index + 1) * width,
+        min: wholeNumberBins ? Math.max(minValue, minValue + index - .5) : minValue + index * width,
+        max: wholeNumberBins ? Math.min(maxValue, minValue + index + .5) : minValue + (index + 1) * width,
         count: 0,
       }));
       values.forEach(value => {
-        const index = Math.min(binCount - 1, Math.max(0, Math.floor((value - minValue) / width)));
+        const index = Math.min(binCount - 1, Math.max(0, (wholeNumberBins ? Math.round(value - minValue) : Math.floor(((value - minValue) / range) * binCount))));
         distribution[index].count += 1;
       });
       metrics = {

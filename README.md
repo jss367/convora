@@ -38,6 +38,28 @@ pinned questions stay on top. The sort is each viewer's own choice, so it does
 not change what other people see. Locking a discussion closes these marks along
 with voting.
 
+## Queue questions and publish them one at a time
+
+A moderator can write questions ahead of time without showing them to the
+room. In the Add Question form, tick **Add to the queue**. The box stays ticked
+from one question to the next, so a whole agenda can be entered in a row.
+
+Queued questions are listed under **Queued questions** on the moderator's page,
+in the order they were written. Only moderators receive them: participants, the
+room display, the summary, exports and snapshots do not. Nobody can answer a
+queued question, and it can be edited or deleted like any question without
+responses.
+
+Click **Publish** on a queued question to show it to everyone and open it for
+answers. It arrives as the newest question, so it is first under **Most
+Recent**. Publishing cannot be undone, because hiding a question again would
+hide the answers people gave to it; delete the question instead. A locked
+discussion publishes nothing until it is unlocked.
+
+When a moderator duplicates a discussion, the copy keeps its queued questions
+queued, so a prepared agenda can be reused. A copy made by anyone else leaves
+the queued questions out.
+
 ## Discussions are unlisted unless you list them
 
 A new discussion is unlisted: it's reachable only through its link or short
@@ -78,6 +100,14 @@ groups, opinion snapshots and exports: each leaves out the results of questions
 the person viewing has not answered and says how many were left out. Open Ended questions are not affected. Their responses are the discussion
 itself, not a tally, and response reactions keep their own moderator toggles.
 
+## Numerical answers can be decimals
+
+A Numerical question has a whole-number minimum and maximum. An answer can be
+any number between them, with up to two decimal places: drag the slider for a
+whole number, or type a number such as 0.5 or 33.25 in the box next to it. A
+decimal comma (0,5) is read the same as a decimal point, because many phone
+keypads offer only a comma. More than two decimal places are rounded.
+
 ## Room display
 
 To show a discussion on a shared TV or projector while people vote on their
@@ -108,9 +138,17 @@ sitting, so nobody has to touch the shared screen:
 
 - **Display QR**: the join QR code and link **Large** in a sidebar (the
   default), **Small, in a corner** of the header, or **Hidden**.
-- **Display shows**: **All questions** (the default), or **One question**: the
-  first pinned question, or the newest one when nothing is pinned, filling the
-  screen. Pin a question to put it on the display.
+- **Display shows**: **All questions** (the default), **One question**
+  filling the screen, or **Before and after**, which compares two opinion
+  snapshots (see [Show the comparison on the room display](#show-the-comparison-on-the-room-display)).
+
+To choose the one question, click **Show on display** on it from your own
+moderator page. The display switches to the one-question view if it was listing
+every question, and the button reads **On display** on the question the room is
+looking at. The question stays on the screen until you choose another one, so a
+new question from a participant does not replace it. Click **On display** to
+stop showing it; the display then shows the first pinned question, or the
+newest one when nothing is pinned. It does the same if you delete the question.
 
 To put one question's results on the screen, click **Show results** on that
 question from your own moderator page, phone or laptop. The display updates at
@@ -135,14 +173,51 @@ own power settings, such as an auto power-off timer, can still turn it off.
 Open **Opinion Snapshots** in a discussion. A moderator can save named snapshots
 such as “Before discussion” and “After discussion.” For probability estimates,
 create a **Numerical** question with a minimum of **0** and maximum of **100**.
+Answers can be decimals, so a participant can enter 0.5 for half a percent.
 Collect initial answers, save the first snapshot, then invite people to update
 their answers after discussing and save the second snapshot.
+
+A "before" snapshot is also saved without anyone asking. The first time a
+moderator clicks **Show results** on a question, the room's answers are saved
+as **Before results shown: _the question_** just before the results appear.
+People start changing their answers once they have seen how the room voted, so
+this keeps what they thought beforehand even if nobody remembered to save it.
+Like any snapshot it covers every tallied question, not only the one being
+shown. It is saved once per question: hiding the results and showing them again
+saves nothing new. Nothing is saved for a question with no answers yet, or
+while the discussion always shows results.
 
 Choose an earlier and later snapshot to compare response counts, distributions,
 and numerical averages. Agreement, yes/no, and multiple choice questions are
 included too. Everyone
 can view the saved results; only moderators can save snapshots, including after
-voting closes. Use **Refresh** to load snapshots saved by another moderator.
+voting closes. An open snapshot list updates when a snapshot is saved; **Refresh**
+reloads it by hand, for example after you answer a question whose results were hidden.
+
+### Show the comparison on the room display
+
+To show the room how its answers moved, choose the earlier and later snapshot
+under **Opinion Snapshots** and click **Show this comparison on the room
+display**. The display shows the two snapshots side by side: for each answer, a
+bar per snapshot with its share and count, and for a numerical question the two
+averages, the change between them, and one histogram with a column per
+snapshot in each bin. Click **On the room display** to go back to the
+questions.
+
+Choosing **Before and after** under **Display shows** does the same without
+opening the snapshots: it compares the first snapshot with the latest one,
+unless you chose a pair before. If you leave the later snapshot unchosen, the
+display also compares against the latest one, so a snapshot saved while the
+comparison is up appears on the screen by itself.
+
+The comparison covers every question in the two snapshots. To show one
+question's comparison filling the screen, click **Show on display** on that
+question while the comparison is up.
+
+The display has not voted, so it follows the **Results shown** setting here
+too: with **After voting**, it shows a snapshot's results only for questions
+whose results you have shown to everyone with **Show results**, and says the
+others are hidden.
 
 Snapshots preserve aggregate results even when answers are updated or questions
 are edited or deleted. They do not retain participant identities or individual

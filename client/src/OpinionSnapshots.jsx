@@ -2,6 +2,9 @@ import PropTypes from 'prop-types';
 import React, { useEffect, useState } from 'react';
 
 const formatNumber = value => value == null ? '—' : Number(value.toFixed(1)).toLocaleString();
+// An average or a change in one: two decimal places when the number is small
+// enough that one would hide the difference between, say, 0.25 and 0.34.
+const formatAverage = value => value == null ? '—' : Number(value.toFixed(Math.abs(value) < 10 ? 2 : 1)).toLocaleString();
 const formatDate = value => new Date(value).toLocaleString();
 // Kept in step with RESULTS_HIDDEN_HINT in viewer.js. This file imports nothing
 // local so the Node test suite can load it on its own.
@@ -13,7 +16,9 @@ const OPINION_OPTIONS = {
     'Yes/No': ['No', 'Yes'],
 };
 
-function distributionRows(question) {
+// One row per answer (or per numerical bin) of a snapshot question, in a fixed
+// order, so the rows of two snapshots line up.
+export function distributionRows(question) {
     if (!question) return [];
     if (question.type !== 'Numerical') {
         // JSONB does not preserve object-key order; use the semantic scale, or
@@ -25,6 +30,16 @@ function distributionRows(question) {
         label: `${formatNumber(bin.min)} to ${index < bins.length - 1 ? '<' : ''}${formatNumber(bin.max)}`,
         count: bin.count,
     }));
+}
+
+// Whether a question's wording, type, scale or answer options differ between two
+// snapshots, in which case their results are not comparable row by row.
+export function snapshotQuestionChanged(before, after) {
+    return Boolean(before && after && (before.text !== after.text || before.type !== after.type
+        || before.minValue !== after.minValue || before.maxValue !== after.maxValue
+        || (before.type === 'Numerical' && JSON.stringify(before.distribution?.map(({ min, max }) => [min, max]))
+            !== JSON.stringify(after.distribution?.map(({ min, max }) => [min, max])))
+        || JSON.stringify(before.options ?? null) !== JSON.stringify(after.options ?? null)));
 }
 
 function DistributionCell({ count, total, color }) {
@@ -65,9 +80,7 @@ export function QuestionComparison({ before, after, comparing, beforeName, after
             </article>
         );
     }
-    const changed = before && after && (before.text !== after.text || before.type !== after.type
-        || before.minValue !== after.minValue || before.maxValue !== after.maxValue
-        || JSON.stringify(before.options ?? null) !== JSON.stringify(after.options ?? null));
+    const changed = snapshotQuestionChanged(before, after);
     const beforeRows = distributionRows(before);
     const afterRows = distributionRows(after);
     const delta = !changed && before?.average != null && after?.average != null
@@ -106,8 +119,8 @@ export function QuestionComparison({ before, after, comparing, beforeName, after
             </p>
             {(before?.type === 'Numerical' || after?.type === 'Numerical') && (
                 <p className="text-sm font-medium mb-3">
-                    Average: {formatNumber(before?.average)}{comparing && ` → ${formatNumber(after?.average)}`}
-                    {delta !== null && <span className="ml-2 text-primary">({delta > 0 ? '+' : ''}{formatNumber(delta)} points)</span>}
+                    Average: {formatAverage(before?.average)}{comparing && ` → ${formatAverage(after?.average)}`}
+                    {delta !== null && <span className="ml-2 text-primary">({delta > 0 ? '+' : ''}{formatAverage(delta)} points)</span>}
                 </p>
             )}
             {comparing && (!before || !after) && (
@@ -115,7 +128,7 @@ export function QuestionComparison({ before, after, comparing, beforeName, after
             )}
             {changed ? (
                 <>
-                    <p className="text-sm text-amber-800 mb-3">The question wording, type, scale, or answer options changed. Results are shown separately; no change is calculated.</p>
+                    <p className="text-sm text-amber-800 mb-3">The question wording, type, scale, answer options, or histogram bins changed. Results are shown separately; no change is calculated.</p>
                     <p className="text-sm mb-2">Earlier wording: {before.text}</p>
                     {renderTable(beforeRows, before, null, ' (earlier scale)')}
                     {renderTable(afterRows, null, after, ' (later scale)')}
@@ -129,7 +142,12 @@ QuestionComparison.propTypes = {
     beforeName: PropTypes.string.isRequired, afterName: PropTypes.string.isRequired,
 };
 
-export default function OpinionSnapshots({ discussionSlug, adminToken, userId }) {
+// `refreshSignal` changes whenever the server reports a new snapshot (one a
+// moderator saved, or the one saved by itself before a question's results are
+// first shown), and the list is loaded again. `display` is what the room
+// display is set to compare ({ layout, beforeId, afterId }) and `onDisplay`
+// changes it; both are given to moderators only.
+export default function OpinionSnapshots({ discussionSlug, adminToken, userId, refreshSignal, display, onDisplay }) {
     const [snapshots, setSnapshots] = useState([]);
     const [beforeId, setBeforeId] = useState('');
     const [afterId, setAfterId] = useState('');
@@ -163,7 +181,7 @@ export default function OpinionSnapshots({ discussionSlug, adminToken, userId })
             if (!controller.signal.aborted) setLoading(false);
         });
         return () => controller.abort();
-    }, [endpoint, userId, adminToken, refresh]);
+    }, [endpoint, userId, adminToken, refresh, refreshSignal]);
 
     const saveSnapshot = async event => {
         event.preventDefault();
@@ -178,7 +196,9 @@ export default function OpinionSnapshots({ discussionSlug, adminToken, userId })
             });
             const saved = await response.json();
             if (!response.ok) throw new Error(saved.error || 'Could not save the snapshot.');
-            setSnapshots(current => [...current, saved]);
+            // The server's "snapshots changed" notice may already have reloaded
+            // the list with this snapshot in it.
+            setSnapshots(current => (current.some(item => item.id === saved.id) ? current : [...current, saved]));
             if (!beforeId) setBeforeId(String(saved.id));
             else setAfterId(String(saved.id));
             setName('');
@@ -193,13 +213,17 @@ export default function OpinionSnapshots({ discussionSlug, adminToken, userId })
     const before = snapshots.find(item => String(item.id) === beforeId);
     const after = snapshots.find(item => String(item.id) === afterId && item.id > Number(beforeId));
     const questionIds = [...new Set([...(before?.data.questions || []), ...(after?.data.questions || [])].map(q => q.id))];
+    // The room display is showing exactly the comparison chosen here. With no
+    // later snapshot chosen, the display compares against the latest one.
+    const onRoomDisplay = Boolean(display && before && display.layout === 'compare'
+        && display.beforeId === before.id && (display.afterId ?? null) === (after?.id ?? null));
     return (
         <section id="opinion-snapshots" aria-labelledby="snapshot-heading" className="bg-white shadow-lg rounded-lg p-6 mb-8">
             <div className="flex items-start justify-between gap-4 mb-2">
                 <h2 id="snapshot-heading" className="text-2xl font-bold text-gray-800">Opinion snapshots</h2>
                 <button type="button" onClick={() => setRefresh(value => value + 1)} disabled={loading || saving} className="text-sm text-primary hover:underline disabled:opacity-50">Refresh</button>
             </div>
-            <p className="text-sm text-gray-600 mb-4">Save the room’s opinions before discussion, then ask everyone to update their answers and save another snapshot. Each snapshot preserves numerical, agreement, and yes/no results.</p>
+            <p className="text-sm text-gray-600 mb-4">Save the room’s opinions before discussion, then ask everyone to update their answers and save another snapshot. Each snapshot preserves numerical, agreement, yes/no, and multiple choice results. The first time you show a question’s results to everyone, a snapshot named “Before results shown” is saved for you.</p>
             {adminToken ? (
                 <form onSubmit={saveSnapshot} className="mb-5">
                     <label htmlFor="snapshot-name" className="block text-sm font-medium mb-2">Snapshot name</label>
@@ -207,12 +231,12 @@ export default function OpinionSnapshots({ discussionSlug, adminToken, userId })
                         <input id="snapshot-name" value={name} onChange={event => setName(event.target.value)} maxLength={120} required placeholder={snapshots.length ? 'e.g. After discussion' : 'e.g. Before discussion'} className="flex-1 min-w-0 border border-gray-300 rounded px-3 py-2" />
                         <button type="submit" disabled={saving || loading || !name.trim()} className="bg-primary text-white rounded px-4 py-2 disabled:opacity-50">{saving ? 'Saving…' : 'Save snapshot'}</button>
                     </div>
-                    <p className="text-xs text-gray-500 mt-2">Saved snapshots stay unchanged as people update their answers. For probabilities, use a Numerical question with a 0–100 scale.</p>
+                    <p className="text-xs text-gray-500 mt-2">Saved snapshots stay unchanged as people update their answers. For probabilities, use a Numerical question with a 0–100 scale; answers can be decimals such as 0.5.</p>
                 </form>
             ) : <p className="text-sm text-gray-500 mb-4">Only moderators can save snapshots. Everyone can view and compare them.</p>}
             {error && <p role="alert" className="text-red-600 mb-3">{error}</p>}
             <p role="status" className="text-sm text-green-700 mb-3">{status}</p>
-            {loading ? <p className="text-gray-500">Loading snapshots…</p> : snapshots.length === 0 ? (
+            {loading && snapshots.length === 0 ? <p className="text-gray-500">Loading snapshots…</p> : snapshots.length === 0 ? (
                 <p className="text-gray-500">No snapshots saved yet. Save one after the initial votes and another at the end.</p>
             ) : (
                 <>
@@ -238,6 +262,29 @@ export default function OpinionSnapshots({ discussionSlug, adminToken, userId })
                         {' '}These are group-level comparisons; participants may differ between snapshots.
                     </p>
                     {snapshots.length === 1 && <p className="text-sm text-gray-500 mb-4">Save a second snapshot after the discussion to see what changed.</p>}
+                    {adminToken && onDisplay && before && (
+                        <div className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-1">
+                            <button
+                                type="button"
+                                aria-pressed={onRoomDisplay}
+                                onClick={() => onDisplay(onRoomDisplay
+                                    ? { layout: 'all' }
+                                    : { layout: 'compare', beforeSnapshotId: before.id, afterSnapshotId: after?.id ?? null })}
+                                className={`text-sm px-3 py-1 rounded border border-indigo-300 ${onRoomDisplay
+                                    ? 'bg-indigo-600 text-white hover:bg-indigo-700'
+                                    : 'text-indigo-700 hover:bg-indigo-50'}`}
+                            >
+                                {onRoomDisplay ? 'On the room display' : 'Show this comparison on the room display'}
+                            </button>
+                            <span className="text-xs text-gray-500">
+                                {onRoomDisplay
+                                    ? 'Click again to go back to showing every question.'
+                                    : after
+                                        ? 'The room sees these two snapshots side by side.'
+                                        : 'With no later snapshot chosen, the room sees this one next to the latest snapshot.'}
+                            </span>
+                        </div>
+                    )}
                     <div className="space-y-4">
                         {questionIds.map(id => <QuestionComparison key={id}
                             before={before?.data.questions.find(q => q.id === id)} after={after?.data.questions.find(q => q.id === id)}
@@ -248,4 +295,8 @@ export default function OpinionSnapshots({ discussionSlug, adminToken, userId })
         </section>
     );
 }
-OpinionSnapshots.propTypes = { discussionSlug: PropTypes.string.isRequired, adminToken: PropTypes.string, userId: PropTypes.string };
+OpinionSnapshots.propTypes = {
+    discussionSlug: PropTypes.string.isRequired, adminToken: PropTypes.string, userId: PropTypes.string, refreshSignal: PropTypes.number,
+    display: PropTypes.shape({ layout: PropTypes.string, beforeId: PropTypes.number, afterId: PropTypes.number }),
+    onDisplay: PropTypes.func,
+};

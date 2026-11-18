@@ -11,7 +11,7 @@ export const QuestionTypeDescriptions = {
     [QuestionTypes.AGREEMENT]: 'Each participant picks one option on the five-point scale from Strongly Agree to Strongly Disagree.',
     [QuestionTypes.YES_NO]: 'Each participant picks a simple Yes or No — a binary alternative to the five-point agreement scale.',
     [QuestionTypes.MULTIPLE_CHOICE]: 'Each participant picks one of the answers you write, such as Higher, Lower or About the same.',
-    [QuestionTypes.NUMERICAL]: 'Each participant submits a single number on a slider between your min and max.',
+    [QuestionTypes.NUMERICAL]: 'Each participant submits one number between your min and max, with the slider or by typing it. Decimals such as 0.5 are allowed.',
     [QuestionTypes.OPEN_ENDED]: 'Participants can add, edit, and delete multiple responses, with ratings, reactions, and comments.',
 };
 

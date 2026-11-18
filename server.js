@@ -17,7 +17,7 @@ const { slugifyTopic, formatTopicTitle, titleFromSlug, suffixSlug, MAX_TOPIC_LEN
 const { buildSummary, renderReportHtml } = require('./reports');
 const {
   AGREEMENT_OPTIONS, parseOptions, parseStoredVoteValue,
-  normalizeQuestionPayload, choiceOptionsFor, isValidVote,
+  normalizeQuestionPayload, normalizeNumericalVote, choiceOptionsFor, isValidVote,
 } = require('./question-data');
 
 const app = express();
@@ -180,9 +180,15 @@ async function getDiscussionState(topic) {
   const result = await pool.query(
     `SELECT locked, moderator_only_questions, theme, reaction_keys, results_visibility, listed,
             display_qr, display_layout,
+            (SELECT q.id FROM questions q
+              WHERE q.id = d.display_question_id AND q.discussion_id = d.id AND NOT q.queued) AS display_question_id,
+            (SELECT s.id FROM opinion_snapshots s
+              WHERE s.id = d.display_before_snapshot_id AND s.discussion_id = d.id) AS display_before_snapshot_id,
+            (SELECT s.id FROM opinion_snapshots s
+              WHERE s.id = d.display_after_snapshot_id AND s.discussion_id = d.id) AS display_after_snapshot_id,
             admin_token IS NOT NULL AS has_moderator,
             reactions_enabled, reactions_visible, comments_enabled
-       FROM discussions WHERE slug = $1`,
+       FROM discussions d WHERE slug = $1`,
     [slug]
   );
   if (result.rows.length === 0) {
@@ -194,6 +200,9 @@ async function getDiscussionState(topic) {
       listed: false,
       displayQr: DISPLAY_QR_MODES[0],
       displayLayout: DISPLAY_LAYOUTS[0],
+      displayQuestionId: null,
+      displayBeforeSnapshotId: null,
+      displayAfterSnapshotId: null,
     };
   }
   const row = result.rows[0];
@@ -210,16 +219,26 @@ async function getDiscussionState(topic) {
     listed: row.listed === true,
     displayQr: DISPLAY_QR_MODES.includes(row.display_qr) ? row.display_qr : DISPLAY_QR_MODES[0],
     displayLayout: DISPLAY_LAYOUTS.includes(row.display_layout) ? row.display_layout : DISPLAY_LAYOUTS[0],
+    // The question a moderator put on the display, or null when they chose
+    // none or it has since been deleted.
+    displayQuestionId: row.display_question_id ?? null,
+    // The snapshots the before-and-after view compares; null means the display
+    // picks the first snapshot and the latest one.
+    displayBeforeSnapshotId: row.display_before_snapshot_id ?? null,
+    displayAfterSnapshotId: row.display_after_snapshot_id ?? null,
   };
 }
 
 // The room display's presentation, chosen by the moderator so nobody has to
 // touch the shared screen. The first entry of each is the default.
 // displayQr: the join QR code large in a sidebar, small in a corner, or hidden.
-// displayLayout: every question, or one at a time (the first pinned question,
-// otherwise the newest).
+// displayLayout: every question, or one at a time. The one question is the one
+// a moderator chose with "Show on display" (displayQuestionId); when they chose
+// none it is the first pinned question, otherwise the newest. 'compare' shows
+// two saved opinion snapshots side by side (displayBeforeSnapshotId and
+// displayAfterSnapshotId), for that one question when a moderator chose one.
 const DISPLAY_QR_MODES = ['full', 'corner', 'hidden'];
-const DISPLAY_LAYOUTS = ['all', 'focus'];
+const DISPLAY_LAYOUTS = ['all', 'focus', 'compare'];
 
 async function emitDiscussionState(topic) {
   audience(topic).emit('discussionState', await getDiscussionState(topic));
@@ -286,12 +305,21 @@ function displayView(questions, respondents) {
     : question));
 }
 
+// The questions without the queued ones: those a moderator has written but not
+// published yet (see publishQuestion). Returns `questions` itself when none is
+// queued.
+function withoutQueued(questions) {
+  return questions.some(question => question.queued) ? questions.filter(question => !question.queued) : questions;
+}
+
 // The questions as one REST caller may see them. `token` is a moderator token
 // and `userId` the participant's id, both optional; a caller that supplies
-// neither is treated as a participant who has answered nothing.
+// neither is treated as a participant who has answered nothing. Queued
+// questions are left out for everyone, moderators included: they have no
+// responses, so they have no place in a summary, an export or a snapshot.
 async function getQuestionsForViewer(topic, { userId = null, token = null, includeUserIds = false } = {}) {
   const respondents = new Map();
-  const questions = await getQuestions(topic, { includeUserIds, respondents });
+  const questions = withoutQueued(await getQuestions(topic, { includeUserIds, respondents }));
   // Read access after the questions: if the mode or a moderator grant changes
   // in between, the stricter of the two states wins or a rebroadcast follows.
   const access = await getResultsAccess(topic);
@@ -315,6 +343,8 @@ function restViewer(req) {
 // of questions they have not answered removed. Views are built once per
 // participant and shared by their sockets, from a single questions query. Room
 // displays get the display view, whatever else their socket has claimed.
+// Queued questions go to moderators only, in either mode, so a discussion that
+// has any is also sent socket by socket.
 // `isCurrent`, given with `onlySocket`, is checked once the data has loaded; a
 // caller whose request has been superseded meanwhile sends nothing.
 //
@@ -392,20 +422,23 @@ async function sendQuestions(slug, room, { onlySocket = null, isCurrent = () => 
   const markDelivered = () => {
     if (!onlySocket) room.delivered = Math.max(room.delivered, run);
   };
-  if (access.alwaysShow) {
+  // What everyone but a moderator may be sent.
+  const published = withoutQueued(questions);
+  if (access.alwaysShow && published === questions) {
     if (onlySocket?.data.isDisplay && onlySocket.data.display !== slug) return;
     (onlySocket || audience(slug)).emit('questions', questions);
     markDelivered();
     return;
   }
+  const forDisplay = () => (access.alwaysShow ? published : displayView(published, respondents));
   if (onlySocket?.data.isDisplay) {
     // The display may have moved to another discussion while this was loading.
     if (onlySocket.data.display !== slug) return;
-    onlySocket.emit('questions', displayView(questions, respondents));
+    onlySocket.emit('questions', forDisplay());
     return;
   }
   if (!onlySocket && io.sockets.adapter.rooms.get(displayRoom(slug))?.size) {
-    io.to(displayRoom(slug)).emit('questions', displayView(questions, respondents));
+    io.to(displayRoom(slug)).emit('questions', forDisplay());
   }
   const targets = onlySocket
     ? [onlySocket]
@@ -417,8 +450,12 @@ async function sendQuestions(slug, room, { onlySocket = null, isCurrent = () => 
       target.emit('questions', questions);
       continue;
     }
+    if (access.alwaysShow) {
+      target.emit('questions', published);
+      continue;
+    }
     const userId = target.data.userId || null;
-    if (!views.has(userId)) views.set(userId, hideUnansweredResults(questions, respondents, userId));
+    if (!views.has(userId)) views.set(userId, hideUnansweredResults(published, respondents, userId));
     target.emit('questions', views.get(userId));
   }
   markDelivered();
@@ -426,13 +463,17 @@ async function sendQuestions(slug, room, { onlySocket = null, isCurrent = () => 
 
 // A socket's view can change without any vote: it identifies itself after
 // joining, or gains or loses moderator access. Resend its questions then, unless
-// results are always shown and the payload it already has is complete.
-async function resendQuestionsIfPersonalized(socket) {
+// results are always shown and the payload it already has is complete. A change
+// of moderator access (`moderatorChanged`) always resends, because a moderator
+// also receives the queued questions.
+async function resendQuestionsIfPersonalized(socket, { moderatorChanged = false } = {}) {
   const slug = socket.data.topic;
   if (!slug) return;
+  const visit = socket.data.discussionVisit;
+  const current = () => socket.data.topic === slug && socket.data.discussionVisit === visit;
   try {
-    if ((await getResultsAccess(slug)).alwaysShow) return;
-    await emitQuestions(slug, socket);
+    if (!moderatorChanged && (await getResultsAccess(slug)).alwaysShow) return;
+    if (current()) await emitQuestions(slug, socket, current);
   } catch (error) {
     logError('Error resending questions:', error);
   }
@@ -527,6 +568,7 @@ io.on('connection', (socket) => {
 
   socket.on('joinDiscussion', async (topic) => {
     const discussionSlug = slugifyTopic(topic);
+    socket.data.discussionVisit = (socket.data.discussionVisit || 0) + 1;
     // If this socket was viewing another discussion, leave it so presence
     // counts stay accurate as the user navigates within the SPA.
     const previousTopic = socket.data.topic;
@@ -592,6 +634,7 @@ io.on('connection', (socket) => {
     if (!roomToLeave) return;
     socket.leave(roomToLeave);
     if (socket.data.topic === roomToLeave) {
+      socket.data.discussionVisit = (socket.data.discussionVisit || 0) + 1;
       socket.data.topic = null;
     }
     emitPresence(roomToLeave);
@@ -641,18 +684,34 @@ io.on('connection', (socket) => {
         }
       }
 
+      // A moderator may add a question to the queue: only moderators receive it
+      // until one of them publishes it. Anyone else asking for that is refused
+      // outright, since adding the question would show it to the whole room.
+      const queued = question?.queued === true;
+      if (queued && !(await verifyAdmin(discussionSlug, token))) {
+        socket.emit('error', { message: 'Only a moderator can queue a question.' });
+        reply({ added: false, reason: 'not_authorized' });
+        return;
+      }
+
       // Surface a near-duplicate so the submitter can vote on the existing
       // statement instead — unless they explicitly chose to post anyway.
       if (!force) {
         const similar = await findSimilarQuestion(discussionSlug, normalizedQuestion.text);
         if (similar) {
-          socket.emit('similarQuestion', { candidate: similar, question: normalizedQuestion });
+          // "Post anyway" sends this question back, so it carries the queue
+          // request with it; otherwise the retry would publish the question.
+          socket.emit('similarQuestion', { candidate: similar, question: queued ? { ...normalizedQuestion, queued } : normalizedQuestion });
           reply({ added: false, reason: 'similar' });
           return;
         }
       }
 
-      await addQuestion(discussionSlug, normalizedQuestion);
+      const added = await addQuestion(discussionSlug, normalizedQuestion, { queued });
+      if (added.locked) {
+        reply({ added: false, reason: 'locked' });
+        return;
+      }
       audience(discussionSlug).emit('discussion', await getDiscussionBySlug(discussionSlug));
       await emitQuestions(discussionSlug);
       reply({ added: true });
@@ -686,7 +745,9 @@ io.on('connection', (socket) => {
       // not locked. Without this, a client could bypass a locked discussion by
       // sending the locked question's id under some other (unlocked) topic.
       const target = await getQuestionForTopic(discussionSlug, questionId);
-      if (!target) {
+      // A queued question cannot be answered, and is reported exactly like one
+      // that does not exist so its id reveals nothing.
+      if (!target || target.queued) {
         socket.emit('error', { message: 'Invalid question for this discussion.' });
         reply(false);
         return;
@@ -710,6 +771,8 @@ io.on('connection', (socket) => {
         reply(false);
         return;
       }
+      // Decimals are allowed; store them at one precision (see normalizeNumericalVote).
+      if (target.type === 'Numerical') vote = normalizeNumericalVote(vote);
       // Persist the reserved handle in pseudonym mode rather than the client's
       // (possibly pre-reservation, colliding) local pick — see canonicalPseudonym.
       const handle = await canonicalPseudonym(discussionSlug, target.discussionId, userId, mode, pseudonym);
@@ -749,7 +812,7 @@ io.on('connection', (socket) => {
     }
     try {
       const target = await getQuestionForTopic(discussionSlug, questionId);
-      if (!target || !choiceOptionsFor(target)) {
+      if (!target || target.queued || !choiceOptionsFor(target)) {
         socket.emit('error', { message: 'Invalid question for this discussion.' });
         reply(false);
         return;
@@ -781,7 +844,7 @@ io.on('connection', (socket) => {
         // This socket now holds the moderator token, so it gets the moderator's
         // view of the questions (see checkModerator).
         socket.data.moderator = { slug: discussionSlug, token };
-        if (socket.data.topic === discussionSlug) await resendQuestionsIfPersonalized(socket);
+        if (socket.data.topic === discussionSlug) await resendQuestionsIfPersonalized(socket, { moderatorChanged: true });
       } else if (typeof cb === 'function') {
         cb({ success: false, error: 'already_claimed' });
       }
@@ -909,7 +972,7 @@ io.on('connection', (socket) => {
       }
       cb({ ok: true, isModerator: !!discussionId, isCreator });
       if ((discussionId || wasModerator) && socket.data.topic === slug) {
-        await resendQuestionsIfPersonalized(socket);
+        await resendQuestionsIfPersonalized(socket, { moderatorChanged: true });
       }
     } catch (error) {
       logError('Error checking moderator status:', error);
@@ -937,15 +1000,28 @@ io.on('connection', (socket) => {
       );
       await pool.query('DELETE FROM questions WHERE id = $1 AND discussion_id = $2', [questionId, discussionId]);
       await emitQuestions(discussionSlug);
+      // If this was the question chosen for the room display, the display goes
+      // back to the first pinned or newest question.
+      const cleared = await pool.query(
+        'UPDATE discussions SET display_question_id = NULL WHERE id = $1 AND display_question_id = $2',
+        [discussionId, questionId]
+      );
+      if (cleared.rowCount > 0) await emitDiscussionState(discussionSlug);
     } catch (error) {
       logError('Error deleting question:', error);
       socket.emit('error', { message: 'Failed to delete question' });
     }
   });
 
-  // Moderator-only: change how the room display presents itself. Either field
-  // may be left out to keep its current value. The settings ride
-  // discussionState, which the display's room receives too.
+  // Moderator-only: change how the room display presents itself. Any field may
+  // be left out to keep its current value. `questionId` is the question to show
+  // in the one-question view, or null to go back to the first pinned or newest
+  // question; choosing a question while the display lists every question also
+  // switches it to the one-question view, unless `layout` says otherwise.
+  // `beforeSnapshotId` and `afterSnapshotId` are the opinion snapshots the
+  // before-and-after view compares, or null to let the display pick the first
+  // and the latest. The settings ride discussionState, which the display's room
+  // receives too.
   socket.on('setDisplaySettings', async (topic, settings, token) => {
     const discussionSlug = slugifyTopic(topic);
     try {
@@ -954,21 +1030,70 @@ io.on('connection', (socket) => {
         socket.emit('error', { message: 'Not authorized to moderate this discussion.' });
         return;
       }
-      const { qr, layout } = settings && typeof settings === 'object' ? settings : {};
+      const { qr, layout, questionId, beforeSnapshotId, afterSnapshotId } = settings && typeof settings === 'object' ? settings : {};
+      // An id is left out to keep the stored one, null to clear it, or a
+      // Postgres integer.
+      const validId = id => id === undefined || id === null
+        || (Number.isInteger(id) && id > 0 && id <= 2147483647);
+      const given = [qr, layout, questionId, beforeSnapshotId, afterSnapshotId].some(value => value !== undefined);
       if ((qr !== undefined && !DISPLAY_QR_MODES.includes(qr))
           || (layout !== undefined && !DISPLAY_LAYOUTS.includes(layout))
-          || (qr === undefined && layout === undefined)) {
+          || ![questionId, beforeSnapshotId, afterSnapshotId].every(validId)
+          || (beforeSnapshotId != null && afterSnapshotId != null && afterSnapshotId <= beforeSnapshotId)
+          || !given) {
         socket.emit('error', { message: 'Unknown room display setting.' });
         return;
       }
-      await pool.query(
-        `UPDATE discussions
-            SET display_qr = COALESCE($1, display_qr),
-                display_layout = COALESCE($2, display_layout)
-          WHERE id = $3`,
-        [qr ?? null, layout ?? null, discussionId]
-      );
-      await emitDiscussionState(discussionSlug);
+      const changed = await withTransaction(async client => {
+        const current = await client.query('SELECT display_before_snapshot_id, display_after_snapshot_id FROM discussions WHERE id = $1 FOR UPDATE', [discussionId]);
+        if (!current.rows.length) return false;
+        const effectiveBefore = beforeSnapshotId === undefined ? current.rows[0].display_before_snapshot_id : beforeSnapshotId;
+        const effectiveAfter = afterSnapshotId === undefined ? current.rows[0].display_after_snapshot_id : afterSnapshotId;
+        if ((beforeSnapshotId !== undefined || afterSnapshotId !== undefined)
+            && effectiveBefore != null && effectiveAfter != null && effectiveAfter <= effectiveBefore) {
+          socket.emit('error', { message: 'Unknown room display setting.' });
+          return false;
+        }
+        if (questionId != null) {
+          // Only a published question of this discussion can go on the display.
+          const question = await client.query(
+            'SELECT 1 FROM questions WHERE id = $1 AND discussion_id = $2 AND NOT queued',
+            [questionId, discussionId]
+          );
+          if (!question.rows.length) {
+            socket.emit('error', { message: 'That question cannot be shown on the room display.' });
+            return;
+          }
+        }
+        const snapshotIds = [beforeSnapshotId, afterSnapshotId].filter(id => id != null);
+        if (snapshotIds.length) {
+          const found = await client.query(
+            'SELECT id FROM opinion_snapshots WHERE discussion_id = $1 AND id = ANY($2::int[])',
+            [discussionId, snapshotIds]
+          );
+          if (found.rows.length !== snapshotIds.length) {
+            socket.emit('error', { message: 'That snapshot cannot be shown on the room display.' });
+            return;
+          }
+        }
+        await client.query(
+          `UPDATE discussions
+              SET display_qr = COALESCE($1, display_qr),
+                  display_layout = COALESCE($2, CASE WHEN $4::int IS NOT NULL AND display_layout = 'all' THEN 'focus' ELSE display_layout END),
+                  display_question_id = CASE WHEN $5 THEN $4::int ELSE display_question_id END,
+                  display_before_snapshot_id = CASE WHEN $7 THEN $6::int ELSE display_before_snapshot_id END,
+                  display_after_snapshot_id = CASE WHEN $9 THEN $8::int ELSE display_after_snapshot_id END
+            WHERE id = $3`,
+          [
+            qr ?? null, layout ?? null, discussionId,
+            questionId ?? null, questionId !== undefined,
+            beforeSnapshotId ?? null, beforeSnapshotId !== undefined,
+            afterSnapshotId ?? null, afterSnapshotId !== undefined,
+          ]
+        );
+        return true;
+      });
+      if (changed) await emitDiscussionState(discussionSlug);
     } catch (error) {
       logError('Error setting room display settings:', error);
       socket.emit('error', { message: 'Failed to update discussion' });
@@ -1117,7 +1242,8 @@ io.on('connection', (socket) => {
   });
 
   // Moderator-only: show one question's results to everyone now, voted or not,
-  // or go back to showing them only after voting. Anyone with the link can open
+  // or go back to showing them only after voting. The first time a question is
+  // shown, a "before" snapshot is saved by itself. Anyone with the link can open
   // the room display, so a result revealed on the room's screen cannot stay
   // hidden from anyone; this is the one switch for both. Has no visible effect
   // while the discussion always shows results.
@@ -1129,14 +1255,72 @@ io.on('connection', (socket) => {
         socket.emit('error', { message: 'Not authorized to moderate this discussion.' });
         return;
       }
-      await pool.query(
-        'UPDATE questions SET results_revealed = $1 WHERE id = $2 AND discussion_id = $3',
-        [revealed === true, questionId, discussionId]
-      );
+      // READ COMMITTED takes the capture statement's view after this lock
+      // finishes waiting for in-flight votes; later votes wait until reveal commits.
+      const snapshotSaved = await withTransaction(async client => {
+        const target = await client.query('SELECT id FROM questions WHERE id = $1 AND discussion_id = $2 FOR UPDATE', [questionId, discussionId]);
+        if (!target.rows.length) return false;
+        const saved = revealed === true
+          ? await saveSnapshotBeforeReveal(discussionSlug, discussionId, questionId, client) : false;
+        await client.query('UPDATE questions SET results_revealed = $1 WHERE id = $2 AND discussion_id = $3',
+          [revealed === true, questionId, discussionId]);
+        return saved;
+      });
+      if (snapshotSaved) audience(discussionSlug).emit('snapshotsChanged');
       await emitQuestions(discussionSlug);
     } catch (error) {
       logError('Error revealing results:', error);
       socket.emit('error', { message: 'Failed to update question' });
+    }
+  });
+
+  // Moderator-only: publish a queued question, showing it to everyone and
+  // opening it for answers. Its creation time becomes now, so it arrives as the
+  // newest question for participants and for the room display. There is no way
+  // back to the queue: once people can answer a question, hiding it would hide
+  // their answers too. Publishing an already published question changes nothing.
+  socket.on('publishQuestion', async (topic, questionId, token, ack) => {
+    const discussionSlug = slugifyTopic(topic);
+    const reply = (result) => { if (typeof ack === 'function') ack(result); };
+    try {
+      const discussionId = await verifyAdmin(discussionSlug, token);
+      if (!discussionId) {
+        socket.emit('error', { message: 'Not authorized to moderate this discussion.' });
+        reply({ published: false, reason: 'not_authorized' });
+        return;
+      }
+      // Locking closes new questions, and a published question is a new one
+      // for everybody else.
+      if (await isDiscussionLocked(discussionSlug)) {
+        socket.emit('error', { message: 'This discussion is locked.' });
+        reply({ published: false, reason: 'locked' });
+        return;
+      }
+      const validId = Number.isInteger(questionId) && questionId > 0 && questionId <= 2147483647;
+      const outcome = validId ? await withTransaction(async client => {
+        const discussion = await client.query('SELECT locked FROM discussions WHERE id = $1 FOR SHARE', [discussionId]);
+        if (!discussion.rows.length || discussion.rows[0].locked) return { locked: true };
+        const target = await client.query('SELECT queued FROM questions WHERE id = $1 AND discussion_id = $2 FOR UPDATE', [questionId, discussionId]);
+        if (!target.rows.length) return { exists: false, changed: false };
+        if (!target.rows[0].queued) return { exists: true, changed: false };
+        await client.query('UPDATE questions SET queued = FALSE, created_at = now() WHERE id = $1 AND discussion_id = $2', [questionId, discussionId]);
+        return { exists: true, changed: true };
+      }) : { exists: false, changed: false };
+      if (outcome.locked) {
+        reply({ published: false, reason: 'locked' });
+        return;
+      }
+      // An authorized repeat repairs failed delivery without republishing or
+      // changing created_at. Delivery failure cannot undo a committed publish.
+      if (outcome.exists) {
+        try { await emitQuestions(discussionSlug); }
+        catch (error) { logError('Error broadcasting published question:', error); }
+      }
+      reply({ published: outcome.changed });
+    } catch (error) {
+      logError('Error publishing question:', error);
+      socket.emit('error', { message: 'Failed to publish question' });
+      reply({ published: false, reason: 'error' });
     }
   });
 
@@ -1260,7 +1444,7 @@ io.on('connection', (socket) => {
         `SELECT EXISTS (SELECT 1 FROM question_interest qi
                         WHERE qi.question_id=q.id AND qi.user_id=$3) AS interested
          FROM questions q JOIN discussions d ON d.id=q.discussion_id
-         WHERE q.id=$1 AND d.slug=$2`, [questionId, discussionSlug, userId]
+         WHERE q.id=$1 AND d.slug=$2 AND NOT q.queued`, [questionId, discussionSlug, userId]
       ));
       ack(result.rows[0] || { error: 'not_found' });
     } catch (error) {
@@ -1844,6 +2028,7 @@ async function getQuestions(topic, { includeUserIds = false, respondents = null 
       q.show_attribution,
       q.created_at,
       q.pinned,
+      q.queued,
       q.results_revealed,
       d.reactions_enabled,
       d.reactions_visible,
@@ -1866,7 +2051,7 @@ async function getQuestions(topic, { includeUserIds = false, respondents = null 
     LEFT JOIN votes v ON q.id = v.question_id
     WHERE d.slug = $1
     GROUP BY q.id, d.id
-    ORDER BY q.pinned DESC, q.id
+    ORDER BY q.pinned DESC, q.created_at NULLS FIRST, q.id
   `;
 
   const result = await pool.query(query, [slug]);
@@ -1900,6 +2085,9 @@ async function getQuestions(topic, { includeUserIds = false, respondents = null 
     resultsHidden: false,
     // Whether a moderator has shown this question's results to everyone.
     resultsRevealed: revealed === true,
+    // Written by a moderator but not published yet. Only moderators are sent
+    // queued questions (see withoutQueued).
+    queued: row.queued === true,
     options: parseOptions(row.options),
     // Replace raw stable user ids on the wire with per-response ownership
     // tokens so a socket observer can't correlate a participant's responses —
@@ -2116,7 +2304,7 @@ async function withTransaction(work) {
   }
 }
 
-async function addQuestion(topic, question) {
+async function addQuestion(topic, question, { queued = false } = {}) {
 
   const normalizedQuestion = normalizeQuestionPayload(question);
   if (!normalizedQuestion) {
@@ -2129,13 +2317,18 @@ async function addQuestion(topic, question) {
 
     const discussion = await getOrCreateDiscussionForSlug(client, topic);
     const discussionId = discussion.id;
+    const locked = await client.query('SELECT locked FROM discussions WHERE id = $1 FOR SHARE', [discussionId]);
+    if (!locked.rows.length || locked.rows[0].locked) {
+      await client.query('ROLLBACK');
+      return { locked: true };
+    }
 
     // Ensure options is a valid JSON array
     const optionsJson = JSON.stringify(normalizedQuestion.options);
 
     // Insert the question
     const questionResult = await client.query(
-      'INSERT INTO questions (discussion_id, text, type, min_value, max_value, options, max_responses, show_attribution) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *',
+      'INSERT INTO questions (discussion_id, text, type, min_value, max_value, options, max_responses, show_attribution, queued) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *',
       [
         discussionId,
         normalizedQuestion.text,
@@ -2145,6 +2338,7 @@ async function addQuestion(topic, question) {
         optionsJson,
         normalizedQuestion.maxResponses,
         normalizedQuestion.showAttribution,
+        queued === true,
       ]
     );
 
@@ -2540,7 +2734,7 @@ async function isModeratorOnlyQuestions(topic) {
 async function getQuestionForTopic(topic, questionId) {
   const slug = slugifyTopic(topic);
   const result = await pool.query(
-    `SELECT q.id, q.type, q.discussion_id, q.min_value, q.max_value, q.options, d.locked
+    `SELECT q.id, q.type, q.discussion_id, q.min_value, q.max_value, q.options, q.queued, d.locked
      FROM questions q
      JOIN discussions d ON q.discussion_id = d.id
      WHERE d.slug = $1 AND q.id = $2`,
@@ -2555,11 +2749,13 @@ async function getQuestionForTopic(topic, questionId) {
     maxValue: result.rows[0].max_value,
     options: parseOptions(result.rows[0].options),
     locked: result.rows[0].locked === true,
+    queued: result.rows[0].queued === true,
   };
 }
 
 // Return the text of the most similar existing statement in the discussion if
-// it crosses the trigram-similarity threshold, otherwise null.
+// it crosses the trigram-similarity threshold, otherwise null. Queued questions
+// are never offered: the prompt would show a participant their wording.
 const SIMILARITY_THRESHOLD = 0.5;
 async function findSimilarQuestion(topic, text) {
   if (!text) return null;
@@ -2569,7 +2765,7 @@ async function findSimilarQuestion(topic, text) {
       `SELECT q.text, similarity(q.text, $2) AS sim
        FROM questions q
        JOIN discussions d ON q.discussion_id = d.id
-       WHERE d.slug = $1 AND similarity(q.text, $2) > $3
+       WHERE d.slug = $1 AND NOT q.queued AND similarity(q.text, $2) > $3
        ORDER BY sim DESC
        LIMIT 1`,
       [slug, text, SIMILARITY_THRESHOLD]
@@ -2828,7 +3024,7 @@ async function setQuestionInterest(topic, questionId, userId, interested) {
       `SELECT q.id
        FROM questions q
        JOIN discussions d ON q.discussion_id = d.id
-       WHERE q.id = $1 AND d.slug = $2 AND NOT d.locked FOR SHARE OF d`,
+       WHERE q.id = $1 AND d.slug = $2 AND NOT d.locked AND NOT q.queued FOR SHARE OF d`,
       [questionId, slug]
     );
     if (found.rows.length === 0) return false;
@@ -3116,64 +3312,134 @@ app.get('/api/discussions/:topic/snapshots', async (req, res) => {
   }
 });
 
-app.post('/api/discussions/:topic/snapshots', async (req, res) => {
-  let client;
+const MAX_SNAPSHOT_NAME_LENGTH = 120;
+
+// Save a snapshot of a discussion's published tallied questions as they stand
+// now. Returns { snapshot }, or { empty: true } when there is nothing to save.
+// `autoQuestionId` marks a snapshot the server saves by itself before that
+// question's results are first shown: it is skipped ({ empty: true }) when the
+// question has no responses, or when it already has such a snapshot.
+async function saveOpinionSnapshot(discussionId, name, { autoQuestionId = null, transactionClient = null } = {}) {
+  const client = transactionClient || await pool.connect();
   let releaseError;
   try {
-    const discussionId = await verifyAdmin(req.params.topic, req.body?.adminToken);
-    if (!discussionId) return res.status(403).json({ error: 'Only a moderator can save a snapshot.' });
-    const name = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
-    if (!name || name.length > 120) {
-      return res.status(400).json({ error: 'Enter a snapshot name of 1–120 characters.' });
-    }
-
-    client = await pool.connect();
-    // Both reads see one consistent database state, even while participants are
-    // voting. Saving never closes voting or changes anyone's current response.
-    await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ');
-    const questions = await client.query(
-      `SELECT id, text, type, min_value, max_value, options FROM questions
-       WHERE discussion_id = $1 AND type = ANY($2::text[]) ORDER BY id`,
+    // One statement gives metadata and votes the same view. For an automatic
+    // capture it starts after the reveal acquired its question lock; manual
+    // saves retain their own repeatable-read transaction.
+    if (!transactionClient) await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ');
+    const input = await client.query(
+      `SELECT
+         COALESCE((SELECT jsonb_agg(q ORDER BY q.id) FROM (
+           SELECT id, text, type, min_value, max_value, options FROM questions
+           WHERE discussion_id=$1 AND type=ANY($2::text[]) AND NOT queued
+         ) q), '[]'::jsonb) AS questions,
+         COALESCE((SELECT jsonb_agg(v ORDER BY v.id) FROM (
+           SELECT v.id, v.question_id, v.value, v.user_id FROM votes v
+           JOIN questions q ON q.id=v.question_id
+           WHERE q.discussion_id=$1 AND q.type=ANY($2::text[]) AND NOT q.queued
+         ) v), '[]'::jsonb) AS votes`,
       [discussionId, OPINION_TYPES]
     );
+    const questions = { rows: input.rows[0].questions };
+    const votes = { rows: input.rows[0].votes };
     if (!questions.rows.length) {
-      await client.query('ROLLBACK');
-      return res.status(400).json({ error: 'Add a numerical, agreement, yes/no, or multiple choice question before saving a snapshot.' });
+      if (!transactionClient) await client.query('ROLLBACK');
+      return { empty: true };
     }
-    const votes = await client.query(
-      `SELECT v.id, v.question_id, v.value, v.user_id FROM votes v
-       JOIN questions q ON q.id = v.question_id
-       WHERE q.discussion_id = $1 AND q.type = ANY($2::text[])`,
-      [discussionId, OPINION_TYPES]
-    );
     const votesByQuestion = new Map();
     votes.rows.forEach(vote => {
       if (!votesByQuestion.has(vote.question_id)) votesByQuestion.set(vote.question_id, []);
       votesByQuestion.get(vote.question_id).push(vote);
     });
+    if (autoQuestionId !== null && !votesByQuestion.has(autoQuestionId)) {
+      if (!transactionClient) await client.query('ROLLBACK');
+      return { empty: true };
+    }
     const data = buildOpinionSnapshot(questions.rows.map(question => ({
       ...question, votes: votesByQuestion.get(question.id) || [],
     })));
     const saved = await client.query(
-      `INSERT INTO opinion_snapshots (discussion_id, name, data) VALUES ($1, $2, $3)
+      `INSERT INTO opinion_snapshots (discussion_id, name, data, auto_question_id) VALUES ($1, $2, $3, $4)
+       ON CONFLICT (auto_question_id) WHERE auto_question_id IS NOT NULL DO NOTHING
        RETURNING id, name, created_at AS "createdAt", data`,
-      [discussionId, name, JSON.stringify(data)]
+      [discussionId, name, JSON.stringify(data), autoQuestionId]
     );
-    await client.query('COMMIT');
-    res.status(201).json(saved.rows[0]);
+    if (!transactionClient) await client.query('COMMIT');
+    return saved.rows.length ? { snapshot: saved.rows[0] } : { empty: true };
   } catch (err) {
-    if (client) {
-      try {
-        await client.query('ROLLBACK');
-      } catch (rollbackErr) {
-        logError('Error rolling back opinion snapshot transaction:', rollbackErr);
-        releaseError = rollbackErr;
-      }
+    try {
+      if (!transactionClient) await client.query('ROLLBACK');
+    } catch (rollbackErr) {
+      logError('Error rolling back opinion snapshot transaction:', rollbackErr);
+      releaseError = rollbackErr;
     }
+    throw err;
+  } finally {
+    if (!transactionClient) client.release(releaseError);
+  }
+}
+
+// The name of the snapshot saved before a question's results are first shown.
+function snapshotNameBeforeReveal(questionText) {
+  const prefix = 'Before results shown: ';
+  const text = String(questionText).replace(/\s+/g, ' ').trim();
+  const room = MAX_SNAPSHOT_NAME_LENGTH - prefix.length;
+  return prefix + (text.length > room ? `${text.slice(0, room - 1).trimEnd()}…` : text);
+}
+
+// Called just before a moderator shows one question's results to everyone.
+// Once the room has seen how it answered, people start changing their answers,
+// and what they thought beforehand can no longer be recovered. So the first
+// time a question is shown, a snapshot is saved by itself, for a moderator who
+// did not think to save one. It covers every published tallied question, like
+// any snapshot. Nothing is saved when results are always shown (there was no
+// "before" to keep), when the question has no responses yet, or when it was
+// shown before. A failed capture rolls back to its savepoint so the reveal may continue.
+// The caller commits capture and reveal together and announces only after commit.
+async function saveSnapshotBeforeReveal(discussionSlug, discussionId, questionId, client) {
+  if (!Number.isInteger(questionId)) return false;
+  await client.query('SAVEPOINT automatic_baseline');
+  try {
+    const found = await client.query(
+      `SELECT q.text FROM questions q JOIN discussions d ON d.id = q.discussion_id
+        WHERE q.id = $1 AND d.id = $2 AND NOT q.queued AND NOT q.results_revealed
+          AND q.type = ANY($3::text[]) AND d.results_visibility IS DISTINCT FROM 'always'
+          AND NOT EXISTS (SELECT 1 FROM opinion_snapshots s WHERE s.auto_question_id = q.id)`,
+      [questionId, discussionId, OPINION_TYPES]
+    );
+    if (!found.rows.length) {
+      await client.query('RELEASE SAVEPOINT automatic_baseline');
+      return false;
+    }
+    const saved = await saveOpinionSnapshot(discussionId, snapshotNameBeforeReveal(found.rows[0].text), { autoQuestionId: questionId, transactionClient: client });
+    await client.query('RELEASE SAVEPOINT automatic_baseline');
+    return Boolean(saved.snapshot);
+  } catch (error) {
+    logError('Error saving a snapshot before showing results:', error);
+    await client.query('ROLLBACK TO SAVEPOINT automatic_baseline');
+    await client.query('RELEASE SAVEPOINT automatic_baseline');
+    return false;
+  }
+}
+
+app.post('/api/discussions/:topic/snapshots', async (req, res) => {
+  try {
+    const discussionId = await verifyAdmin(req.params.topic, req.body?.adminToken);
+    if (!discussionId) return res.status(403).json({ error: 'Only a moderator can save a snapshot.' });
+    const name = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
+    if (!name || name.length > MAX_SNAPSHOT_NAME_LENGTH) {
+      return res.status(400).json({ error: 'Enter a snapshot name of 1–120 characters.' });
+    }
+    const saved = await saveOpinionSnapshot(discussionId, name);
+    if (saved.empty) {
+      return res.status(400).json({ error: 'Add a numerical, agreement, yes/no, or multiple choice question before saving a snapshot.' });
+    }
+    // Open snapshot panels and the room display reload their list.
+    audience(slugifyTopic(req.params.topic)).emit('snapshotsChanged');
+    res.status(201).json(saved.snapshot);
+  } catch (err) {
     logError('Error saving opinion snapshot:', err);
     res.status(500).json({ error: 'Could not save the opinion snapshot. Try again.' });
-  } finally {
-    if (client) client.release(releaseError);
   }
 });
 
@@ -3351,6 +3617,11 @@ app.post('/api/duplicate-discussion', async (req, res) => {
 
     const originalDiscussion = originalDiscussionResult.rows[0];
     const originalDiscussionId = originalDiscussion.id;
+    // Anyone with the link may duplicate a discussion and becomes the copy's
+    // moderator, so the copy gets the original's queued questions only when the
+    // caller proves they already moderate the original. Otherwise duplicating
+    // would be a way to read a queue that only moderators are sent.
+    const copyQueued = !!(await verifyAdmin(originalTopic, req.body.adminToken, client));
 
     // Create new discussion. Duplicating into an existing topic would merge
     // questions into that discussion, so treat the unique conflict as a user
@@ -3404,11 +3675,12 @@ app.post('/api/duplicate-discussion', async (req, res) => {
     // Copy questions from original to new discussion. The interaction flags now
     // live on the discussion (copied above), not per question.
     await client.query(`
-      INSERT INTO questions (discussion_id, text, type, min_value, max_value, options, max_responses, show_attribution)
-      SELECT $1, text, type, min_value, max_value, options, max_responses, show_attribution
+      INSERT INTO questions (discussion_id, text, type, min_value, max_value, options, max_responses, show_attribution, queued)
+      SELECT $1, text, type, min_value, max_value, options, max_responses, show_attribution, queued
       FROM questions
-      WHERE discussion_id = $2
-    `, [newDiscussionId, originalDiscussionId]);
+      WHERE discussion_id = $2 AND ($3 OR NOT queued)
+      ORDER BY id
+    `, [newDiscussionId, originalDiscussionId, copyQueued]);
 
     // Carry the session-level reaction set (see reaction_keys) for the same
     // reason as the per-question flags above: a duplicate should preserve the
