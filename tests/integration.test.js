@@ -5028,3 +5028,166 @@ test('deleting a question or its discussion removes the interest marks', async (
     socket.disconnect();
   }
 });
+
+// A moderator socket: joined, identified by nothing but its proven token.
+async function joinAsModerator(slug, adminToken) {
+  const { socket } = await joinAs(slug, null);
+  assert.equal((await emitWithAck(socket, 'checkModerator', slug, adminToken)).isModerator, true);
+  return socket;
+}
+
+test('a queued question reaches moderators only, and nobody can answer it, until it is published', async () => {
+  const created = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('queue') });
+  const { slug, adminToken } = created.body;
+  const mod = await joinAsModerator(slug, adminToken);
+  const { socket: participant } = await joinAs(slug, 'queue-participant');
+  const { socket: display } = await joinDisplay(slug);
+  try {
+    const queuedPayload = { text: 'Takeover within a year is likely', type: 'Agreement', options: [], queued: true };
+
+    // Only a moderator can queue. A refused request adds nothing, because
+    // adding it unqueued would show the question to the whole room.
+    assert.deepEqual(
+      await emitWithAck(participant, 'addQuestion', slug, queuedPayload, false, undefined),
+      { added: false, reason: 'not_authorized' }
+    );
+    assert.deepEqual(
+      await emitWithAck(participant, 'addQuestion', slug, queuedPayload, false, 'not-the-token'),
+      { added: false, reason: 'not_authorized' }
+    );
+    assert.equal((await pool.query('SELECT count(*)::int AS n FROM questions')).rows[0].n, 0);
+
+    const modSees = waitForQuestions(mod, qs => qs.length === 1, 'moderator receives the queued question');
+    const participantSees = nextQuestions(participant, 'participant broadcast after queueing');
+    const displaySees = nextQuestions(display, 'display broadcast after queueing');
+    assert.deepEqual(await emitWithAck(mod, 'addQuestion', slug, queuedPayload, false, adminToken), { added: true });
+    const [queued] = await modSees;
+    assert.equal(queued.queued, true);
+    assert.deepEqual(await participantSees, []);
+    assert.deepEqual(await displaySees, []);
+
+    // Its id is easy to guess, so every way to answer it is refused as if the
+    // question did not exist.
+    const refusedVote = waitForEvent(participant, 'error', e => /invalid question/i.test(e.message));
+    assert.deepEqual(await emitWithAck(participant, 'vote', slug, queued.id, 'Agree', 'queue-participant', 'P', undefined), { ok: false });
+    await refusedVote;
+    assert.deepEqual(await emitWithAck(participant, 'clearVote', slug, queued.id, 'queue-participant'), { ok: false });
+    assert.deepEqual(await emitWithAck(participant, 'setQuestionInterest', slug, queued.id, true, 'queue-participant'), { updated: false });
+    assert.deepEqual(await emitWithAck(participant, 'getQuestionInterestState', slug, queued.id, 'queue-participant'), { error: 'not_found' });
+    assert.equal((await pool.query('SELECT count(*)::int AS n FROM votes')).rows[0].n, 0);
+    assert.equal((await pool.query('SELECT count(*)::int AS n FROM question_interest')).rows[0].n, 0);
+
+    // A participant who writes the same statement is not shown the queued
+    // wording as "a similar statement"; theirs is simply added.
+    const publicAdded = waitForQuestions(participant, qs => qs.length === 1, 'participant question added');
+    assert.deepEqual(
+      await emitWithAck(participant, 'addQuestion', slug, { ...queuedPayload, queued: undefined }, false, undefined),
+      { added: true }
+    );
+    const [publicQuestion] = await publicAdded;
+    assert.equal(publicQuestion.queued, false);
+    assert.notEqual(publicQuestion.id, queued.id);
+
+    // A moderator queueing a near-duplicate is asked first, and "Post anyway"
+    // (which sends the echoed question back) still queues it.
+    const similar = waitForEvent(mod, 'similarQuestion');
+    assert.deepEqual(
+      await emitWithAck(mod, 'addQuestion', slug, { ...queuedPayload, text: 'Takeover within a year is likely!' }, false, adminToken),
+      { added: false, reason: 'similar' }
+    );
+    const echoed = (await similar).question;
+    assert.equal(echoed.queued, true);
+    assert.deepEqual(await emitWithAck(mod, 'addQuestion', slug, echoed, true, adminToken), { added: true });
+    const flags = async () => (await pool.query('SELECT text, queued FROM questions ORDER BY id')).rows.map(row => row.queued);
+    assert.deepEqual(await flags(), [true, false, true]);
+
+    // Summaries, exports and snapshots leave queued questions out for everyone.
+    const base = `/api/discussions/${slug}`;
+    for (const headers of [{}, asUser('queue-participant'), asModerator(adminToken)]) {
+      const summary = (await jsonRequest('GET', `${base}/summary`, undefined, headers)).body;
+      assert.deepEqual(summary.questions.map(q => q.id), [publicQuestion.id]);
+      assert.equal(summary.counts.questions, 1);
+      const csv = await fetch(`${baseUrl}${base}/export.csv`, { headers });
+      assert.equal((await csv.text()).split('\n').length, 2, 'header and the one published question');
+    }
+    const snapshot = await jsonRequest('POST', `${base}/snapshots`, { name: 'Queue', adminToken });
+    assert.deepEqual(snapshot.body.data.questions.map(q => q.id), [publicQuestion.id]);
+
+    // Showing results to everyone does not show queued questions to everyone.
+    const alwaysForParticipant = waitForEvent(participant, 'discussionState', state => state.resultsVisibility === 'always');
+    const alwaysQuestions = nextQuestions(participant, 'participant broadcast in always mode');
+    const alwaysForMod = nextQuestions(mod, 'moderator broadcast in always mode');
+    const alwaysForDisplay = nextQuestions(display, 'display broadcast in always mode');
+    mod.emit('setResultsVisibility', slug, 'always', adminToken);
+    await alwaysForParticipant;
+    assert.deepEqual((await alwaysQuestions).map(q => q.id), [publicQuestion.id]);
+    assert.deepEqual((await alwaysForDisplay).map(q => q.id), [publicQuestion.id]);
+    assert.equal((await alwaysForMod).length, 3);
+    // Someone who joins or proves a moderator token in that mode gets the right list.
+    const late = await joinAs(slug, 'queue-latecomer');
+    try {
+      assert.deepEqual(late.questions.map(q => q.id), [publicQuestion.id]);
+      const promoted = waitForQuestions(late.socket, qs => qs.length === 3, 'queued questions after proving a token');
+      assert.equal((await emitWithAck(late.socket, 'checkModerator', slug, adminToken)).isModerator, true);
+      await promoted;
+    } finally {
+      late.socket.disconnect();
+    }
+
+    // Only a moderator can publish.
+    const refusedPublish = waitForEvent(participant, 'error', e => /not authorized/i.test(e.message));
+    assert.deepEqual(await emitWithAck(participant, 'publishQuestion', slug, queued.id, 'not-the-token'), { published: false, reason: 'not_authorized' });
+    await refusedPublish;
+    assert.deepEqual(await flags(), [true, false, true]);
+
+    // Publishing shows the question to everyone as the newest one.
+    const published = waitForQuestions(participant, qs => qs.length === 2, 'participant receives the published question');
+    const publishedOnDisplay = waitForQuestions(display, qs => qs.length === 2, 'display receives the published question');
+    assert.deepEqual(await emitWithAck(mod, 'publishQuestion', slug, queued.id, adminToken), { published: true });
+    assert.deepEqual((await published).map(q => q.id), [publicQuestion.id, queued.id]);
+    const onDisplay = await publishedOnDisplay;
+    assert.deepEqual(onDisplay.map(q => q.id), [publicQuestion.id, queued.id]);
+    assert.equal(onDisplay[1].queued, false);
+    assert.ok(Date.parse(onDisplay[1].created_at) > Date.parse(onDisplay[0].created_at), 'published now, so it sorts as the most recent');
+    // Publishing twice changes nothing, and neither does an id from elsewhere.
+    assert.deepEqual(await emitWithAck(mod, 'publishQuestion', slug, queued.id, adminToken), { published: false });
+    assert.deepEqual(await emitWithAck(mod, 'publishQuestion', slug, 'not-an-id', adminToken), { published: false });
+
+    // Now it can be answered.
+    assert.deepEqual(await emitWithAck(participant, 'vote', slug, queued.id, 'Agree', 'queue-participant', 'P', undefined), { ok: true });
+
+    // A duplicate keeps the rest of the agenda queued.
+    const copy = await jsonRequest('POST', '/api/duplicate-discussion', { originalTopic: slug, newTopic: uniqueTopic('queue-copy') });
+    const copied = await pool.query(
+      'SELECT q.text, q.queued FROM questions q JOIN discussions d ON d.id = q.discussion_id WHERE d.slug = $1 ORDER BY q.id',
+      [copy.body.newSlug]
+    );
+    assert.deepEqual(copied.rows.map(row => row.queued), [false, false, true]);
+    assert.equal(copied.rows[2].text, 'Takeover within a year is likely!');
+
+    // Locking closes new questions, and publishing would add one for the room.
+    const lockedState = waitForEvent(mod, 'discussionState', state => state.locked === true);
+    mod.emit('setLocked', slug, true, adminToken);
+    await lockedState;
+    const remaining = (await pool.query('SELECT id FROM questions WHERE queued AND discussion_id = $1', [created.body.id])).rows[0].id;
+    assert.deepEqual(await emitWithAck(mod, 'publishQuestion', slug, remaining, adminToken), { published: false, reason: 'locked' });
+    assert.equal((await pool.query('SELECT queued FROM questions WHERE id = $1', [remaining])).rows[0].queued, true);
+  } finally {
+    mod.disconnect();
+    participant.disconnect();
+    display.disconnect();
+  }
+});
+
+test('existing questions are published when the queue column is added', async () => {
+  await stopServer();
+  try {
+    const discussion = await pool.query("INSERT INTO discussions (topic, slug) VALUES ('Before the queue', 'before-the-queue') RETURNING id");
+    await pool.query('ALTER TABLE questions DROP COLUMN queued');
+    await pool.query("INSERT INTO questions (discussion_id, text, type) VALUES ($1, 'Older question', 'Agreement')", [discussion.rows[0].id]);
+    await initializeDatabase(pool);
+    assert.equal((await pool.query("SELECT queued FROM questions WHERE text = 'Older question'")).rows[0].queued, false);
+  } finally {
+    await startServer();
+  }
+});

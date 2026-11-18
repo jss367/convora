@@ -286,12 +286,21 @@ function displayView(questions, respondents) {
     : question));
 }
 
+// The questions without the queued ones: those a moderator has written but not
+// published yet (see publishQuestion). Returns `questions` itself when none is
+// queued.
+function withoutQueued(questions) {
+  return questions.some(question => question.queued) ? questions.filter(question => !question.queued) : questions;
+}
+
 // The questions as one REST caller may see them. `token` is a moderator token
 // and `userId` the participant's id, both optional; a caller that supplies
-// neither is treated as a participant who has answered nothing.
+// neither is treated as a participant who has answered nothing. Queued
+// questions are left out for everyone, moderators included: they have no
+// responses, so they have no place in a summary, an export or a snapshot.
 async function getQuestionsForViewer(topic, { userId = null, token = null, includeUserIds = false } = {}) {
   const respondents = new Map();
-  const questions = await getQuestions(topic, { includeUserIds, respondents });
+  const questions = withoutQueued(await getQuestions(topic, { includeUserIds, respondents }));
   // Read access after the questions: if the mode or a moderator grant changes
   // in between, the stricter of the two states wins or a rebroadcast follows.
   const access = await getResultsAccess(topic);
@@ -315,6 +324,8 @@ function restViewer(req) {
 // of questions they have not answered removed. Views are built once per
 // participant and shared by their sockets, from a single questions query. Room
 // displays get the display view, whatever else their socket has claimed.
+// Queued questions go to moderators only, in either mode, so a discussion that
+// has any is also sent socket by socket.
 // `isCurrent`, given with `onlySocket`, is checked once the data has loaded; a
 // caller whose request has been superseded meanwhile sends nothing.
 //
@@ -392,20 +403,23 @@ async function sendQuestions(slug, room, { onlySocket = null, isCurrent = () => 
   const markDelivered = () => {
     if (!onlySocket) room.delivered = Math.max(room.delivered, run);
   };
-  if (access.alwaysShow) {
+  // What everyone but a moderator may be sent.
+  const published = withoutQueued(questions);
+  if (access.alwaysShow && published === questions) {
     if (onlySocket?.data.isDisplay && onlySocket.data.display !== slug) return;
     (onlySocket || audience(slug)).emit('questions', questions);
     markDelivered();
     return;
   }
+  const forDisplay = () => (access.alwaysShow ? published : displayView(published, respondents));
   if (onlySocket?.data.isDisplay) {
     // The display may have moved to another discussion while this was loading.
     if (onlySocket.data.display !== slug) return;
-    onlySocket.emit('questions', displayView(questions, respondents));
+    onlySocket.emit('questions', forDisplay());
     return;
   }
   if (!onlySocket && io.sockets.adapter.rooms.get(displayRoom(slug))?.size) {
-    io.to(displayRoom(slug)).emit('questions', displayView(questions, respondents));
+    io.to(displayRoom(slug)).emit('questions', forDisplay());
   }
   const targets = onlySocket
     ? [onlySocket]
@@ -417,8 +431,12 @@ async function sendQuestions(slug, room, { onlySocket = null, isCurrent = () => 
       target.emit('questions', questions);
       continue;
     }
+    if (access.alwaysShow) {
+      target.emit('questions', published);
+      continue;
+    }
     const userId = target.data.userId || null;
-    if (!views.has(userId)) views.set(userId, hideUnansweredResults(questions, respondents, userId));
+    if (!views.has(userId)) views.set(userId, hideUnansweredResults(published, respondents, userId));
     target.emit('questions', views.get(userId));
   }
   markDelivered();
@@ -426,12 +444,14 @@ async function sendQuestions(slug, room, { onlySocket = null, isCurrent = () => 
 
 // A socket's view can change without any vote: it identifies itself after
 // joining, or gains or loses moderator access. Resend its questions then, unless
-// results are always shown and the payload it already has is complete.
-async function resendQuestionsIfPersonalized(socket) {
+// results are always shown and the payload it already has is complete. A change
+// of moderator access (`moderatorChanged`) always resends, because a moderator
+// also receives the queued questions.
+async function resendQuestionsIfPersonalized(socket, { moderatorChanged = false } = {}) {
   const slug = socket.data.topic;
   if (!slug) return;
   try {
-    if ((await getResultsAccess(slug)).alwaysShow) return;
+    if (!moderatorChanged && (await getResultsAccess(slug)).alwaysShow) return;
     await emitQuestions(slug, socket);
   } catch (error) {
     logError('Error resending questions:', error);
@@ -641,18 +661,30 @@ io.on('connection', (socket) => {
         }
       }
 
+      // A moderator may add a question to the queue: only moderators receive it
+      // until one of them publishes it. Anyone else asking for that is refused
+      // outright, since adding the question would show it to the whole room.
+      const queued = question?.queued === true;
+      if (queued && !(await verifyAdmin(discussionSlug, token))) {
+        socket.emit('error', { message: 'Only a moderator can queue a question.' });
+        reply({ added: false, reason: 'not_authorized' });
+        return;
+      }
+
       // Surface a near-duplicate so the submitter can vote on the existing
       // statement instead — unless they explicitly chose to post anyway.
       if (!force) {
         const similar = await findSimilarQuestion(discussionSlug, normalizedQuestion.text);
         if (similar) {
-          socket.emit('similarQuestion', { candidate: similar, question: normalizedQuestion });
+          // "Post anyway" sends this question back, so it carries the queue
+          // request with it; otherwise the retry would publish the question.
+          socket.emit('similarQuestion', { candidate: similar, question: queued ? { ...normalizedQuestion, queued } : normalizedQuestion });
           reply({ added: false, reason: 'similar' });
           return;
         }
       }
 
-      await addQuestion(discussionSlug, normalizedQuestion);
+      await addQuestion(discussionSlug, normalizedQuestion, { queued });
       audience(discussionSlug).emit('discussion', await getDiscussionBySlug(discussionSlug));
       await emitQuestions(discussionSlug);
       reply({ added: true });
@@ -686,7 +718,9 @@ io.on('connection', (socket) => {
       // not locked. Without this, a client could bypass a locked discussion by
       // sending the locked question's id under some other (unlocked) topic.
       const target = await getQuestionForTopic(discussionSlug, questionId);
-      if (!target) {
+      // A queued question cannot be answered, and is reported exactly like one
+      // that does not exist so its id reveals nothing.
+      if (!target || target.queued) {
         socket.emit('error', { message: 'Invalid question for this discussion.' });
         reply(false);
         return;
@@ -751,7 +785,7 @@ io.on('connection', (socket) => {
     }
     try {
       const target = await getQuestionForTopic(discussionSlug, questionId);
-      if (!target || !choiceOptionsFor(target)) {
+      if (!target || target.queued || !choiceOptionsFor(target)) {
         socket.emit('error', { message: 'Invalid question for this discussion.' });
         reply(false);
         return;
@@ -783,7 +817,7 @@ io.on('connection', (socket) => {
         // This socket now holds the moderator token, so it gets the moderator's
         // view of the questions (see checkModerator).
         socket.data.moderator = { slug: discussionSlug, token };
-        if (socket.data.topic === discussionSlug) await resendQuestionsIfPersonalized(socket);
+        if (socket.data.topic === discussionSlug) await resendQuestionsIfPersonalized(socket, { moderatorChanged: true });
       } else if (typeof cb === 'function') {
         cb({ success: false, error: 'already_claimed' });
       }
@@ -911,7 +945,7 @@ io.on('connection', (socket) => {
       }
       cb({ ok: true, isModerator: !!discussionId, isCreator });
       if ((discussionId || wasModerator) && socket.data.topic === slug) {
-        await resendQuestionsIfPersonalized(socket);
+        await resendQuestionsIfPersonalized(socket, { moderatorChanged: true });
       }
     } catch (error) {
       logError('Error checking moderator status:', error);
@@ -1142,6 +1176,45 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Moderator-only: publish a queued question, showing it to everyone and
+  // opening it for answers. Its creation time becomes now, so it arrives as the
+  // newest question for participants and for the room display. There is no way
+  // back to the queue: once people can answer a question, hiding it would hide
+  // their answers too. Publishing an already published question changes nothing.
+  socket.on('publishQuestion', async (topic, questionId, token, ack) => {
+    const discussionSlug = slugifyTopic(topic);
+    const reply = (result) => { if (typeof ack === 'function') ack(result); };
+    try {
+      const discussionId = await verifyAdmin(discussionSlug, token);
+      if (!discussionId) {
+        socket.emit('error', { message: 'Not authorized to moderate this discussion.' });
+        reply({ published: false, reason: 'not_authorized' });
+        return;
+      }
+      // Locking closes new questions, and a published question is a new one
+      // for everybody else.
+      if (await isDiscussionLocked(discussionSlug)) {
+        socket.emit('error', { message: 'This discussion is locked.' });
+        reply({ published: false, reason: 'locked' });
+        return;
+      }
+      const validId = Number.isInteger(questionId) && questionId > 0 && questionId <= 2147483647;
+      // The lock is checked again in the write itself, in case it was set since.
+      const updated = validId ? await pool.query(
+        `UPDATE questions q SET queued = FALSE, created_at = now()
+           FROM discussions d
+          WHERE q.id = $1 AND q.discussion_id = $2 AND q.queued AND d.id = q.discussion_id AND NOT d.locked`,
+        [questionId, discussionId]
+      ) : { rowCount: 0 };
+      if (updated.rowCount > 0) await emitQuestions(discussionSlug);
+      reply({ published: updated.rowCount > 0 });
+    } catch (error) {
+      logError('Error publishing question:', error);
+      socket.emit('error', { message: 'Failed to publish question' });
+      reply({ published: false, reason: 'error' });
+    }
+  });
+
   socket.on('setPinned', async (topic, questionId, pinned, token) => {
     const discussionSlug = slugifyTopic(topic);
     try {
@@ -1262,7 +1335,7 @@ io.on('connection', (socket) => {
         `SELECT EXISTS (SELECT 1 FROM question_interest qi
                         WHERE qi.question_id=q.id AND qi.user_id=$3) AS interested
          FROM questions q JOIN discussions d ON d.id=q.discussion_id
-         WHERE q.id=$1 AND d.slug=$2`, [questionId, discussionSlug, userId]
+         WHERE q.id=$1 AND d.slug=$2 AND NOT q.queued`, [questionId, discussionSlug, userId]
       ));
       ack(result.rows[0] || { error: 'not_found' });
     } catch (error) {
@@ -1846,6 +1919,7 @@ async function getQuestions(topic, { includeUserIds = false, respondents = null 
       q.show_attribution,
       q.created_at,
       q.pinned,
+      q.queued,
       q.results_revealed,
       d.reactions_enabled,
       d.reactions_visible,
@@ -1868,7 +1942,7 @@ async function getQuestions(topic, { includeUserIds = false, respondents = null 
     LEFT JOIN votes v ON q.id = v.question_id
     WHERE d.slug = $1
     GROUP BY q.id, d.id
-    ORDER BY q.pinned DESC, q.id
+    ORDER BY q.pinned DESC, q.created_at NULLS FIRST, q.id
   `;
 
   const result = await pool.query(query, [slug]);
@@ -1902,6 +1976,9 @@ async function getQuestions(topic, { includeUserIds = false, respondents = null 
     resultsHidden: false,
     // Whether a moderator has shown this question's results to everyone.
     resultsRevealed: revealed === true,
+    // Written by a moderator but not published yet. Only moderators are sent
+    // queued questions (see withoutQueued).
+    queued: row.queued === true,
     options: parseOptions(row.options),
     // Replace raw stable user ids on the wire with per-response ownership
     // tokens so a socket observer can't correlate a participant's responses —
@@ -2118,7 +2195,7 @@ async function withTransaction(work) {
   }
 }
 
-async function addQuestion(topic, question) {
+async function addQuestion(topic, question, { queued = false } = {}) {
 
   const normalizedQuestion = normalizeQuestionPayload(question);
   if (!normalizedQuestion) {
@@ -2137,7 +2214,7 @@ async function addQuestion(topic, question) {
 
     // Insert the question
     const questionResult = await client.query(
-      'INSERT INTO questions (discussion_id, text, type, min_value, max_value, options, max_responses, show_attribution) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *',
+      'INSERT INTO questions (discussion_id, text, type, min_value, max_value, options, max_responses, show_attribution, queued) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *',
       [
         discussionId,
         normalizedQuestion.text,
@@ -2147,6 +2224,7 @@ async function addQuestion(topic, question) {
         optionsJson,
         normalizedQuestion.maxResponses,
         normalizedQuestion.showAttribution,
+        queued === true,
       ]
     );
 
@@ -2542,7 +2620,7 @@ async function isModeratorOnlyQuestions(topic) {
 async function getQuestionForTopic(topic, questionId) {
   const slug = slugifyTopic(topic);
   const result = await pool.query(
-    `SELECT q.id, q.type, q.discussion_id, q.min_value, q.max_value, q.options, d.locked
+    `SELECT q.id, q.type, q.discussion_id, q.min_value, q.max_value, q.options, q.queued, d.locked
      FROM questions q
      JOIN discussions d ON q.discussion_id = d.id
      WHERE d.slug = $1 AND q.id = $2`,
@@ -2557,11 +2635,13 @@ async function getQuestionForTopic(topic, questionId) {
     maxValue: result.rows[0].max_value,
     options: parseOptions(result.rows[0].options),
     locked: result.rows[0].locked === true,
+    queued: result.rows[0].queued === true,
   };
 }
 
 // Return the text of the most similar existing statement in the discussion if
-// it crosses the trigram-similarity threshold, otherwise null.
+// it crosses the trigram-similarity threshold, otherwise null. Queued questions
+// are never offered: the prompt would show a participant their wording.
 const SIMILARITY_THRESHOLD = 0.5;
 async function findSimilarQuestion(topic, text) {
   if (!text) return null;
@@ -2571,7 +2651,7 @@ async function findSimilarQuestion(topic, text) {
       `SELECT q.text, similarity(q.text, $2) AS sim
        FROM questions q
        JOIN discussions d ON q.discussion_id = d.id
-       WHERE d.slug = $1 AND similarity(q.text, $2) > $3
+       WHERE d.slug = $1 AND NOT q.queued AND similarity(q.text, $2) > $3
        ORDER BY sim DESC
        LIMIT 1`,
       [slug, text, SIMILARITY_THRESHOLD]
@@ -2830,7 +2910,7 @@ async function setQuestionInterest(topic, questionId, userId, interested) {
       `SELECT q.id
        FROM questions q
        JOIN discussions d ON q.discussion_id = d.id
-       WHERE q.id = $1 AND d.slug = $2 AND NOT d.locked FOR SHARE OF d`,
+       WHERE q.id = $1 AND d.slug = $2 AND NOT d.locked AND NOT q.queued FOR SHARE OF d`,
       [questionId, slug]
     );
     if (found.rows.length === 0) return false;
@@ -3135,7 +3215,7 @@ app.post('/api/discussions/:topic/snapshots', async (req, res) => {
     await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ');
     const questions = await client.query(
       `SELECT id, text, type, min_value, max_value, options FROM questions
-       WHERE discussion_id = $1 AND type = ANY($2::text[]) ORDER BY id`,
+       WHERE discussion_id = $1 AND type = ANY($2::text[]) AND NOT queued ORDER BY id`,
       [discussionId, OPINION_TYPES]
     );
     if (!questions.rows.length) {
@@ -3406,10 +3486,11 @@ app.post('/api/duplicate-discussion', async (req, res) => {
     // Copy questions from original to new discussion. The interaction flags now
     // live on the discussion (copied above), not per question.
     await client.query(`
-      INSERT INTO questions (discussion_id, text, type, min_value, max_value, options, max_responses, show_attribution)
-      SELECT $1, text, type, min_value, max_value, options, max_responses, show_attribution
+      INSERT INTO questions (discussion_id, text, type, min_value, max_value, options, max_responses, show_attribution, queued)
+      SELECT $1, text, type, min_value, max_value, options, max_responses, show_attribution, queued
       FROM questions
       WHERE discussion_id = $2
+      ORDER BY id
     `, [newDiscussionId, originalDiscussionId]);
 
     // Carry the session-level reaction set (see reaction_keys) for the same

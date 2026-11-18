@@ -38,6 +38,27 @@ pinned questions stay on top. The sort is each viewer's own choice, so it does
 not change what other people see. Locking a discussion closes these marks along
 with voting.
 
+## Queue questions and publish them one at a time
+
+A moderator can write questions ahead of time without showing them to the
+room. In the Add Question form, tick **Add to the queue**. The box stays ticked
+from one question to the next, so a whole agenda can be entered in a row.
+
+Queued questions are listed under **Queued questions** on the moderator's page,
+in the order they were written. Only moderators receive them: participants, the
+room display, the summary, exports and snapshots do not. Nobody can answer a
+queued question, and it can be edited or deleted like any question without
+responses.
+
+Click **Publish** on a queued question to show it to everyone and open it for
+answers. It arrives as the newest question, so it is first under **Most
+Recent**. Publishing cannot be undone, because hiding a question again would
+hide the answers people gave to it; delete the question instead. A locked
+discussion publishes nothing until it is unlocked.
+
+Duplicating a discussion keeps its queued questions queued, so a prepared
+agenda can be reused.
+
 ## Discussions are unlisted unless you list them
 
 A new discussion is unlisted: it's reachable only through its link or short

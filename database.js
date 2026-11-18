@@ -343,6 +343,10 @@ async function initializeDatabase(pool) {
     // DISPLAY_QR_MODES and DISPLAY_LAYOUTS in server.js.
     await pool.query("ALTER TABLE discussions ADD COLUMN IF NOT EXISTS display_qr TEXT NOT NULL DEFAULT 'full'");
     await pool.query("ALTER TABLE discussions ADD COLUMN IF NOT EXISTS display_layout TEXT NOT NULL DEFAULT 'all'");
+    // A queued question is one a moderator has written but not published yet.
+    // Only moderators receive it, and nobody can answer it, until a moderator
+    // publishes it (see publishQuestion in server.js).
+    await pool.query('ALTER TABLE questions ADD COLUMN IF NOT EXISTS queued BOOLEAN NOT NULL DEFAULT FALSE');
 
     try {
       await pool.query('CREATE EXTENSION IF NOT EXISTS pg_trgm');
