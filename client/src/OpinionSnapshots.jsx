@@ -16,7 +16,9 @@ const OPINION_OPTIONS = {
     'Yes/No': ['No', 'Yes'],
 };
 
-function distributionRows(question) {
+// One row per answer (or per numerical bin) of a snapshot question, in a fixed
+// order, so the rows of two snapshots line up.
+export function distributionRows(question) {
     if (!question) return [];
     if (question.type !== 'Numerical') {
         // JSONB does not preserve object-key order; use the semantic scale, or
@@ -28,6 +30,14 @@ function distributionRows(question) {
         label: `${formatNumber(bin.min)} to ${index < bins.length - 1 ? '<' : ''}${formatNumber(bin.max)}`,
         count: bin.count,
     }));
+}
+
+// Whether a question's wording, type, scale or answer options differ between two
+// snapshots, in which case their results are not comparable row by row.
+export function snapshotQuestionChanged(before, after) {
+    return Boolean(before && after && (before.text !== after.text || before.type !== after.type
+        || before.minValue !== after.minValue || before.maxValue !== after.maxValue
+        || JSON.stringify(before.options ?? null) !== JSON.stringify(after.options ?? null)));
 }
 
 function DistributionCell({ count, total, color }) {
@@ -68,9 +78,7 @@ export function QuestionComparison({ before, after, comparing, beforeName, after
             </article>
         );
     }
-    const changed = before && after && (before.text !== after.text || before.type !== after.type
-        || before.minValue !== after.minValue || before.maxValue !== after.maxValue
-        || JSON.stringify(before.options ?? null) !== JSON.stringify(after.options ?? null));
+    const changed = snapshotQuestionChanged(before, after);
     const beforeRows = distributionRows(before);
     const afterRows = distributionRows(after);
     const delta = !changed && before?.average != null && after?.average != null
@@ -134,8 +142,10 @@ QuestionComparison.propTypes = {
 
 // `refreshSignal` changes whenever the server reports a new snapshot (one a
 // moderator saved, or the one saved by itself before a question's results are
-// first shown), and the list is loaded again.
-export default function OpinionSnapshots({ discussionSlug, adminToken, userId, refreshSignal }) {
+// first shown), and the list is loaded again. `display` is what the room
+// display is set to compare ({ layout, beforeId, afterId }) and `onDisplay`
+// changes it; both are given to moderators only.
+export default function OpinionSnapshots({ discussionSlug, adminToken, userId, refreshSignal, display, onDisplay }) {
     const [snapshots, setSnapshots] = useState([]);
     const [beforeId, setBeforeId] = useState('');
     const [afterId, setAfterId] = useState('');
@@ -201,6 +211,10 @@ export default function OpinionSnapshots({ discussionSlug, adminToken, userId, r
     const before = snapshots.find(item => String(item.id) === beforeId);
     const after = snapshots.find(item => String(item.id) === afterId && item.id > Number(beforeId));
     const questionIds = [...new Set([...(before?.data.questions || []), ...(after?.data.questions || [])].map(q => q.id))];
+    // The room display is showing exactly the comparison chosen here. With no
+    // later snapshot chosen, the display compares against the latest one.
+    const onRoomDisplay = Boolean(display && before && display.layout === 'compare'
+        && display.beforeId === before.id && (display.afterId ?? null) === (after?.id ?? null));
     return (
         <section id="opinion-snapshots" aria-labelledby="snapshot-heading" className="bg-white shadow-lg rounded-lg p-6 mb-8">
             <div className="flex items-start justify-between gap-4 mb-2">
@@ -246,6 +260,29 @@ export default function OpinionSnapshots({ discussionSlug, adminToken, userId, r
                         {' '}These are group-level comparisons; participants may differ between snapshots.
                     </p>
                     {snapshots.length === 1 && <p className="text-sm text-gray-500 mb-4">Save a second snapshot after the discussion to see what changed.</p>}
+                    {adminToken && onDisplay && before && (
+                        <div className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-1">
+                            <button
+                                type="button"
+                                aria-pressed={onRoomDisplay}
+                                onClick={() => onDisplay(onRoomDisplay
+                                    ? { layout: 'all' }
+                                    : { layout: 'compare', beforeSnapshotId: before.id, afterSnapshotId: after?.id ?? null })}
+                                className={`text-sm px-3 py-1 rounded border border-indigo-300 ${onRoomDisplay
+                                    ? 'bg-indigo-600 text-white hover:bg-indigo-700'
+                                    : 'text-indigo-700 hover:bg-indigo-50'}`}
+                            >
+                                {onRoomDisplay ? 'On the room display' : 'Show this comparison on the room display'}
+                            </button>
+                            <span className="text-xs text-gray-500">
+                                {onRoomDisplay
+                                    ? 'Click again to go back to showing every question.'
+                                    : after
+                                        ? 'The room sees these two snapshots side by side.'
+                                        : 'With no later snapshot chosen, the room sees this one next to the latest snapshot.'}
+                            </span>
+                        </div>
+                    )}
                     <div className="space-y-4">
                         {questionIds.map(id => <QuestionComparison key={id}
                             before={before?.data.questions.find(q => q.id === id)} after={after?.data.questions.find(q => q.id === id)}
@@ -256,4 +293,8 @@ export default function OpinionSnapshots({ discussionSlug, adminToken, userId, r
         </section>
     );
 }
-OpinionSnapshots.propTypes = { discussionSlug: PropTypes.string.isRequired, adminToken: PropTypes.string, userId: PropTypes.string, refreshSignal: PropTypes.number };
+OpinionSnapshots.propTypes = {
+    discussionSlug: PropTypes.string.isRequired, adminToken: PropTypes.string, userId: PropTypes.string, refreshSignal: PropTypes.number,
+    display: PropTypes.shape({ layout: PropTypes.string, beforeId: PropTypes.number, afterId: PropTypes.number }),
+    onDisplay: PropTypes.func,
+};

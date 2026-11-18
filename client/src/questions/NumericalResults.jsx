@@ -1,7 +1,7 @@
 import PropTypes from 'prop-types';
 import React from 'react';
 import { RESULTS_HIDDEN_HINT } from '../viewer';
-import { formatNumerical, numericalBinIndex, parseNumericalVote } from './questionHelpers.mjs';
+import { NUMERICAL_DECIMALS, numericalBinIndex, parseNumericalVote } from './questionHelpers.mjs';
 
 // Summary stats + histogram for a Numerical question.
 const NumericalResults = ({ question, minValue, maxValue }) => {
@@ -30,6 +30,9 @@ const NumericalResults = ({ question, minValue, maxValue }) => {
     }
 
     const average = values.reduce((sum, n) => sum + n, 0) / total;
+    // One decimal place, as always for whole-number answers. Once anyone has
+    // answered with a decimal, the average keeps as many places as an answer can.
+    const averageDecimals = values.some(n => !Number.isInteger(n)) ? NUMERICAL_DECIMALS : 1;
     const range = Math.max(maxValue - minValue, 1);
 
     // Bucket values into up to 10 bins across the [min, max] range.
@@ -49,7 +52,7 @@ const NumericalResults = ({ question, minValue, maxValue }) => {
     return (
         <div className="mb-2">
             <div className="text-sm text-gray-600 mb-2">
-                {total} {total === 1 ? 'response' : 'responses'} · average <span className="font-semibold">{formatNumerical(average)}</span>
+                {total} {total === 1 ? 'response' : 'responses'} · average <span className="font-semibold">{average.toFixed(averageDecimals)}</span>
             </div>
             <div className="flex gap-1">
                 {/* Y-axis count labels. Each is anchored by its bottom edge at the

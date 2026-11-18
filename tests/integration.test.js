@@ -5386,3 +5386,83 @@ test('showing a question\'s results for the first time saves a "before" snapshot
     display.disconnect();
   }
 });
+
+test('a moderator puts a comparison of two opinion snapshots on the room display', async () => {
+  const seed = await seedResultsDiscussion('display-compare');
+  const other = await seedResultsDiscussion('display-compare-other');
+  const { slug, adminToken } = seed;
+  const mod = await joinAsModerator(slug, adminToken);
+  const display = await connectSocket();
+  const save = async (room, name) => (await jsonRequest('POST', `/api/discussions/${room.slug}/snapshots`, { name, adminToken: room.adminToken })).body.id;
+  const stateWhere = predicate => waitForEvent(display, 'discussionState', predicate);
+  const stored = async () => (await pool.query(
+    'SELECT display_layout, display_question_id, display_before_snapshot_id, display_after_snapshot_id FROM discussions WHERE slug = $1', [slug]
+  )).rows[0];
+  try {
+    const before = await save(seed, 'Before');
+    const middle = await save(seed, 'Middle');
+    const after = await save(seed, 'After');
+    const foreign = await save(other, 'Another room');
+
+    const initial = stateWhere(() => true);
+    display.emit('joinDisplay', slug);
+    const state = await initial;
+    assert.equal(state.displayBeforeSnapshotId, null);
+    assert.equal(state.displayAfterSnapshotId, null);
+
+    // The layout alone: the display picks the first and the latest snapshot.
+    let changed = stateWhere(s => s.displayLayout === 'compare');
+    mod.emit('setDisplaySettings', slug, { layout: 'compare' }, adminToken);
+    assert.equal((await changed).displayBeforeSnapshotId, null);
+
+    // A chosen pair.
+    changed = stateWhere(s => s.displayAfterSnapshotId === after);
+    mod.emit('setDisplaySettings', slug, { beforeSnapshotId: middle, afterSnapshotId: after }, adminToken);
+    assert.equal((await changed).displayBeforeSnapshotId, middle);
+    // Each id changes on its own, and null goes back to the display's own pick.
+    changed = stateWhere(s => s.displayBeforeSnapshotId === before);
+    mod.emit('setDisplaySettings', slug, { beforeSnapshotId: before }, adminToken);
+    assert.equal((await changed).displayAfterSnapshotId, after);
+    changed = stateWhere(s => s.displayAfterSnapshotId === null);
+    mod.emit('setDisplaySettings', slug, { afterSnapshotId: null }, adminToken);
+    assert.equal((await changed).displayBeforeSnapshotId, before);
+
+    // Choosing a question narrows the comparison to it and keeps the layout.
+    changed = stateWhere(s => s.displayQuestionId === seed.numerical);
+    mod.emit('setDisplaySettings', slug, { questionId: seed.numerical }, adminToken);
+    assert.equal((await changed).displayLayout, 'compare');
+
+    // Only this discussion's snapshots, in order, can be chosen.
+    for (const [settings, pattern] of [
+      [{ beforeSnapshotId: foreign }, /snapshot cannot be shown/i],
+      [{ afterSnapshotId: 999999999 }, /snapshot cannot be shown/i],
+      [{ beforeSnapshotId: after, afterSnapshotId: before }, /room display setting/i],
+      [{ beforeSnapshotId: before, afterSnapshotId: before }, /room display setting/i],
+      [{ beforeSnapshotId: String(before) }, /room display setting/i],
+      [{ layout: 'sideways' }, /room display setting/i],
+    ]) {
+      const refused = waitForEvent(mod, 'error', error => pattern.test(error.message));
+      mod.emit('setDisplaySettings', slug, settings, adminToken);
+      await refused;
+    }
+    assert.deepEqual(await stored(), {
+      display_layout: 'compare', display_question_id: seed.numerical,
+      display_before_snapshot_id: before, display_after_snapshot_id: null,
+    });
+
+    // The display reads the snapshots as someone who has answered nothing, so
+    // it gets results only for questions the moderator has shown to everyone.
+    const hidden = (await jsonRequest('GET', `/api/discussions/${slug}/snapshots`)).body.snapshots;
+    assert.deepEqual(hidden.map(snapshot => snapshot.id), [before, middle, after]);
+    assert.ok(hidden[0].data.questions.every(question => question.resultsHidden === true));
+    const revealed = waitForQuestions(mod, qs => byId(qs, seed.numerical)?.resultsRevealed === true, 'numerical results shown');
+    mod.emit('setResultsRevealed', slug, seed.numerical, true, adminToken);
+    await revealed;
+    const shown = (await jsonRequest('GET', `/api/discussions/${slug}/snapshots`)).body.snapshots;
+    assert.equal(byId(shown[0].data.questions, seed.numerical).average, 40);
+    assert.equal(byId(shown[0].data.questions, seed.agreement).resultsHidden, true);
+  } finally {
+    mod.disconnect();
+    display.disconnect();
+  }
+});

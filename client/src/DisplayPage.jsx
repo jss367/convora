@@ -10,6 +10,7 @@ import useScreenWakeLock from './hooks/useScreenWakeLock';
 import {
     AgreementChart, MultipleChoiceChart, NumericalChart, ResponseCountOnly, YesNoChart,
 } from './display/DisplayCharts';
+import DisplayComparison from './display/DisplayComparison';
 import { EPISTEMIC_REACTIONS, QuestionTypes } from './questions/config';
 import { slugifyTopic } from './slugs';
 
@@ -156,6 +157,61 @@ const focusQuestionOf = (questions, chosenId) => questions.find(q => q.id === ch
     || questions.find(q => q.pinned)
     || questions[questions.length - 1];
 
+// The two snapshots the before-and-after view compares: the ones the moderator
+// chose, otherwise the first snapshot and the latest one. `after` is null when
+// there is no later snapshot to compare with.
+const comparisonOf = (snapshots, beforeId, afterId) => {
+    const before = snapshots.find(snapshot => snapshot.id === beforeId) || snapshots[0];
+    if (!before) return { before: null, after: null };
+    const after = snapshots.find(snapshot => snapshot.id === afterId) || snapshots[snapshots.length - 1];
+    return { before, after: after.id > before.id ? after : null };
+};
+
+// The saved opinion snapshots, loaded only while the display is comparing them.
+// The display asks as an anonymous viewer, so with results shown after voting
+// the server sends a snapshot's results only for questions the moderator has
+// shown to everyone. `reloadKey` changes when that set might have changed.
+// Returns null while loading, or { snapshots } / { failed: true }.
+const useSnapshots = (socket, discussionSlug, enabled, reloadKey) => {
+    const [result, setResult] = useState(null);
+    const [version, setVersion] = useState(0);
+    useEffect(() => {
+        const reload = () => setVersion(value => value + 1);
+        socket.on('snapshotsChanged', reload);
+        // A reconnect may have missed a snapshot saved while the screen was offline.
+        socket.on('connect', reload);
+        return () => {
+            socket.off('snapshotsChanged', reload);
+            socket.off('connect', reload);
+        };
+    }, [socket]);
+    useEffect(() => {
+        if (!enabled) {
+            setResult(null);
+            return undefined;
+        }
+        const controller = new AbortController();
+        let retry = null;
+        fetch(`/api/discussions/${encodeURIComponent(discussionSlug)}/snapshots`, { signal: controller.signal })
+            .then(async response => {
+                if (!response.ok) throw new Error(`Snapshots failed with status ${response.status}`);
+                const { snapshots } = await response.json();
+                if (!controller.signal.aborted) setResult({ snapshots: Array.isArray(snapshots) ? snapshots : [] });
+            })
+            .catch(() => {
+                if (controller.signal.aborted) return;
+                // Keep a list already on screen; nobody is there to retry by hand.
+                setResult(current => current?.snapshots ? current : { failed: true });
+                retry = setTimeout(() => setVersion(value => value + 1), RETRY_DELAY_MS);
+            });
+        return () => {
+            controller.abort();
+            clearTimeout(retry);
+        };
+    }, [discussionSlug, enabled, reloadKey, version]);
+    return result;
+};
+
 const JoinCard = ({ linkUrl, linkText, title, compact }) => (
     <div
         className={compact
@@ -276,6 +332,11 @@ const DisplayPage = () => {
     const linkText = linkUrl.replace(/^https?:\/\//, '');
     const reactionKeys = state.reactionKeys || EPISTEMIC_REACTIONS.map(r => r.key);
 
+    // Which questions' results this screen may see decides what the server
+    // sends of each snapshot, so reload them when that changes.
+    const snapshotReloadKey = `${state.resultsVisibility}|${(questions || []).map(q => `${q.id}${q.resultsHidden ? 'h' : ''}`).join(',')}`;
+    const snapshotResult = useSnapshots(socket, discussionSlug, state.displayLayout === 'compare' && discussion != null, snapshotReloadKey);
+
     if (discussion === null) {
         return (
             <main className="flex min-h-screen items-center justify-center bg-gray-100 p-8">
@@ -286,6 +347,7 @@ const DisplayPage = () => {
 
     const qrMode = QR_MODES.includes(state.displayQr) ? state.displayQr : 'full';
     const focus = state.displayLayout === 'focus';
+    const compare = state.displayLayout === 'compare';
     const ready = discussion !== undefined && questions !== null;
 
     let body;
@@ -293,6 +355,24 @@ const DisplayPage = () => {
         body = <p className="text-3xl text-red-600" role="alert">Couldn’t load the questions. Trying again…</p>;
     } else if (!ready) {
         body = <p className="text-3xl text-gray-500">Loading…</p>;
+    } else if (compare) {
+        const { before, after } = comparisonOf(snapshotResult?.snapshots || [], state.displayBeforeSnapshotId, state.displayAfterSnapshotId);
+        if (snapshotResult?.failed) {
+            body = <p className="text-3xl text-red-600" role="alert">Couldn’t load the snapshots. Trying again…</p>;
+        } else if (!snapshotResult) {
+            body = <p className="text-3xl text-gray-500">Loading…</p>;
+        } else if (!before) {
+            body = <p className="text-4xl text-gray-500">No opinion snapshots saved yet</p>;
+        } else {
+            body = (
+                <DisplayComparison
+                    before={before}
+                    after={after}
+                    questionId={state.displayQuestionId ?? undefined}
+                    wide={qrMode !== 'full'}
+                />
+            );
+        }
     } else if (questions.length === 0) {
         body = <p className="text-4xl text-gray-500">No questions yet</p>;
     } else if (focus) {

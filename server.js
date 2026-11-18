@@ -182,6 +182,10 @@ async function getDiscussionState(topic) {
             display_qr, display_layout,
             (SELECT q.id FROM questions q
               WHERE q.id = d.display_question_id AND q.discussion_id = d.id AND NOT q.queued) AS display_question_id,
+            (SELECT s.id FROM opinion_snapshots s
+              WHERE s.id = d.display_before_snapshot_id AND s.discussion_id = d.id) AS display_before_snapshot_id,
+            (SELECT s.id FROM opinion_snapshots s
+              WHERE s.id = d.display_after_snapshot_id AND s.discussion_id = d.id) AS display_after_snapshot_id,
             admin_token IS NOT NULL AS has_moderator,
             reactions_enabled, reactions_visible, comments_enabled
        FROM discussions d WHERE slug = $1`,
@@ -197,6 +201,8 @@ async function getDiscussionState(topic) {
       displayQr: DISPLAY_QR_MODES[0],
       displayLayout: DISPLAY_LAYOUTS[0],
       displayQuestionId: null,
+      displayBeforeSnapshotId: null,
+      displayAfterSnapshotId: null,
     };
   }
   const row = result.rows[0];
@@ -216,6 +222,10 @@ async function getDiscussionState(topic) {
     // The question a moderator put on the display, or null when they chose
     // none or it has since been deleted.
     displayQuestionId: row.display_question_id ?? null,
+    // The snapshots the before-and-after view compares; null means the display
+    // picks the first snapshot and the latest one.
+    displayBeforeSnapshotId: row.display_before_snapshot_id ?? null,
+    displayAfterSnapshotId: row.display_after_snapshot_id ?? null,
   };
 }
 
@@ -224,9 +234,11 @@ async function getDiscussionState(topic) {
 // displayQr: the join QR code large in a sidebar, small in a corner, or hidden.
 // displayLayout: every question, or one at a time. The one question is the one
 // a moderator chose with "Show on display" (displayQuestionId); when they chose
-// none it is the first pinned question, otherwise the newest.
+// none it is the first pinned question, otherwise the newest. 'compare' shows
+// two saved opinion snapshots side by side (displayBeforeSnapshotId and
+// displayAfterSnapshotId), for that one question when a moderator chose one.
 const DISPLAY_QR_MODES = ['full', 'corner', 'hidden'];
-const DISPLAY_LAYOUTS = ['all', 'focus'];
+const DISPLAY_LAYOUTS = ['all', 'focus', 'compare'];
 
 async function emitDiscussionState(topic) {
   audience(topic).emit('discussionState', await getDiscussionState(topic));
@@ -997,8 +1009,11 @@ io.on('connection', (socket) => {
   // be left out to keep its current value. `questionId` is the question to show
   // in the one-question view, or null to go back to the first pinned or newest
   // question; choosing a question while the display lists every question also
-  // switches it to the one-question view, unless `layout` says otherwise. The
-  // settings ride discussionState, which the display's room receives too.
+  // switches it to the one-question view, unless `layout` says otherwise.
+  // `beforeSnapshotId` and `afterSnapshotId` are the opinion snapshots the
+  // before-and-after view compares, or null to let the display pick the first
+  // and the latest. The settings ride discussionState, which the display's room
+  // receives too.
   socket.on('setDisplaySettings', async (topic, settings, token) => {
     const discussionSlug = slugifyTopic(topic);
     try {
@@ -1007,13 +1022,17 @@ io.on('connection', (socket) => {
         socket.emit('error', { message: 'Not authorized to moderate this discussion.' });
         return;
       }
-      const { qr, layout, questionId } = settings && typeof settings === 'object' ? settings : {};
-      const validQuestionId = questionId === undefined || questionId === null
-        || (Number.isInteger(questionId) && questionId > 0 && questionId <= 2147483647);
+      const { qr, layout, questionId, beforeSnapshotId, afterSnapshotId } = settings && typeof settings === 'object' ? settings : {};
+      // An id is left out to keep the stored one, null to clear it, or a
+      // Postgres integer.
+      const validId = id => id === undefined || id === null
+        || (Number.isInteger(id) && id > 0 && id <= 2147483647);
+      const given = [qr, layout, questionId, beforeSnapshotId, afterSnapshotId].some(value => value !== undefined);
       if ((qr !== undefined && !DISPLAY_QR_MODES.includes(qr))
           || (layout !== undefined && !DISPLAY_LAYOUTS.includes(layout))
-          || !validQuestionId
-          || (qr === undefined && layout === undefined && questionId === undefined)) {
+          || ![questionId, beforeSnapshotId, afterSnapshotId].every(validId)
+          || (beforeSnapshotId != null && afterSnapshotId != null && afterSnapshotId <= beforeSnapshotId)
+          || !given) {
         socket.emit('error', { message: 'Unknown room display setting.' });
         return;
       }
@@ -1028,13 +1047,31 @@ io.on('connection', (socket) => {
           return;
         }
       }
+      const snapshotIds = [beforeSnapshotId, afterSnapshotId].filter(id => id != null);
+      if (snapshotIds.length) {
+        const found = await pool.query(
+          'SELECT id FROM opinion_snapshots WHERE discussion_id = $1 AND id = ANY($2::int[])',
+          [discussionId, snapshotIds]
+        );
+        if (found.rows.length !== snapshotIds.length) {
+          socket.emit('error', { message: 'That snapshot cannot be shown on the room display.' });
+          return;
+        }
+      }
       await pool.query(
         `UPDATE discussions
             SET display_qr = COALESCE($1, display_qr),
                 display_layout = COALESCE($2, CASE WHEN $4::int IS NOT NULL AND display_layout = 'all' THEN 'focus' ELSE display_layout END),
-                display_question_id = CASE WHEN $5 THEN $4::int ELSE display_question_id END
+                display_question_id = CASE WHEN $5 THEN $4::int ELSE display_question_id END,
+                display_before_snapshot_id = CASE WHEN $7 THEN $6::int ELSE display_before_snapshot_id END,
+                display_after_snapshot_id = CASE WHEN $9 THEN $8::int ELSE display_after_snapshot_id END
           WHERE id = $3`,
-        [qr ?? null, layout ?? null, discussionId, questionId ?? null, questionId !== undefined]
+        [
+          qr ?? null, layout ?? null, discussionId,
+          questionId ?? null, questionId !== undefined,
+          beforeSnapshotId ?? null, beforeSnapshotId !== undefined,
+          afterSnapshotId ?? null, afterSnapshotId !== undefined,
+        ]
       );
       await emitDiscussionState(discussionSlug);
     } catch (error) {

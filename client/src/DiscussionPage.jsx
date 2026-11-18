@@ -1493,7 +1493,21 @@ const DiscussionPage = () => {
                 </div>
             </div>
 
-            {showSnapshots && <OpinionSnapshots key={discussionSlug} discussionSlug={discussionSlug} adminToken={adminToken} userId={userId} refreshSignal={snapshotRefreshSignal} />}
+            {showSnapshots && (
+                <OpinionSnapshots
+                    key={discussionSlug}
+                    discussionSlug={discussionSlug}
+                    adminToken={adminToken}
+                    userId={userId}
+                    refreshSignal={snapshotRefreshSignal}
+                    display={{
+                        layout: discussionState.displayLayout,
+                        beforeId: discussionState.displayBeforeSnapshotId ?? undefined,
+                        afterId: discussionState.displayAfterSnapshotId ?? undefined,
+                    }}
+                    onDisplay={isAdmin ? (settings) => socket.emit('setDisplaySettings', discussionSlug, settings, adminToken) : undefined}
+                />
+            )}
 
             {showDeleteModal && (
                 <div className="fixed inset-0 z-50 bg-gray-600 bg-opacity-50 overflow-y-auto flex items-center justify-center p-4">
@@ -2079,8 +2093,10 @@ const DiscussionPage = () => {
                 const interestCount = question.interestCount || 0;
                 const isInterested = interestedQuestionIds.has(question.id);
                 const interestPending = questionInterest.pending.has(question.id);
-                // Whether the room display is showing this question on its own.
-                const onDisplay = discussionState.displayLayout === 'focus' && discussionState.displayQuestionId === question.id;
+                // Whether the room display is showing this question on its own: its
+                // live results, or its before-and-after comparison.
+                const onDisplay = ['focus', 'compare'].includes(discussionState.displayLayout)
+                    && discussionState.displayQuestionId === question.id;
                 return (
                 <div key={question.id} className="bg-white shadow-lg rounded-lg p-6 mb-6">
                     {isEditing ? (

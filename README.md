@@ -138,8 +138,9 @@ sitting, so nobody has to touch the shared screen:
 
 - **Display QR**: the join QR code and link **Large** in a sidebar (the
   default), **Small, in a corner** of the header, or **Hidden**.
-- **Display shows**: **All questions** (the default), or **One question**
-  filling the screen.
+- **Display shows**: **All questions** (the default), **One question**
+  filling the screen, or **Before and after**, which compares two opinion
+  snapshots (see [Show the comparison on the room display](#show-the-comparison-on-the-room-display)).
 
 To choose the one question, click **Show on display** on it from your own
 moderator page. The display switches to the one-question view if it was listing
@@ -192,6 +193,31 @@ included too. Everyone
 can view the saved results; only moderators can save snapshots, including after
 voting closes. An open snapshot list updates when a snapshot is saved; **Refresh**
 reloads it by hand, for example after you answer a question whose results were hidden.
+
+### Show the comparison on the room display
+
+To show the room how its answers moved, choose the earlier and later snapshot
+under **Opinion Snapshots** and click **Show this comparison on the room
+display**. The display shows the two snapshots side by side: for each answer, a
+bar per snapshot with its share and count, and for a numerical question the two
+averages, the change between them, and one histogram with a column per
+snapshot in each bin. Click **On the room display** to go back to the
+questions.
+
+Choosing **Before and after** under **Display shows** does the same without
+opening the snapshots: it compares the first snapshot with the latest one,
+unless you chose a pair before. If you leave the later snapshot unchosen, the
+display also compares against the latest one, so a snapshot saved while the
+comparison is up appears on the screen by itself.
+
+The comparison covers every question in the two snapshots. To show one
+question's comparison filling the screen, click **Show on display** on that
+question while the comparison is up.
+
+The display has not voted, so it follows the **Results shown** setting here
+too: with **After voting**, it shows a snapshot's results only for questions
+whose results you have shown to everyone with **Show results**, and says the
+others are hidden.
 
 Snapshots preserve aggregate results even when answers are updated or questions
 are edited or deleted. They do not retain participant identities or individual

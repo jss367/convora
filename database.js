@@ -339,7 +339,8 @@ async function initializeDatabase(pool) {
     await pool.query('ALTER TABLE discussions ADD COLUMN IF NOT EXISTS listed BOOLEAN NOT NULL DEFAULT FALSE');
     // How the room display presents itself: the join QR code large in a sidebar,
     // small in a corner, or hidden ('full', 'corner', 'hidden'), and whether it
-    // shows every question or one at a time ('all', 'focus'). See
+    // shows every question, one at a time, or two opinion snapshots side by side
+    // ('all', 'focus', 'compare'). See
     // DISPLAY_QR_MODES and DISPLAY_LAYOUTS in server.js.
     await pool.query("ALTER TABLE discussions ADD COLUMN IF NOT EXISTS display_qr TEXT NOT NULL DEFAULT 'full'");
     await pool.query("ALTER TABLE discussions ADD COLUMN IF NOT EXISTS display_layout TEXT NOT NULL DEFAULT 'all'");
@@ -356,6 +357,12 @@ async function initializeDatabase(pool) {
       `CREATE UNIQUE INDEX IF NOT EXISTS opinion_snapshots_auto_question_idx
          ON opinion_snapshots (auto_question_id) WHERE auto_question_id IS NOT NULL`
     );
+    // The two opinion snapshots the room display compares in its before-and-after
+    // view (display_layout 'compare'). Either may be null: the display then uses
+    // the first snapshot and the latest one. Checked against the discussion's
+    // snapshots when read, like display_question_id.
+    await pool.query('ALTER TABLE discussions ADD COLUMN IF NOT EXISTS display_before_snapshot_id INTEGER');
+    await pool.query('ALTER TABLE discussions ADD COLUMN IF NOT EXISTS display_after_snapshot_id INTEGER');
     // A queued question is one a moderator has written but not published yet.
     // Only moderators receive it, and nobody can answer it, until a moderator
     // publishes it (see publishQuestion in server.js).
