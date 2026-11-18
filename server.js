@@ -9,6 +9,8 @@ const cors = require('cors');
 const { analyzeClusters } = require('./clustering');
 const { buildOpinionSnapshot, OPINION_TYPES } = require('./opinion-snapshots');
 const { createVoteStore } = require('./votes');
+const { createInterestUpdates } = require('./interest-updates');
+const interestUpdates = createInterestUpdates();
 const { logError } = require('./logging');
 const { initializeDatabase } = require('./database');
 const { slugifyTopic, formatTopicTitle, titleFromSlug, suffixSlug, MAX_TOPIC_LENGTH } = require('./discussion-names');
@@ -1231,7 +1233,8 @@ io.on('connection', (socket) => {
     const validId = Number.isInteger(questionId) && questionId > 0 && questionId <= 2147483647;
     if (!userId || !validId || typeof interested !== 'boolean') { reply(false); return; }
     try {
-      const changed = await setQuestionInterest(discussionSlug, questionId, userId, interested);
+      const changed = await interestUpdates.run(discussionSlug, questionId, userId,
+        () => setQuestionInterest(discussionSlug, questionId, userId, interested));
       reply(changed);
       if (!changed) return;
       await emitQuestions(discussionSlug);
@@ -1239,6 +1242,30 @@ io.on('connection', (socket) => {
       logError('Error setting question interest:', error);
       reply(false);
       socket.emit('error', { message: 'Failed to update question' });
+    }
+  });
+
+  // A recovery read waits behind this participant's prior interest writes,
+  // including a write whose acknowledgment was lost on another connection.
+  socket.on('getQuestionInterestState', async (topic, questionId, claimedUserId, ack) => {
+    if (typeof ack !== 'function') return;
+    const discussionSlug = slugifyTopic(topic);
+    const userId = bindSocketUser(socket, claimedUserId);
+    if (!userId || !Number.isInteger(questionId) || questionId <= 0 || questionId > 2147483647) {
+      ack({ error: 'invalid_request' });
+      return;
+    }
+    try {
+      const result = await interestUpdates.run(discussionSlug, questionId, userId, () => pool.query(
+        `SELECT EXISTS (SELECT 1 FROM question_interest qi
+                        WHERE qi.question_id=q.id AND qi.user_id=$3) AS interested
+         FROM questions q JOIN discussions d ON d.id=q.discussion_id
+         WHERE q.id=$1 AND d.slug=$2`, [questionId, discussionSlug, userId]
+      ));
+      ack(result.rows[0] || { error: 'not_found' });
+    } catch (error) {
+      logError('Error recovering question interest:', error);
+      ack({ error: 'unavailable' });
     }
   });
 

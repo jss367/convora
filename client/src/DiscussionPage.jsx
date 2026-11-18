@@ -5,6 +5,7 @@ import { QRCodeSVG } from 'qrcode.react';
 import { getEffectiveNameMode, NameModes, MAX_CUSTOM_NAME_LENGTH } from './identity';
 import { useDiscussionSocket, useDiscussionRoom, useConnectionLost, usePendingVotes } from './hooks/useDiscussionRoom';
 import { useParticipantIdentity } from './hooks/useParticipantIdentity';
+import { useQuestionInterest } from './hooks/useQuestionInterest';
 import { useModeratorAccess } from './hooks/useModeratorAccess';
 import { useModalDialog } from './hooks/useModalDialog';
 import { slugifyTopic } from './slugs';
@@ -176,9 +177,12 @@ const DiscussionPage = () => {
     const {
         identity, userId, displayName, effectivePseudonym, pseudonymReserved,
         shufflePending, selfHandle, ownedVoteIds, ownedCommentIds,
-        interestedQuestionIds, isMyVote, handlePseudonymSync, handleRegeneratePseudonym,
+        interestedQuestionIds, interestReady, isMyVote, handlePseudonymSync, handleRegeneratePseudonym,
         handleSelectNameMode, handleCustomNameChange,
     } = useParticipantIdentity(socket, { topic, discussionSlug, discussionId: discussion?.id, questions });
+    const questionInterest = useQuestionInterest(socket, {
+        discussionSlug, userId, questions, interestedQuestionIds, interestReady,
+    });
     const {
         adminToken, setAdminToken, canDemote, setCanDemote,
         handleModeratorGranted, handleModeratorRevoked,
@@ -434,11 +438,7 @@ const DiscussionPage = () => {
         socket.emit('setPinned', discussionSlug, questionId, !pinned, adminToken);
     };
 
-    // Mark or unmark a question as interesting. The server broadcasts the new
-    // count, and the button's pressed state follows that broadcast.
-    const handleToggleInterest = (questionId) => {
-        socket.emit('setQuestionInterest', discussionSlug, questionId, !interestedQuestionIds.has(questionId), userId);
-    };
+    const handleToggleInterest = questionInterest.toggle;
 
     // Save a moderator's edit to a question. The server only accepts it while the
     // question has no responses; on success it broadcasts fresh questions and we
@@ -1968,6 +1968,7 @@ const DiscussionPage = () => {
                 const isEditing = editingQuestionId === question.id;
                 const interestCount = question.interestCount || 0;
                 const isInterested = interestedQuestionIds.has(question.id);
+                const interestPending = questionInterest.pending.has(question.id);
                 return (
                 <div key={question.id} className="bg-white shadow-lg rounded-lg p-6 mb-6">
                     {isEditing ? (
@@ -1985,7 +1986,8 @@ const DiscussionPage = () => {
                             <button
                                 type="button"
                                 onClick={() => handleToggleInterest(question.id)}
-                                disabled={locked}
+                                disabled={locked || !questionInterest.ready || interestPending}
+                                aria-busy={interestPending}
                                 aria-pressed={isInterested}
                                 aria-label={`Interested in "${question.text}"`}
                                 aria-describedby={`interest-count-${question.id}`}

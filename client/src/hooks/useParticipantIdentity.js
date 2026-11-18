@@ -82,13 +82,15 @@ export function useParticipantIdentity(socket, { topic, discussionSlug, discussi
     const [ownedVoteIds, setOwnedVoteIds] = useState(() => new Set());
     const [upvotedVoteIds, setUpvotedVoteIds] = useState(() => new Set());
     const [ownedCommentIds, setOwnedCommentIds] = useState(() => new Set());
-    const [interestedQuestionIds, setInterestedQuestionIds] = useState(() => new Set());
+    const [interestOwnership, setInterestOwnership] = useState(() => ({ ids: new Set(), questions: null, userId: null }));
+    const interestedQuestionIds = interestOwnership.ids;
+    const interestReady = interestOwnership.questions === questions && interestOwnership.userId === userId;
     useEffect(() => {
         if (!userId) {
             setOwnedVoteIds(new Set());
             setUpvotedVoteIds(new Set());
             setOwnedCommentIds(new Set());
-            setInterestedQuestionIds(new Set());
+            setInterestOwnership({ ids: new Set(), questions: null, userId: null });
             return undefined;
         }
         let cancelled = false;
@@ -125,7 +127,7 @@ export function useParticipantIdentity(socket, { topic, discussionSlug, discussi
             }));
             await Promise.all(interestChecks);
             if (!cancelled) {
-                setInterestedQuestionIds(interested);
+                setInterestOwnership({ ids: interested, questions, userId });
                 setOwnedVoteIds(owned);
                 setUpvotedVoteIds(upvoted);
                 setOwnedCommentIds(ownedComments);
@@ -258,7 +260,7 @@ export function useParticipantIdentity(socket, { topic, discussionSlug, discussi
     return {
         identity, userId, displayName, effectivePseudonym, pseudonymReserved,
         shufflePending, selfHandle, ownedVoteIds, upvotedVoteIds, ownedCommentIds,
-        interestedQuestionIds, isMyVote, handlePseudonymSync, handleRegeneratePseudonym,
+        interestedQuestionIds, interestReady, isMyVote, handlePseudonymSync, handleRegeneratePseudonym,
         handleSelectNameMode, handleCustomNameChange,
     };
 }
