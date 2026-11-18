@@ -1341,11 +1341,13 @@ const asModerator = token => ({ 'X-Convora-Moderator': token });
 const asUser = userId => ({ 'X-Convora-User': userId });
 
 // Nothing a tally could be rebuilt from may be present on a hidden question.
+// Interest marks say who wants to discuss a question, not how anyone answered
+// it, so they stay visible.
 function assertResultsHidden(question, label) {
   assert.equal(question.resultsHidden, true, `${label}: marked hidden`);
   assert.deepEqual(question.votes, [], `${label}: no votes on the wire`);
   assert.deepEqual(
-    Object.keys(question).filter(key => !['maxResponses', 'max_responses'].includes(key) && /vote|count|tally|result|average|response|distribution/i.test(key)).sort(),
+    Object.keys(question).filter(key => !['maxResponses', 'max_responses', 'interestCount', 'interestVoterTokens'].includes(key) && /vote|count|tally|result|average|response|distribution/i.test(key)).sort(),
     ['resultsHidden', 'resultsRevealed', 'votes'], `${label}: no other result fields`
   );
   assert.equal(question.resultsRevealed, false, `${label}: not revealed`);
@@ -4885,3 +4887,104 @@ for (const [enabled, visible] of [[false, true], [true, false], [false, false]])
     } finally { socket.disconnect(); }
   });
 }
+
+const interestCount = async questionId =>
+  (await pool.query('SELECT count(*)::int AS n FROM question_interest WHERE question_id = $1', [questionId])).rows[0].n;
+
+test('participants mark questions as interesting; counts broadcast with tokens instead of user ids', async () => {
+  const seed = await seedResultsDiscussion('interest');
+  const tokenFor = (questionId, userId) =>
+    crypto.createHash('sha256').update(`question:${questionId}:${userId}`).digest('hex');
+  const { socket: first, questions: initial } = await joinAs(seed.slug, 'interest-a');
+  const { socket: second } = await joinAs(seed.slug, 'interest-b');
+  try {
+    for (const question of initial) {
+      assert.equal(question.interestCount, 0);
+      assert.deepEqual(question.interestVoterTokens, []);
+    }
+
+    // The count reaches a participant who has not answered the question, whose
+    // results are still hidden from them.
+    let broadcast = waitForQuestions(second, qs => byId(qs, seed.agreement).interestCount === 1, 'first interest');
+    assert.deepEqual(await emitWithAck(first, 'setQuestionInterest', seed.slug, seed.agreement, true, 'interest-a'), { updated: true });
+    let question = byId(await broadcast, seed.agreement);
+    assert.equal(question.resultsHidden, true);
+    assert.deepEqual(question.interestVoterTokens, [tokenFor(seed.agreement, 'interest-a')]);
+
+    // Repeating the same request changes nothing.
+    assert.deepEqual(await emitWithAck(first, 'setQuestionInterest', seed.slug, seed.agreement, true, 'interest-a'), { updated: true });
+    assert.equal(await interestCount(seed.agreement), 1);
+
+    broadcast = waitForQuestions(first, qs => byId(qs, seed.agreement).interestCount === 2, 'second interest');
+    // The socket's pinned identity is used, not the id named in the message.
+    assert.deepEqual(await emitWithAck(second, 'setQuestionInterest', seed.slug, seed.agreement, true, 'interest-a'), { updated: true });
+    const questions = await broadcast;
+    question = byId(questions, seed.agreement);
+    assert.deepEqual(question.interestVoterTokens, [tokenFor(seed.agreement, 'interest-a'), tokenFor(seed.agreement, 'interest-b')]);
+    assert.equal(byId(questions, seed.written).interestCount, 0);
+    assert.equal('interest_voters' in question, false);
+    assert.doesNotMatch(JSON.stringify(questions), /interest-a|interest-b/);
+
+    broadcast = waitForQuestions(second, qs => byId(qs, seed.agreement).interestCount === 1, 'interest removed');
+    assert.deepEqual(await emitWithAck(first, 'setQuestionInterest', seed.slug, seed.agreement, false, 'interest-a'), { updated: true });
+    assert.deepEqual(byId(await broadcast, seed.agreement).interestVoterTokens, [tokenFor(seed.agreement, 'interest-b')]);
+  } finally {
+    first.disconnect();
+    second.disconnect();
+  }
+});
+
+test('interest marks are refused for other discussions, bad payloads, room displays and locked discussions', async () => {
+  const seed = await seedResultsDiscussion('interest-guards');
+  const other = await seedResultsDiscussion('interest-other');
+  const { socket } = await joinAs(seed.slug, 'interest-guard');
+  const display = await connectSocket();
+  try {
+    const refused = { updated: false };
+    // A question id from another discussion does not match this room.
+    assert.deepEqual(await emitWithAck(socket, 'setQuestionInterest', seed.slug, other.agreement, true, 'interest-guard'), refused);
+    assert.deepEqual(await emitWithAck(socket, 'setQuestionInterest', seed.slug, String(seed.agreement), true, 'interest-guard'), refused);
+    assert.deepEqual(await emitWithAck(socket, 'setQuestionInterest', seed.slug, seed.agreement, 'yes', 'interest-guard'), refused);
+    assert.deepEqual(await emitWithAck(socket, 'setQuestionInterest', seed.slug, 2147483648, true, 'interest-guard'), refused);
+
+    const joined = nextQuestions(display, 'display join');
+    display.emit('joinDisplay', seed.slug);
+    await joined;
+    assert.equal((await emitWithAck(display, 'setQuestionInterest', seed.slug, seed.agreement, true, 'interest-display')).error, 'display_read_only');
+
+    assert.deepEqual(await emitWithAck(socket, 'setQuestionInterest', seed.slug, seed.written, true, 'interest-guard'), { updated: true });
+    const locked = waitForEvent(socket, 'discussionState', state => state.locked === true);
+    socket.emit('setLocked', seed.slug, true, seed.adminToken);
+    await locked;
+    // Locking closes voting: marks can be neither added nor removed.
+    assert.deepEqual(await emitWithAck(socket, 'setQuestionInterest', seed.slug, seed.agreement, true, 'interest-guard'), refused);
+    assert.deepEqual(await emitWithAck(socket, 'setQuestionInterest', seed.slug, seed.written, false, 'interest-guard'), refused);
+
+    assert.equal(await interestCount(seed.agreement), 0);
+    assert.equal(await interestCount(seed.written), 1);
+    assert.equal(await interestCount(other.agreement), 0);
+  } finally {
+    socket.disconnect();
+    display.disconnect();
+  }
+});
+
+test('deleting a question or its discussion removes the interest marks', async () => {
+  const seed = await seedResultsDiscussion('interest-delete');
+  const { socket } = await joinAs(seed.slug, 'interest-deleter');
+  try {
+    for (const id of [seed.agreement, seed.written]) {
+      assert.deepEqual(await emitWithAck(socket, 'setQuestionInterest', seed.slug, id, true, 'interest-deleter'), { updated: true });
+    }
+    const removed = waitForQuestions(socket, qs => !byId(qs, seed.agreement), 'question deleted');
+    socket.emit('deleteQuestion', seed.slug, seed.agreement, seed.adminToken);
+    await removed;
+    assert.equal(await interestCount(seed.agreement), 0);
+    assert.equal(await interestCount(seed.written), 1);
+
+    assert.equal((await jsonRequest('DELETE', `/api/discussions/${seed.slug}`, { adminToken: seed.adminToken })).status, 200);
+    assert.equal(await interestCount(seed.written), 0);
+  } finally {
+    socket.disconnect();
+  }
+});

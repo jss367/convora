@@ -19,6 +19,13 @@ export function sortQuestionsMostRecent(questions) {
     return [...questions].sort((a, b) => getQuestionSortTime(b) - getQuestionSortTime(a));
 }
 
+// "Most Interesting": the questions most participants marked as interesting
+// come first. Questions with the same count keep the "Most Recent" order.
+export function sortQuestionsMostInteresting(questions) {
+    return sortQuestionsMostRecent(questions)
+        .sort((a, b) => (Number(b?.interestCount) || 0) - (Number(a?.interestCount) || 0));
+}
+
 // Older snapshots may use database field names or omit numerical bounds.
 export function getNumericalRange(question) {
     const min = Number.parseInt(question.minValue ?? question.min_value, 10);

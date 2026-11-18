@@ -77,14 +77,18 @@ export function useParticipantIdentity(socket, { topic, discussionSlug, discussi
     // per-row ownership token (keyed by the comment id) as votes, so we recognize
     // our own the same way — and can show their Delete button — without the
     // server exposing who wrote what.
+    // interestedQuestionIds: questions we marked as interesting, matched against
+    // each question's interestVoterTokens (keyed by `question:<id>`).
     const [ownedVoteIds, setOwnedVoteIds] = useState(() => new Set());
     const [upvotedVoteIds, setUpvotedVoteIds] = useState(() => new Set());
     const [ownedCommentIds, setOwnedCommentIds] = useState(() => new Set());
+    const [interestedQuestionIds, setInterestedQuestionIds] = useState(() => new Set());
     useEffect(() => {
         if (!userId) {
             setOwnedVoteIds(new Set());
             setUpvotedVoteIds(new Set());
             setOwnedCommentIds(new Set());
+            setInterestedQuestionIds(new Set());
             return undefined;
         }
         let cancelled = false;
@@ -92,6 +96,12 @@ export function useParticipantIdentity(socket, { topic, discussionSlug, discussi
             const owned = new Set();
             const upvoted = new Set();
             const ownedComments = new Set();
+            const interested = new Set();
+            const interestChecks = (questions || []).map(async (q) => {
+                if (!Array.isArray(q?.interestVoterTokens) || q.interestVoterTokens.length === 0) return;
+                const myToken = await ownerToken(`question:${q.id}`, userId);
+                if (myToken && q.interestVoterTokens.includes(myToken)) interested.add(q.id);
+            });
             const allVotes = (questions || []).flatMap(q =>
                 Array.isArray(q.votes) ? q.votes : []
             );
@@ -113,7 +123,9 @@ export function useParticipantIdentity(socket, { topic, discussionSlug, discussi
                     if (myCommentToken && c.ownerToken === myCommentToken) ownedComments.add(c.id);
                 }));
             }));
+            await Promise.all(interestChecks);
             if (!cancelled) {
+                setInterestedQuestionIds(interested);
                 setOwnedVoteIds(owned);
                 setUpvotedVoteIds(upvoted);
                 setOwnedCommentIds(ownedComments);
@@ -246,7 +258,7 @@ export function useParticipantIdentity(socket, { topic, discussionSlug, discussi
     return {
         identity, userId, displayName, effectivePseudonym, pseudonymReserved,
         shufflePending, selfHandle, ownedVoteIds, upvotedVoteIds, ownedCommentIds,
-        isMyVote, handlePseudonymSync, handleRegeneratePseudonym,
+        interestedQuestionIds, isMyVote, handlePseudonymSync, handleRegeneratePseudonym,
         handleSelectNameMode, handleCustomNameChange,
     };
 }

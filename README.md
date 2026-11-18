@@ -26,6 +26,18 @@ and can change or undo it like an Agreement or Yes/No vote.
   groups. They do appear in the summary, exports, the room display and opinion
   snapshots.
 
+## Mark the questions you want to discuss
+
+Every question has a ▲ button with a count next to its title. Press it to say
+you find the question interesting, and press it again to take that back. Each
+participant counts once per question, and nobody can see who pressed it.
+
+To rank the list by that count, choose **Most Interesting** in the sort menu
+above the questions. Questions with the same count stay newest first, and
+pinned questions stay on top. The sort is each viewer's own choice, so it does
+not change what other people see. Locking a discussion closes these marks along
+with voting.
+
 ## Discussions are unlisted unless you list them
 
 A new discussion is unlisted: it's reachable only through its link or short

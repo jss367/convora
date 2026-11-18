@@ -1220,6 +1220,28 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Mark or unmark a question as interesting. The count ranks questions under
+  // the "Most Interesting" sort. The event sets the state instead of toggling
+  // it, so a repeated or retried emit leaves the same result.
+  socket.on('setQuestionInterest', async (topic, questionId, interested, claimedUserId, ack) => {
+    const discussionSlug = slugifyTopic(topic);
+    const reply = updated => { if (typeof ack === 'function') ack({ updated }); };
+    const userId = bindSocketUser(socket, claimedUserId);
+    // Question ids are Postgres integers; anything else cannot match a question.
+    const validId = Number.isInteger(questionId) && questionId > 0 && questionId <= 2147483647;
+    if (!userId || !validId || typeof interested !== 'boolean') { reply(false); return; }
+    try {
+      const changed = await setQuestionInterest(discussionSlug, questionId, userId, interested);
+      reply(changed);
+      if (!changed) return;
+      await emitQuestions(discussionSlug);
+    } catch (error) {
+      logError('Error setting question interest:', error);
+      reply(false);
+      socket.emit('error', { message: 'Failed to update question' });
+    }
+  });
+
   socket.on('toggleResponseVote', async (topic, responseId, claimedUserId) => {
     const discussionSlug = slugifyTopic(topic);
     const userId = bindSocketUser(socket, claimedUserId);
@@ -1799,6 +1821,8 @@ async function getQuestions(topic, { includeUserIds = false, respondents = null 
       d.reactions_enabled,
       d.reactions_visible,
       d.comments_enabled,
+      (SELECT COALESCE(json_agg(qi.user_id ORDER BY qi.id), '[]'::json)
+         FROM question_interest qi WHERE qi.question_id = q.id) AS interest_voters,
       COALESCE(json_agg(
         json_build_object(
           'id', v.id,
@@ -1826,8 +1850,17 @@ async function getQuestions(topic, { includeUserIds = false, respondents = null 
       respondents.set(row.id, new Set(votes.map(vote => vote.userId).filter(Boolean)));
     }
   }
-  const questions = result.rows.map(({ results_revealed: revealed, ...row }) => ({
+  // interest_voters holds raw user ids, so it is taken out of the row here and
+  // only its count and per-question tokens are sent.
+  const questions = result.rows.map(({ results_revealed: revealed, interest_voters: interestVoters, ...row }) => ({
     ...row,
+    // How many participants marked this question as interesting, and a token
+    // for each so a client can recognize its own mark. Tokens are namespaced
+    // (`question:<id>`) so one can never equal a response's ownership token
+    // and link a participant to an anonymous response with the same numeric id.
+    interestCount: Array.isArray(interestVoters) ? interestVoters.length : 0,
+    interestVoterTokens: (Array.isArray(interestVoters) ? interestVoters : [])
+      .map(uid => ownerToken(`question:${row.id}`, uid)),
     maxResponses: row.max_responses,
     showAttribution: row.show_attribution,
     minValue: row.min_value,
@@ -2754,6 +2787,34 @@ async function assignPseudonym(slug, userId, preferred, { regenerate = false } =
     const reserved = await reservePseudonym(discussionId, userId, name, { overwrite: regenerate });
     if (reserved) return { pseudonym: reserved, reserved: true };
   }
+}
+
+// Record or remove a participant's interest in a question. Returns false when
+// the question is not in this discussion or the discussion is locked. Locking
+// closes voting, and an interest mark is a vote on the question.
+async function setQuestionInterest(topic, questionId, userId, interested) {
+  const slug = slugifyTopic(topic);
+  return withTransaction(async client => {
+    // Hold the discussion row so a moderator's lock waits for this write, and a
+    // write that waited for a lock sees it.
+    const found = await client.query(
+      `SELECT q.id
+       FROM questions q
+       JOIN discussions d ON q.discussion_id = d.id
+       WHERE q.id = $1 AND d.slug = $2 AND NOT d.locked FOR SHARE OF d`,
+      [questionId, slug]
+    );
+    if (found.rows.length === 0) return false;
+    if (interested) {
+      await client.query(
+        'INSERT INTO question_interest (question_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+        [questionId, userId]
+      );
+    } else {
+      await client.query('DELETE FROM question_interest WHERE question_id = $1 AND user_id = $2', [questionId, userId]);
+    }
+    return true;
+  });
 }
 
 // Toggle a user's upvote on an open-ended response. Adds the upvote if absent,

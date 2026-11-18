@@ -19,7 +19,7 @@ import { AgreementResults, YesNoResults, MultipleChoiceResults } from './questio
 import ChoiceOptionsEditor from './questions/ChoiceOptionsEditor';
 import OpenEndedQuestion from './questions/OpenEndedQuestion';
 import NumericalResults from './questions/NumericalResults';
-import { clampNumericalValue, getNumericalRange, validateNumericalRange, sortQuestionsMostRecent, validateChoiceOptions } from './questions/questionHelpers.mjs';
+import { clampNumericalValue, getNumericalRange, validateNumericalRange, sortQuestionsMostRecent, sortQuestionsMostInteresting, validateChoiceOptions } from './questions/questionHelpers.mjs';
 import { guessQuestionType } from './questions/guessQuestionType.mjs';
 import QuestionTextBox from './QuestionTextBox';
 import {
@@ -66,6 +66,7 @@ const clampJoinQrSize = (size) => Math.min(maxJoinQrSize(), Math.max(MIN_JOIN_QR
 
 const SortOptions = {
     MOST_RECENT: 'Most Recent',
+    MOST_INTERESTING: 'Most Interesting',
     MOST_AGREEMENT: 'Most Agreement',
     MOST_DISAGREEMENT: 'Most Disagreement',
     MOST_CONTROVERSIAL: 'Most Controversial',
@@ -175,7 +176,7 @@ const DiscussionPage = () => {
     const {
         identity, userId, displayName, effectivePseudonym, pseudonymReserved,
         shufflePending, selfHandle, ownedVoteIds, ownedCommentIds,
-        isMyVote, handlePseudonymSync, handleRegeneratePseudonym,
+        interestedQuestionIds, isMyVote, handlePseudonymSync, handleRegeneratePseudonym,
         handleSelectNameMode, handleCustomNameChange,
     } = useParticipantIdentity(socket, { topic, discussionSlug, discussionId: discussion?.id, questions });
     const {
@@ -431,6 +432,12 @@ const DiscussionPage = () => {
 
     const handleTogglePin = (questionId, pinned) => {
         socket.emit('setPinned', discussionSlug, questionId, !pinned, adminToken);
+    };
+
+    // Mark or unmark a question as interesting. The server broadcasts the new
+    // count, and the button's pressed state follows that broadcast.
+    const handleToggleInterest = (questionId) => {
+        socket.emit('setQuestionInterest', discussionSlug, questionId, !interestedQuestionIds.has(questionId), userId);
     };
 
     // Save a moderator's edit to a question. The server only accepts it while the
@@ -925,6 +932,8 @@ const DiscussionPage = () => {
         switch (sortOption) {
             case SortOptions.MOST_RECENT:
                 return sortQuestionsMostRecent(questions);
+            case SortOptions.MOST_INTERESTING:
+                return sortQuestionsMostInteresting(questions);
             case SortOptions.MOST_AGREEMENT:
                 return [...questions].sort((a, b) => getAgreementCount(b) - getAgreementCount(a));
             case SortOptions.MOST_DISAGREEMENT:
@@ -1957,6 +1966,8 @@ const DiscussionPage = () => {
                 // it has votes, its wording is locked in (matches the server guard).
                 const hasResponses = (question.votes?.length || 0) > 0;
                 const isEditing = editingQuestionId === question.id;
+                const interestCount = question.interestCount || 0;
+                const isInterested = interestedQuestionIds.has(question.id);
                 return (
                 <div key={question.id} className="bg-white shadow-lg rounded-lg p-6 mb-6">
                     {isEditing ? (
@@ -1967,13 +1978,38 @@ const DiscussionPage = () => {
                         />
                     ) : (
                     <>
-                    <div className="flex justify-between items-start mb-4">
-                        <h2 className="text-xl font-semibold">
-                            {question.pinned && <span className="mr-1" title="Pinned">📌</span>}
-                            {question.text}
-                        </h2>
+                    {/* On a narrow screen the moderator's buttons wrap below the
+                        title instead of squeezing it into a thin column. */}
+                    <div className="flex flex-wrap justify-between items-start gap-x-4 gap-y-2 mb-4">
+                        <div className="flex items-start gap-3 min-w-0 flex-1 basis-64">
+                            <button
+                                type="button"
+                                onClick={() => handleToggleInterest(question.id)}
+                                disabled={locked}
+                                aria-pressed={isInterested}
+                                aria-label={`Interested in "${question.text}"`}
+                                aria-describedby={`interest-count-${question.id}`}
+                                title={locked
+                                    ? 'Voting is closed'
+                                    : isInterested ? 'Remove your interest in this question' : 'I want to discuss this question'}
+                                className={`shrink-0 flex flex-col items-center px-2 py-1 rounded-md border transition duration-200 ${isInterested
+                                    ? 'bg-primary text-white border-primary'
+                                    : 'bg-white text-gray-600 border-gray-300 hover:border-primary'} ${locked ? 'opacity-50 cursor-not-allowed' : ''}`}
+                            >
+                                <span aria-hidden="true" className="leading-none">▲</span>
+                                {/* The button's name stays the same as the count
+                                    changes; the count is read as its description. */}
+                                <span id={`interest-count-${question.id}`} className="text-xs font-semibold">
+                                    {interestCount}<span className="sr-only"> interested</span>
+                                </span>
+                            </button>
+                            <h2 className="text-xl font-semibold min-w-0 break-words">
+                                {question.pinned && <span className="mr-1" title="Pinned">📌</span>}
+                                {question.text}
+                            </h2>
+                        </div>
                         {isAdmin && (
-                            <div className="flex gap-2 ml-4 shrink-0">
+                            <div className="flex gap-2 ml-auto shrink-0">
                                 {!hasResponses && (
                                     <button
                                         onClick={() => setEditingQuestionId(question.id)}

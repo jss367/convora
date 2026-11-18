@@ -53,6 +53,16 @@ The REST endpoints that return results (`summary`, `clusters`, `snapshots`,
 `X-Convora-User` and `X-Convora-Moderator` headers (`client/src/viewer.js`); a
 request without them sees only what a participant who has answered nothing sees.
 
+### Question interest
+
+`question_interest` holds one row per participant who marked a question as
+interesting (the `setQuestionInterest` socket event, which sets the state and is
+safe to repeat). `getQuestions` sends each question's `interestCount` and
+`interestVoterTokens`. A token is `ownerToken('question:<id>', userId)`, which a
+client recomputes to recognize its own mark (`interestedQuestionIds` in
+`useParticipantIdentity.js`). The raw user ids never leave the server. Interest
+is not a result, so it stays visible on questions whose results are hidden.
+
 ## Running the Application Locally
 
 ### Option A: Docker Postgres
