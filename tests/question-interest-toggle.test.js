@@ -64,6 +64,9 @@ function mount(realSocket) {
     socket, emits, timers, listeners, render, frame,
     current: () => output,
     writes: () => emits.filter(args => args[0] === 'setQuestionInterest'),
+    recoveries: () => emits.filter(args => args[0] === 'getQuestionInterestState'),
+    recovered(index, interested) { this.recoveries()[index].at(-1)(null, { interested }); render(); },
+    reconnect() { socket.connected = true; listeners.get('connect')?.(); render(); },
     ack(index, result = { updated: true }, error = null) { const args = this.writes()[index]; args.at(-1)(error, result); render(); },
     disconnect() { socket.connected = false; listeners.get('disconnect')(); render(); },
     expire() { for (const [id, fn] of [...timers]) { timers.delete(id); fn(); } render(); },
@@ -123,9 +126,11 @@ test('disconnect requires a fresh reconciled snapshot and ignores an old acknowl
   const hook = mount(); hook.frame([]); hook.current().toggle(7);
   hook.disconnect();
   assert.equal(hook.current().toggle(7), false);
-  hook.socket.connected = true; hook.render();
+  hook.reconnect();
   assert.equal(hook.current().ready, false);
-  hook.frame([7]); hook.current().toggle(7);
+  hook.frame([]);
+  assert.equal(hook.current().toggle(7), false);
+  hook.recovered(0, true); hook.frame([7]); hook.current().toggle(7);
   hook.ack(0);
   assert.equal(hook.current().pending.has(7), true);
   assert.equal(hook.writes()[1][3], false);
@@ -137,9 +142,12 @@ for (const acknowledged of [false, true]) {
     const hook = mount(); hook.frame([]); hook.current().toggle(7);
     if (acknowledged) hook.ack(0);
     hook.expire();
-    assert.equal(hook.current().ready, false);
+    assert.equal(hook.current().pending.has(7), true);
     assert.equal(hook.current().toggle(7), false);
-    assert.equal(hook.emits.at(-1)[0], 'joinDiscussion');
+    assert.equal(hook.emits.at(-1)[0], 'getQuestionInterestState');
+    hook.frame([]);
+    assert.equal(hook.current().toggle(7), false, 'a pre-commit read cannot settle recovery');
+    hook.recovered(0, true);
     hook.frame([7]);
     assert.equal(hook.current().toggle(7), true);
     assert.equal(hook.writes()[1][3], false);
@@ -151,7 +159,10 @@ test('ack errors request reconciliation rather than retrying an unknown write', 
   const hook = mount(); hook.frame([]); hook.current().toggle(7);
   hook.ack(0, undefined, new Error('synthetic timeout'));
   assert.equal(hook.writes().length, 1);
-  assert.equal(hook.current().ready, false);
+  assert.equal(hook.current().pending.has(7), true);
+  hook.frame([]);
+  assert.equal(hook.current().toggle(7), false);
+  hook.recovered(0, false);
   hook.frame([]);
   assert.equal(hook.current().toggle(7), true);
   hook.unmount();
@@ -190,7 +201,8 @@ for (const expired of [true, false]) {
     assert.equal(hook.current().toggle(7), !expired);
     assert.equal(socket.sendBuffer.length, 0);
     if (expired) hook.render(); else hook.expire();
-    assert.equal(hook.current().ready, false);
+    if (expired) assert.equal(hook.current().ready, false);
+    else assert.equal(hook.current().pending.has(7), true);
     hook.unmount();
     // Settle ack registrations without connecting to a server.
     for (const id of Object.keys(socket.acks)) socket.onack({ id: Number(id), data: [{ updated: false }] });
@@ -249,4 +261,55 @@ test('an interrupted ownership hash cannot mark a newer question snapshot as rec
   assert.equal(settled.interestReady, true);
   assert.equal(settled.interestedQuestionIds.has(7), false);
   assert.equal(settled.interestedQuestionIds.has(8), true);
+});
+
+test('an old snapshot in a new array cannot unlock a write still executing after timeout', () => {
+  const hook = mount(); hook.frame([]);
+  hook.current().toggle(7);
+  hook.expire();
+  hook.frame([]); // Recovery read overtook the blocked database write.
+  assert.equal(hook.current().toggle(7), false);
+  assert.equal(hook.writes().length, 1);
+  hook.unmount();
+});
+
+test('recovery stays pending while a mocked transaction is blocked, then toggles from the committed state', async () => {
+  const { createInterestUpdates } = require('../interest-updates');
+  const updates = createInterestUpdates();
+  const hook = mount(); hook.frame([]); hook.current().toggle(7);
+  let release, interested = false;
+  const gate = new Promise(resolve => { release = resolve; });
+  const write = updates.run('fictional-room', 7, 'fictional-participant', async () => {
+    await gate; interested = true;
+  });
+  hook.expire();
+  const read = updates.run('fictional-room', 7, 'fictional-participant', () => interested)
+    .then(value => hook.recoveries()[0].at(-1)(null, { interested: value }));
+  hook.frame([]);
+  await new Promise(setImmediate);
+  assert.equal(hook.current().toggle(7), false);
+  assert.equal(hook.writes().length, 1);
+  release();
+  await Promise.all([write, read]);
+  hook.render();
+  assert.equal(hook.current().pending.has(7), true, 'ownership still needs reconciliation');
+  hook.frame([7]);
+  assert.equal(hook.current().toggle(7), true);
+  assert.equal(hook.writes()[1][3], false);
+  hook.unmount();
+});
+
+test('recovery errors and out-of-order recovery replies cannot release a newer pending generation', () => {
+  const hook = mount(); hook.frame([]); hook.current().toggle(7); hook.expire();
+  hook.recoveries()[0].at(-1)(new Error('synthetic timeout'));
+  hook.render(); hook.frame([]);
+  assert.equal(hook.current().toggle(7), false);
+  hook.expire();
+  assert.equal(hook.recoveries().length, 2);
+  hook.recovered(0, true); hook.frame([7]);
+  assert.equal(hook.current().toggle(7), false);
+  hook.recovered(1, false); hook.frame([]);
+  assert.equal(hook.current().toggle(7), true);
+  assert.equal(hook.writes()[1][3], true);
+  hook.unmount();
 });
