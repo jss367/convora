@@ -29,6 +29,14 @@ function formatNumber(value, digits = 1) {
     return Number(value).toFixed(digits);
 }
 
+// A single numerical answer: a whole number as it is, a decimal to two places.
+function formatValue(value) {
+    if (value === null || value === undefined || Number.isNaN(Number(value))) {
+        return '-';
+    }
+    return String(Number(Number(value).toFixed(2)));
+}
+
 function formatDate(value) {
     if (!value) {
         return '';
@@ -652,9 +660,9 @@ const QuestionSummary = ({ question }) => (
 
         {question.type === 'Numerical' && !question.resultsHidden && (
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm text-gray-700">
-                <span>Average: <strong>{formatNumber(question.average)}</strong></span>
-                <span>Low: <strong>{formatNumber(question.minResponse, 0)}</strong></span>
-                <span>High: <strong>{formatNumber(question.maxResponse, 0)}</strong></span>
+                <span>Average: <strong>{formatNumber(question.average, Math.abs(question.average ?? 0) < 10 ? 2 : 1)}</strong></span>
+                <span>Low: <strong>{formatValue(question.minResponse)}</strong></span>
+                <span>High: <strong>{formatValue(question.maxResponse)}</strong></span>
                 <span>Std dev: <strong>{formatNumber(question.standardDeviation)}</strong></span>
             </div>
         )}

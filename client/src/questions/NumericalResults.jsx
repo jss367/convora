@@ -1,6 +1,7 @@
 import PropTypes from 'prop-types';
 import React from 'react';
 import { RESULTS_HIDDEN_HINT } from '../viewer';
+import { formatNumerical, numericalBinIndex, parseNumericalVote } from './questionHelpers.mjs';
 
 // Summary stats + histogram for a Numerical question.
 const NumericalResults = ({ question, minValue, maxValue }) => {
@@ -20,12 +21,12 @@ const NumericalResults = ({ question, minValue, maxValue }) => {
         );
     }
     const values = (question.votes || [])
-        .map(v => parseInt(v.value))
-        .filter(n => !Number.isNaN(n));
+        .map(v => parseNumericalVote(v.value))
+        .filter(n => Number.isFinite(n));
     const total = values.length;
 
     if (total === 0) {
-        return <p className="text-sm text-gray-500 mb-2">No responses yet — drag the slider to add yours.</p>;
+        return <p className="text-sm text-gray-500 mb-2">No responses yet. Move the slider or type a number to add yours.</p>;
     }
 
     const average = values.reduce((sum, n) => sum + n, 0) / total;
@@ -35,10 +36,7 @@ const NumericalResults = ({ question, minValue, maxValue }) => {
     const binCount = Math.min(10, range + 1);
     const bins = new Array(binCount).fill(0);
     values.forEach(n => {
-        const clamped = Math.min(Math.max(n, minValue), maxValue);
-        let idx = Math.floor(((clamped - minValue) / range) * binCount);
-        if (idx >= binCount) idx = binCount - 1; // include the max edge
-        bins[idx] += 1;
+        bins[numericalBinIndex(n, minValue, maxValue, binCount)] += 1;
     });
     const tallestBin = Math.max(...bins);
 
@@ -51,7 +49,7 @@ const NumericalResults = ({ question, minValue, maxValue }) => {
     return (
         <div className="mb-2">
             <div className="text-sm text-gray-600 mb-2">
-                {total} {total === 1 ? 'response' : 'responses'} · average <span className="font-semibold">{average.toFixed(1)}</span>
+                {total} {total === 1 ? 'response' : 'responses'} · average <span className="font-semibold">{formatNumerical(average)}</span>
             </div>
             <div className="flex gap-1">
                 {/* Y-axis count labels. Each is anchored by its bottom edge at the

@@ -1083,9 +1083,9 @@ const DiscussionPage = () => {
                 const draftValue = sliderValues[question.id];
                 const inputValue = draftValue !== undefined
                     ? draftValue
-                    : (userVote ? parseInt(userVote.value) : '');
-                // What Submit would send: the draft clamped into range, or null
-                // when nothing is selected.
+                    : (userVote ? Number(userVote.value) : '');
+                // What Submit would send: the draft clamped into range and
+                // rounded to two decimal places, or null when nothing is selected.
                 const sliderValue = clampNumericalValue(inputValue, minValue, maxValue);
                 const isUnset = sliderValue === null;
                 const canSubmit = draftValue !== undefined && !isUnset
@@ -1122,7 +1122,8 @@ const DiscussionPage = () => {
                                         aria-label={`Type your answer to: ${question.text}`}
                                         className="w-24 p-2 border border-gray-300 rounded-md text-center focus:outline-none focus:ring-2 focus:ring-primary"
                                         // Keep what is typed as-is so multi-digit
-                                        // entry isn't clamped mid-keystroke; the
+                                        // or decimal entry ("0." on the way to
+                                        // "0.5") isn't clamped mid-keystroke; the
                                         // slider and Submit use the clamped value,
                                         // and blur snaps the box to it.
                                         onChange={(e) => handleSliderChange(question.id, e.target.value)}

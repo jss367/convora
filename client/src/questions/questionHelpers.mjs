@@ -47,18 +47,58 @@ export function validateNumericalRange(rawMin, rawMax) {
     return { minValue, maxValue };
 }
 
-// Turns a slider/number-input value into a whole number within [min, max].
-// Returns null when there is no usable number (untouched, cleared, or
-// mid-typing input such as "-"), which callers treat as "nothing selected".
+// Numerical answers keep at most this many decimal places, enough for a
+// probability such as 0.5% on a 0 to 100 scale. Mirrors NUMERICAL_DECIMALS in
+// question-data.js, which rounds what the server stores.
+export const NUMERICAL_DECIMALS = 2;
+
+// Turns a slider/number-input value into a number within [min, max], rounded to
+// NUMERICAL_DECIMALS places. A decimal comma is read as a decimal point, since
+// many phone keypads offer only a comma. Returns null when there is no usable
+// number (untouched, cleared, or mid-typing input such as "-"), which callers
+// treat as "nothing selected".
 export function clampNumericalValue(raw, min, max) {
     if (raw === null || raw === undefined || (typeof raw === 'string' && raw.trim() === '')) {
         return null;
     }
-    const parsed = Math.trunc(Number(raw));
+    const parsed = Number(typeof raw === 'string' ? raw.trim().replace(/^(-?\d*),(\d+)$/, '$1.$2') : raw);
     if (!Number.isFinite(parsed)) {
         return null;
     }
-    return Math.min(max, Math.max(min, parsed));
+    const scale = 10 ** NUMERICAL_DECIMALS;
+    // `+ 0` turns a rounded -0 into 0.
+    const rounded = Math.round(parsed * scale) / scale + 0;
+    return Math.min(max, Math.max(min, rounded));
+}
+
+// A stored Numerical answer as a number, or NaN when it is not one.
+export function parseNumericalVote(value) {
+    if (typeof value === 'number') return value;
+    if (typeof value !== 'string' || value.trim() === '') return NaN;
+    return Number(value);
+}
+
+// A statistic of numerical answers (an average, a median, a change) for
+// display: one decimal place, or two when the number is small enough that one
+// would hide the difference between, say, 0.25 and 0.34.
+export function formatNumerical(value) {
+    const number = Number(value);
+    if (value === null || value === undefined || !Number.isFinite(number)) return '—';
+    const rounded = Number(number.toFixed(Math.abs(number) < 10 ? NUMERICAL_DECIMALS : 1));
+    return (rounded + 0).toLocaleString('en-US', { maximumFractionDigits: NUMERICAL_DECIMALS });
+}
+
+// Which of `binCount` histogram bins a numerical answer falls in. A short
+// whole-number range (0 to 5, 1 to 10) has one bin per whole number, so an
+// answer goes to the nearest one; a longer range is cut into equal bins, the
+// last of which includes the maximum.
+export function numericalBinIndex(value, minValue, maxValue, binCount) {
+    const range = Math.max(maxValue - minValue, 1);
+    const clamped = Math.min(Math.max(value, minValue), maxValue);
+    const index = binCount === range + 1
+        ? Math.round(clamped - minValue)
+        : Math.floor(((clamped - minValue) / range) * binCount);
+    return Math.min(binCount - 1, Math.max(0, index));
 }
 
 // Checks a Multiple Choice question's options the way the server does

@@ -78,6 +78,14 @@ groups, opinion snapshots and exports: each leaves out the results of questions
 the person viewing has not answered and says how many were left out. Open Ended questions are not affected. Their responses are the discussion
 itself, not a tally, and response reactions keep their own moderator toggles.
 
+## Numerical answers can be decimals
+
+A Numerical question has a whole-number minimum and maximum. An answer can be
+any number between them, with up to two decimal places: drag the slider for a
+whole number, or type a number such as 0.5 or 33.25 in the box next to it. A
+decimal comma (0,5) is read the same as a decimal point, because many phone
+keypads offer only a comma. More than two decimal places are rounded.
+
 ## Room display
 
 To show a discussion on a shared TV or projector while people vote on their
@@ -135,6 +143,7 @@ own power settings, such as an auto power-off timer, can still turn it off.
 Open **Opinion Snapshots** in a discussion. A moderator can save named snapshots
 such as “Before discussion” and “After discussion.” For probability estimates,
 create a **Numerical** question with a minimum of **0** and maximum of **100**.
+Answers can be decimals, so a participant can enter 0.5 for half a percent.
 Collect initial answers, save the first snapshot, then invite people to update
 their answers after discussing and save the second snapshot.
 

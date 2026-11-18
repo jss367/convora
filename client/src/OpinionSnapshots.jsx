@@ -2,6 +2,9 @@ import PropTypes from 'prop-types';
 import React, { useEffect, useState } from 'react';
 
 const formatNumber = value => value == null ? '—' : Number(value.toFixed(1)).toLocaleString();
+// An average or a change in one: two decimal places when the number is small
+// enough that one would hide the difference between, say, 0.25 and 0.34.
+const formatAverage = value => value == null ? '—' : Number(value.toFixed(Math.abs(value) < 10 ? 2 : 1)).toLocaleString();
 const formatDate = value => new Date(value).toLocaleString();
 // Kept in step with RESULTS_HIDDEN_HINT in viewer.js. This file imports nothing
 // local so the Node test suite can load it on its own.
@@ -106,8 +109,8 @@ export function QuestionComparison({ before, after, comparing, beforeName, after
             </p>
             {(before?.type === 'Numerical' || after?.type === 'Numerical') && (
                 <p className="text-sm font-medium mb-3">
-                    Average: {formatNumber(before?.average)}{comparing && ` → ${formatNumber(after?.average)}`}
-                    {delta !== null && <span className="ml-2 text-primary">({delta > 0 ? '+' : ''}{formatNumber(delta)} points)</span>}
+                    Average: {formatAverage(before?.average)}{comparing && ` → ${formatAverage(after?.average)}`}
+                    {delta !== null && <span className="ml-2 text-primary">({delta > 0 ? '+' : ''}{formatAverage(delta)} points)</span>}
                 </p>
             )}
             {comparing && (!before || !after) && (
@@ -207,7 +210,7 @@ export default function OpinionSnapshots({ discussionSlug, adminToken, userId })
                         <input id="snapshot-name" value={name} onChange={event => setName(event.target.value)} maxLength={120} required placeholder={snapshots.length ? 'e.g. After discussion' : 'e.g. Before discussion'} className="flex-1 min-w-0 border border-gray-300 rounded px-3 py-2" />
                         <button type="submit" disabled={saving || loading || !name.trim()} className="bg-primary text-white rounded px-4 py-2 disabled:opacity-50">{saving ? 'Saving…' : 'Save snapshot'}</button>
                     </div>
-                    <p className="text-xs text-gray-500 mt-2">Saved snapshots stay unchanged as people update their answers. For probabilities, use a Numerical question with a 0–100 scale.</p>
+                    <p className="text-xs text-gray-500 mt-2">Saved snapshots stay unchanged as people update their answers. For probabilities, use a Numerical question with a 0–100 scale; answers can be decimals such as 0.5.</p>
                 </form>
             ) : <p className="text-sm text-gray-500 mb-4">Only moderators can save snapshots. Everyone can view and compare them.</p>}
             {error && <p role="alert" className="text-red-600 mb-3">{error}</p>}

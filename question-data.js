@@ -87,6 +87,20 @@ function choiceOptionsFor(question) {
   return null;
 }
 
+// Numerical answers keep at most this many decimal places, enough for a
+// probability such as 0.5% on a 0 to 100 scale. Mirrors NUMERICAL_DECIMALS in
+// client/src/questions/questionHelpers.mjs.
+const NUMERICAL_DECIMALS = 2;
+
+// A valid Numerical answer as the number that is stored: rounded to
+// NUMERICAL_DECIMALS places, so every client's histogram and average are built
+// from the same values whatever precision a caller sent. The bounds are whole
+// numbers, so rounding never moves an in-range answer out of range.
+function normalizeNumericalVote(vote) {
+  const scale = 10 ** NUMERICAL_DECIMALS;
+  return Math.round(Number(vote) * scale) / scale + 0;
+}
+
 function parseIntegerInput(value) {
   if (typeof value === 'number' && Number.isInteger(value)) {
     return value;
@@ -162,6 +176,6 @@ function normalizeQuestionPayload(question) {
 
 module.exports = {
   AGREEMENT_OPTIONS, YES_NO_OPTIONS, parseOptions, parseStoredVoteValue,
-  getQuestionRange, normalizeQuestionPayload, normalizeChoiceOptions, choiceOptionsFor, isValidVote,
+  getQuestionRange, normalizeNumericalVote, NUMERICAL_DECIMALS, normalizeQuestionPayload, normalizeChoiceOptions, choiceOptionsFor, isValidVote,
   MULTIPLE_CHOICE_MIN_OPTIONS, MULTIPLE_CHOICE_MAX_OPTIONS, MULTIPLE_CHOICE_MAX_OPTION_LENGTH,
 };

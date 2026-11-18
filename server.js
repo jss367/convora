@@ -17,7 +17,7 @@ const { slugifyTopic, formatTopicTitle, titleFromSlug, suffixSlug, MAX_TOPIC_LEN
 const { buildSummary, renderReportHtml } = require('./reports');
 const {
   AGREEMENT_OPTIONS, parseOptions, parseStoredVoteValue,
-  normalizeQuestionPayload, choiceOptionsFor, isValidVote,
+  normalizeQuestionPayload, normalizeNumericalVote, choiceOptionsFor, isValidVote,
 } = require('./question-data');
 
 const app = express();
@@ -710,6 +710,8 @@ io.on('connection', (socket) => {
         reply(false);
         return;
       }
+      // Decimals are allowed; store them at one precision (see normalizeNumericalVote).
+      if (target.type === 'Numerical') vote = normalizeNumericalVote(vote);
       // Persist the reserved handle in pseudonym mode rather than the client's
       // (possibly pre-reservation, colliding) local pick — see canonicalPseudonym.
       const handle = await canonicalPseudonym(discussionSlug, target.discussionId, userId, mode, pseudonym);

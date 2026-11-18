@@ -60,7 +60,7 @@ test('clampNumericalValue keeps typed and slider values inside the question rang
   assert.equal(clampNumericalValue(-5, 0, 100), 0);
   assert.equal(clampNumericalValue(5, 10, 20), 10);
   assert.equal(clampNumericalValue(-30, -20, -10), -20);
-  assert.equal(clampNumericalValue(7.9, 0, 10), 7);
+  assert.equal(clampNumericalValue(7.9, 0, 10), 7.9);
   assert.equal(clampNumericalValue('1e2', 0, 100), 100);
   assert.equal(clampNumericalValue('1e', 0, 100), null);
   // A real zero is a value, not "unset".
@@ -79,6 +79,53 @@ test('signed drafts stay unset until digits arrive and clamp independently of th
   const drafts = ['-', '-1', '-15', '-150'];
   assert.deepEqual(drafts.map(raw => clampNumericalValue(raw, -100, 100)), [null, -1, -15, -100]);
   assert.deepEqual(drafts, ['-', '-1', '-15', '-150']);
+});
+
+test('numerical answers keep two decimal places, including a typed decimal comma', async () => {
+  const { clampNumericalValue } = await helpers;
+  assert.equal(clampNumericalValue('0.5', 0, 100), 0.5);
+  assert.equal(clampNumericalValue('.25', 0, 100), 0.25);
+  assert.equal(clampNumericalValue('0,5', 0, 100), 0.5);
+  assert.equal(clampNumericalValue('-0,25', -1, 1), -0.25);
+  assert.equal(clampNumericalValue('33.337', 0, 100), 33.34);
+  assert.equal(clampNumericalValue(0.004, 0, 100), 0);
+  assert.equal(clampNumericalValue('100.4', 0, 100), 100);
+  // Mid-typing input: a trailing point is the whole number so far, a trailing
+  // comma is not a number yet.
+  assert.equal(clampNumericalValue('0.', 0, 100), 0);
+  assert.equal(clampNumericalValue('0,', 0, 100), null);
+  // A rounded negative zero is plain zero, so it never shows as "-0".
+  assert.ok(Object.is(clampNumericalValue(-0.001, -5, 5), 0));
+  // Thousands separators are not guessed at.
+  assert.equal(clampNumericalValue('1,000.5', 0, 5000), null);
+});
+
+test('numerical statistics show two decimals only where one would hide the answer', async () => {
+  const { formatNumerical, parseNumericalVote } = await helpers;
+  assert.equal(formatNumerical(0.345), '0.34');
+  assert.equal(formatNumerical(0.5), '0.5');
+  assert.equal(formatNumerical(3), '3');
+  assert.equal(formatNumerical(32.46), '32.5');
+  assert.equal(formatNumerical(-50), '-50');
+  assert.equal(formatNumerical(-0.001), '0');
+  assert.equal(formatNumerical(null), '—');
+  assert.equal(formatNumerical(undefined), '—');
+  assert.equal(parseNumericalVote('0.5'), 0.5);
+  assert.equal(parseNumericalVote(70), 70);
+  assert.ok(Number.isNaN(parseNumericalVote('')));
+  assert.ok(Number.isNaN(parseNumericalVote('Agree')));
+});
+
+test('a decimal answer lands in the histogram bin of the nearest whole number on a short scale', async () => {
+  const { numericalBinIndex } = await helpers;
+  // 0 to 5 has one bin per whole number.
+  assert.deepEqual([0, 0.4, 0.5, 4.2, 4.6, 5].map(v => numericalBinIndex(v, 0, 5, 6)), [0, 0, 1, 4, 5, 5]);
+  // Whole numbers go where they always did.
+  assert.deepEqual([1, 2, 3, 4, 5].map(v => numericalBinIndex(v, 1, 5, 5)), [0, 1, 2, 3, 4]);
+  // 0 to 100 is cut into ten equal bins; the last includes the maximum.
+  assert.deepEqual([0, 0.5, 9.99, 10, 99.5, 100].map(v => numericalBinIndex(v, 0, 100, 10)), [0, 0, 0, 1, 9, 9]);
+  // Out-of-range values (older data) are clamped into the end bins.
+  assert.deepEqual([-3, 140].map(v => numericalBinIndex(v, 0, 100, 10)), [0, 9]);
 });
 
 test('validateChoiceOptions matches the server rules for Multiple Choice options', async () => {

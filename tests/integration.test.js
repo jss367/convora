@@ -2267,6 +2267,46 @@ test('a Numerical vote outside the question range (or non-numeric) is rejected, 
   }
 });
 
+test('a Numerical vote may be a decimal and is stored to two places', async () => {
+  const created = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('numerical-decimals') });
+  const { slug, adminToken } = created.body;
+  const first = await connectSocket();
+  const second = await connectSocket();
+  try {
+    first.emit('joinDiscussion', slug);
+    const added = waitForQuestions(first, qs => qs.some(q => q.text === 'Chance of rain?'), 'numerical added');
+    first.emit('addQuestion', slug, { text: 'Chance of rain?', type: 'Numerical', minValue: 0, maxValue: 100, options: [] });
+    const question = (await added).find(q => q.text === 'Chance of rain?');
+
+    // A probability below 1% keeps its value instead of becoming 0 or 1.
+    assert.deepEqual(await emitWithAck(first, 'vote', slug, question.id, 0.5, 'decimal-a', 'A', undefined), { ok: true });
+    // More precision than two places is rounded, whether sent as a number or text.
+    assert.deepEqual(await emitWithAck(second, 'vote', slug, question.id, '33.337', 'decimal-b', 'B', undefined), { ok: true });
+    assert.deepEqual((await storedVotes(question.id)).map(vote => vote.value), ['0.5', '33.34']);
+
+    // Rounding cannot carry an answer past the bounds, and the bounds still hold.
+    const tooHigh = waitForEvent(second, 'error', e => /invalid vote/i.test(e.message));
+    second.emit('vote', slug, question.id, 100.004, 'decimal-b', 'B');
+    await tooHigh;
+    assert.deepEqual(await emitWithAck(second, 'vote', slug, question.id, 99.999, 'decimal-b', 'B', undefined), { ok: true });
+    assert.deepEqual((await storedVotes(question.id)).map(vote => vote.value), ['0.5', '100']);
+
+    // Averages and snapshots are built from the decimals, not from truncated values.
+    const saved = await jsonRequest('POST', `/api/discussions/${slug}/snapshots`, { name: 'Decimals', adminToken });
+    const snapshot = saved.body.data.questions.find(q => q.id === question.id);
+    assert.equal(snapshot.average, 50.25);
+    assert.equal(snapshot.distribution[0].count, 1);
+    assert.equal(snapshot.distribution[9].count, 1);
+    const summary = await jsonRequest('GET', `/api/discussions/${slug}/summary`, undefined, asModerator(adminToken));
+    const summarized = summary.body.questions.find(q => q.id === question.id);
+    assert.equal(summarized.average, 50.25);
+    assert.equal(summarized.minResponse, 0.5);
+  } finally {
+    first.disconnect();
+    second.disconnect();
+  }
+});
+
 test('Socket.IO sanitizes display names: anonymous stores null, long names are clamped', async () => {
   const topic = uniqueTopic('names');
   const author = await connectSocket();
