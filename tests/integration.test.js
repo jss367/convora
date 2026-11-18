@@ -5466,3 +5466,72 @@ test('a moderator puts a comparison of two opinion snapshots on the room display
     display.disconnect();
   }
 });
+
+test('automatic baseline includes an in-flight vote committed while reveal waits for the question lock', async () => {
+  const { id, slug, adminToken } = (await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('synthetic-reveal-mvcc') })).body;
+  const questionId = (await pool.query(
+    "INSERT INTO questions(discussion_id,text,type,min_value,max_value) VALUES ($1,'Fictional scale','Numerical',0,5) RETURNING id", [id]
+  )).rows[0].id;
+  await pool.query("INSERT INTO votes(question_id,value,user_id) VALUES ($1,'0','fictional-first')", [questionId]);
+  const moderator = await connectSocket();
+  const voter = await pool.connect();
+  let committed = false;
+  try {
+    const joined = waitForQuestions(moderator, questions => questions.some(q => q.id === questionId), 'synthetic question joined');
+    moderator.emit('joinDiscussion', slug); await joined;
+    await voter.query('BEGIN');
+    await voter.query('SELECT id FROM questions WHERE id=$1 FOR SHARE', [questionId]);
+    await voter.query("INSERT INTO votes(question_id,value,user_id) VALUES ($1,'5','fictional-in-flight')", [questionId]);
+    const announced = waitForEvent(moderator, 'snapshotsChanged');
+    const shown = waitForQuestions(moderator, questions => questions.some(q => q.id === questionId && q.votes.length === 2), 'both committed votes shown');
+    moderator.emit('setResultsRevealed', slug, questionId, true, adminToken);
+    const deadline = Date.now() + 5000;
+    let waiting = false;
+    while (Date.now() < deadline) {
+      const result = await pool.query("SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE 'SELECT id FROM questions%FOR UPDATE'");
+      if (result.rows.length) { waiting = true; break; }
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    assert.equal(waiting, true, 'reveal is observably blocked by the in-flight vote');
+    await voter.query('COMMIT'); committed = true;
+    await Promise.all([announced, shown]);
+    const snapshots = (await jsonRequest('GET', `/api/discussions/${slug}/snapshots`, undefined, asModerator(adminToken))).body.snapshots;
+    const baseline = snapshots[0].data.questions.find(q => q.id === questionId);
+    assert.equal(baseline.responseCount, 2);
+    assert.equal(baseline.average, 2.5);
+  } finally {
+    if (!committed) await voter.query('ROLLBACK');
+    voter.release(); moderator.disconnect();
+  }
+});
+
+test('a real failed reveal rolls back its baseline before a successful retry captures changed answers', async () => {
+  const { id, slug, adminToken } = (await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('synthetic-reveal-rollback') })).body;
+  const questionId = (await pool.query(
+    "INSERT INTO questions(discussion_id,text,type,min_value,max_value) VALUES ($1,'Fictional rollback scale','Numerical',0,5) RETURNING id", [id]
+  )).rows[0].id;
+  await pool.query("INSERT INTO votes(question_id,value,user_id) VALUES ($1,'1','fictional-voter')", [questionId]);
+  await pool.query(`CREATE FUNCTION synthetic_reveal_failure() RETURNS trigger LANGUAGE plpgsql AS $$
+    BEGIN RAISE EXCEPTION 'synthetic reveal failure'; END $$`);
+  await pool.query('CREATE TRIGGER synthetic_reveal_failure BEFORE UPDATE OF results_revealed ON questions FOR EACH ROW EXECUTE FUNCTION synthetic_reveal_failure()');
+  const moderator = await connectSocket();
+  try {
+    const joined = waitForQuestions(moderator, questions => questions.some(q => q.id === questionId), 'rollback question joined');
+    moderator.emit('joinDiscussion', slug); await joined;
+    const failed = waitForEvent(moderator, 'error', error => /Failed to update question/.test(error.message));
+    moderator.emit('setResultsRevealed', slug, questionId, true, adminToken); await failed;
+    assert.equal((await pool.query('SELECT count(*)::int AS n FROM opinion_snapshots WHERE discussion_id=$1', [id])).rows[0].n, 0);
+    assert.equal((await pool.query('SELECT results_revealed FROM questions WHERE id=$1', [questionId])).rows[0].results_revealed, false);
+    await pool.query('DROP TRIGGER synthetic_reveal_failure ON questions');
+    await pool.query("UPDATE votes SET value='4' WHERE question_id=$1", [questionId]);
+    const saved = waitForEvent(moderator, 'snapshotsChanged');
+    moderator.emit('setResultsRevealed', slug, questionId, true, adminToken); await saved;
+    const snapshots = (await jsonRequest('GET', `/api/discussions/${slug}/snapshots`, undefined, asModerator(adminToken))).body.snapshots;
+    assert.equal(snapshots.length, 1);
+    assert.equal(snapshots[0].data.questions.find(q => q.id === questionId).average, 4);
+  } finally {
+    await pool.query('DROP TRIGGER IF EXISTS synthetic_reveal_failure ON questions');
+    await pool.query('DROP FUNCTION IF EXISTS synthetic_reveal_failure()');
+    moderator.disconnect();
+  }
+});

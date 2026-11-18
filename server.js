@@ -1255,6 +1255,8 @@ io.on('connection', (socket) => {
         socket.emit('error', { message: 'Not authorized to moderate this discussion.' });
         return;
       }
+      // READ COMMITTED takes the capture statement's view after this lock
+      // finishes waiting for in-flight votes; later votes wait until reveal commits.
       const snapshotSaved = await withTransaction(async client => {
         const target = await client.query('SELECT id FROM questions WHERE id = $1 AND discussion_id = $2 FOR UPDATE', [questionId, discussionId]);
         if (!target.rows.length) return false;
@@ -1263,7 +1265,7 @@ io.on('connection', (socket) => {
         await client.query('UPDATE questions SET results_revealed = $1 WHERE id = $2 AND discussion_id = $3',
           [revealed === true, questionId, discussionId]);
         return saved;
-      }, { repeatableRead: true });
+      });
       if (snapshotSaved) audience(discussionSlug).emit('snapshotsChanged');
       await emitQuestions(discussionSlug);
     } catch (error) {
@@ -2282,11 +2284,11 @@ function ownerToken(idPart, userId) {
 
 // Run `work(client)` in a transaction on one pooled connection: commit when it
 // returns, roll back when it throws, and always release the connection.
-async function withTransaction(work, { repeatableRead = false } = {}) {
+async function withTransaction(work) {
   const client = await pool.connect();
   let releaseError;
   try {
-    await client.query(repeatableRead ? 'BEGIN ISOLATION LEVEL REPEATABLE READ' : 'BEGIN');
+    await client.query('BEGIN');
     const result = await work(client);
     await client.query('COMMIT');
     return result;
@@ -3321,24 +3323,29 @@ async function saveOpinionSnapshot(discussionId, name, { autoQuestionId = null, 
   const client = transactionClient || await pool.connect();
   let releaseError;
   try {
-    // Both reads see one consistent database state, even while participants are
-    // voting. Saving never closes voting or changes anyone's current response.
+    // One statement gives metadata and votes the same view. For an automatic
+    // capture it starts after the reveal acquired its question lock; manual
+    // saves retain their own repeatable-read transaction.
     if (!transactionClient) await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ');
-    const questions = await client.query(
-      `SELECT id, text, type, min_value, max_value, options FROM questions
-       WHERE discussion_id = $1 AND type = ANY($2::text[]) AND NOT queued ORDER BY id`,
+    const input = await client.query(
+      `SELECT
+         COALESCE((SELECT jsonb_agg(q ORDER BY q.id) FROM (
+           SELECT id, text, type, min_value, max_value, options FROM questions
+           WHERE discussion_id=$1 AND type=ANY($2::text[]) AND NOT queued
+         ) q), '[]'::jsonb) AS questions,
+         COALESCE((SELECT jsonb_agg(v ORDER BY v.id) FROM (
+           SELECT v.id, v.question_id, v.value, v.user_id FROM votes v
+           JOIN questions q ON q.id=v.question_id
+           WHERE q.discussion_id=$1 AND q.type=ANY($2::text[]) AND NOT q.queued
+         ) v), '[]'::jsonb) AS votes`,
       [discussionId, OPINION_TYPES]
     );
+    const questions = { rows: input.rows[0].questions };
+    const votes = { rows: input.rows[0].votes };
     if (!questions.rows.length) {
       if (!transactionClient) await client.query('ROLLBACK');
       return { empty: true };
     }
-    const votes = await client.query(
-      `SELECT v.id, v.question_id, v.value, v.user_id FROM votes v
-       JOIN questions q ON q.id = v.question_id
-       WHERE q.discussion_id = $1 AND q.type = ANY($2::text[])`,
-      [discussionId, OPINION_TYPES]
-    );
     const votesByQuestion = new Map();
     votes.rows.forEach(vote => {
       if (!votesByQuestion.has(vote.question_id)) votesByQuestion.set(vote.question_id, []);

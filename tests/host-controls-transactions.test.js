@@ -128,6 +128,10 @@ function revelation({ failReveal = false, failCapture = false } = {}) {
       const state = local || shared;
       if (/SELECT q.text/.test(sql)) return { rows: state.snapshots.length || state.revealed ? [] : [{ text: 'Fictional scale' }] };
       if (/SELECT id FROM questions/.test(sql)) return { rows: [{ id: 7 }] };
+      if (/AS questions,/.test(sql) && /AS votes/.test(sql)) return { rows: [{
+        questions: [{ id: 7, text: 'Fictional scale', type: 'Numerical', min_value: 0, max_value: 5 }],
+        votes: [{ id: 1, question_id: 7, value, user_id: 'fictional-person' }],
+      }] };
       if (/SELECT id, text, type/.test(sql)) return { rows: [{ id: 7, text: 'Fictional scale', type: 'Numerical', min_value: 0, max_value: 5 }] };
       if (/SELECT v.id/.test(sql)) return { rows: [{ id: 1, question_id: 7, value, user_id: 'fictional-person' }] };
       if (/INSERT INTO opinion_snapshots/.test(sql)) {
