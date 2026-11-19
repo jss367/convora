@@ -47,6 +47,52 @@ test.after(async () => {
   await stopServer();
 });
 
+test('Google verification issues an expiring session and only a creator can link a discussion', async () => {
+  const express = require('express');
+  const { registerModeratorAccounts } = require('../moderator-accounts');
+  const app = express();
+  app.use(express.json());
+  const clientId = 'test-client';
+  const subject = crypto.randomUUID();
+  const google = {
+    async verifyIdToken({ idToken, audience }) {
+      assert.equal(audience, clientId);
+      if (idToken !== 'verified-fixture') throw Error('unverified');
+      return { getPayload: () => ({ sub: subject, email: 'moderator@example.test' }) };
+    },
+  };
+  registerModeratorAccounts(app, pool, { clientId, google, secure: false });
+  const listener = app.listen(0, '127.0.0.1');
+  await once(listener, 'listening');
+  const origin = 'http://127.0.0.1:' + listener.address().port;
+  const headers = { 'Content-Type': 'application/json', 'X-Convora-Account': '1' };
+  const post = (path, body, extra = {}) => fetch(origin + '/api/account/' + path, {
+    method: 'POST', headers: { ...headers, ...extra }, body: JSON.stringify(body),
+  });
+  try {
+    assert.equal((await post('login', { credential: 'unverified' })).status, 401);
+    assert.equal((await post('login', { credential: 'verified-fixture' }, { Origin: 'https://other.example' })).status, 403);
+    const login = await post('login', { credential: 'verified-fixture' });
+    assert.equal(login.status, 204);
+    const cookie = login.headers.get('set-cookie');
+    assert.match(cookie, /HttpOnly/i);
+    headers.Cookie = cookie.split(';')[0];
+    const { slug, adminToken, id } = (await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('creator') })).body;
+    const promoted = crypto.randomUUID();
+    await pool.query('INSERT INTO discussion_moderators (discussion_id, user_id, token) VALUES ($1, $2, $3)',
+      [id, crypto.randomUUID(), promoted]);
+    const link = async token => (await post('link', { discussions: [{ slug, token }] })).json();
+    assert.deepEqual(await link(promoted), { linked: 0 });
+    assert.deepEqual(await link(adminToken), { linked: 1 });
+    assert.deepEqual(await link(adminToken), { linked: 0 });
+    await pool.query("UPDATE moderator_sessions SET expires_at = now() WHERE google_sub = $1", [subject]);
+    assert.equal((await fetch(origin + '/api/account/access/' + slug, { headers })).status, 401);
+  } finally {
+    await new Promise(resolve => listener.close(resolve));
+    await pool.query('DELETE FROM moderator_sessions WHERE google_sub = $1', [subject]);
+  }
+});
+
 test('server startup creates schema and applies the pseudonym migration', async () => {
   const tables = await pool.query(`
     SELECT table_name

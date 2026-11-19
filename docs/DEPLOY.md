@@ -83,3 +83,20 @@ redeploy. Nothing else to do.
   will need a Redis adapter + sticky sessions, and the vote path (which re-queries
   and re-broadcasts the whole question list per vote) should switch to broadcasting
   just the delta. Neither is needed at 50–100 users.
+
+## Optional Google moderator accounts
+
+In Google Auth Platform, configure the app audience and create an OAuth client of
+type **Web application**. Under **Authorized JavaScript origins**, add the exact
+origin where moderators use Convora, such as `https://convora.xyz`. For an app
+in testing, add the moderator's Google account as a test user.
+
+In the Render web service's **Environment** settings, set `GOOGLE_CLIENT_ID`
+to that client ID and redeploy. The Google button uses a popup and requires
+only the public client ID. Leaving the variable unset keeps the guest-only UI.
+For local testing, authorize the localhost origin serving the built app.
+
+Open **My discussions** and sign in. On each original browser choose **Link my
+discussions**. A creator link opened while signed in can also link its discussion.
+Each discussion links to one Google account. Signing out ends the account session
+on that browser. Moderator links saved independently in that browser still work.

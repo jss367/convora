@@ -69,3 +69,16 @@ CREATE TABLE IF NOT EXISTS opinion_snapshots (
 
 CREATE INDEX IF NOT EXISTS opinion_snapshots_discussion_idx
   ON opinion_snapshots (discussion_id, id);
+
+-- Google's immutable subject identifies the creator across devices.
+ALTER TABLE discussions ADD COLUMN IF NOT EXISTS creator_google_sub TEXT;
+CREATE INDEX IF NOT EXISTS discussions_creator_google_sub_idx
+  ON discussions (creator_google_sub) WHERE creator_google_sub IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS moderator_sessions (
+  digest TEXT PRIMARY KEY,
+  google_sub TEXT NOT NULL,
+  email TEXT,
+  expires_at TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS moderator_sessions_expiry_idx ON moderator_sessions (expires_at);

@@ -7,6 +7,18 @@ You can create a discussion, which generates its own URL. For example, if the ap
 
 From there, users can submit questions and people can vote on how much they agree with them. For example, someone could say, "The biggest risk of AI is through AI weapons" and each person can vote that they strongly agree, agree, are unsure, disagree, or strongly disagree. The app would show the aggregates. That way you could find which statement most people disagree with.
 
+## Moderate across devices
+
+When Google sign-in is enabled, open **My discussions** and sign in with Google.
+On each browser where you already moderate, choose **Link my discussions** to
+add discussions whose creator links you hold. You can then open them on another
+device by signing in with the same Google account. Discussions you create or
+duplicate while signed in appear automatically.
+
+You can still create, join, and moderate discussions without signing in. Save
+the private moderator link if you want to moderate a guest-created discussion
+from another browser.
+
 ## Multiple choice questions
 
 Choose **Multiple Choice** as the question type to write your own answers, for

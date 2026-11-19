@@ -39,17 +39,16 @@ function writeStored(entries) {
 
 // Moderator tokens are stored as convora_admin_<slug>, so a browser that
 // created discussions before this list existed still finds them.
-function moderatedSlugs() {
+export function storedModeratorKeys() {
     try {
-        const slugs = [];
+        const keys = [];
         for (let index = 0; index < localStorage.length; index += 1) {
             const key = localStorage.key(index);
             if (key && key.startsWith(ADMIN_TOKEN_PREFIX)) {
-                const slug = key.slice(ADMIN_TOKEN_PREFIX.length);
-                if (isSlug(slug)) slugs.push(slug);
+                keys.push(key.slice(ADMIN_TOKEN_PREFIX.length));
             }
         }
-        return slugs;
+        return keys;
     } catch {
         return [];
     }
@@ -60,7 +59,7 @@ function moderatedSlugs() {
 export function getKnownDiscussions() {
     const stored = readStored();
     const known = new Set(stored.map(entry => entry.slug));
-    const seeded = moderatedSlugs()
+    const seeded = storedModeratorKeys().filter(isSlug)
         .filter(slug => !known.has(slug))
         .map(slug => ({ slug, topic: null, created_at: null, lastVisited: 0 }));
     return [...stored, ...seeded]
