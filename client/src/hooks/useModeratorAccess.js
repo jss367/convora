@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
+import { accountRequest, accountToken, getAccount } from '../account';
+
 // Moderator credentials and creator authority are verified again on reconnect.
 export function useModeratorAccess(socket, { topic, discussionSlug, discussionTitle, onRevoked }) {
     const [access, setAccess] = useState({ slug: null, token: null, canDemote: false });
@@ -31,13 +33,18 @@ export function useModeratorAccess(socket, { topic, discussionSlug, discussionTi
     // from the URL; otherwise fall back to a previously stored token.
     useEffect(() => {
         if (topic !== discussionSlug) return;
+        let cancelled = false;
         const storageKey = `convora_admin_${discussionSlug}`;
         try {
             const params = new URLSearchParams(window.location.search);
             const fromUrl = params.get('admin');
             if (fromUrl) {
-                localStorage.setItem(storageKey, fromUrl);
+                try { localStorage.setItem(storageKey, fromUrl); }
+                catch { /* The private link also grants access for this visit. */ }
                 setAdminToken(fromUrl);
+                getAccount().then(info => info.signedIn && accountRequest('/link', {
+                    discussions: [{ slug: discussionSlug, token: fromUrl }],
+                })).catch(() => {}); // The saved link can still be imported on the account page.
                 params.delete('admin');
                 const query = params.toString();
                 window.history.replaceState({}, '', `${window.location.pathname}${query ? `?${query}` : ''}`);
@@ -58,6 +65,10 @@ export function useModeratorAccess(socket, { topic, discussionSlug, discussionTi
         } catch (e) {
             console.warn('Failed to read admin token:', e);
         }
+        accountToken(discussionSlug).then(token => {
+            if (token && !cancelled) setAdminToken(token);
+        }).catch(() => {}); // Offline and guest access still use the browser's credential.
+        return () => { cancelled = true; };
     }, [discussionTitle, discussionSlug, topic, setAdminToken]);
 
     // Validate any adopted moderator token with the server. A token revoked

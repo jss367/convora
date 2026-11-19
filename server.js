@@ -104,6 +104,7 @@ async function getDiscussionBySlug(slug) {
 }
 
 app.use(express.json());
+const currentAccount = require('./moderator-accounts').registerModeratorAccounts(app, pool);
 app.use(express.static(path.join(__dirname, 'dist')));
 
 // Emit the number of distinct PEOPLE currently in a discussion room to everyone
@@ -1853,8 +1854,9 @@ app.post('/api/discussions', async (req, res) => {
     // and returns it when (and only when) this caller is the one establishing
     // the discussion's moderator. The client persists it so the person who made
     // the session lands as its moderator instead of racing others for the role.
-    const discussion = await createDiscussion(topic, { listed: listed === true });
-    res.json({ success: true, ...discussion });
+    const owner = await currentAccount(req);
+    const discussion = await createDiscussion(topic, { listed: listed === true, subject: owner?.google_sub });
+    res.json({ success: true, ...discussion, accountLinked: !!(owner && discussion.adminToken) });
   } catch (err) {
     logError('Request failed:', err);
     res.status(500).json({ error: 'Server error' });
@@ -2404,7 +2406,7 @@ async function verifyCreator(topic, token) {
 // `listed` applies only when this caller becomes the moderator. Creating a
 // discussion whose title already exists joins it, and joining must not change
 // how a discussion someone else moderates is listed.
-async function createDiscussion(topic, { listed = false } = {}) {
+async function createDiscussion(topic, { listed = false, subject = null } = {}) {
   const displayTopic = formatTopicTitle(topic);
   const baseSlug = slugifyTopic(displayTopic);
   const token = crypto.randomBytes(16).toString('hex');
@@ -2420,11 +2422,12 @@ async function createDiscussion(topic, { listed = false } = {}) {
     if (existing.rows.length > 0 && !await lockDiscussionSlug(client, existing.rows[0].slug)) {
       const updated = await client.query(
         `UPDATE discussions
-            SET listed = CASE WHEN admin_token IS NULL THEN $3 ELSE listed END,
+            SET creator_google_sub = CASE WHEN admin_token IS NULL THEN $4 ELSE creator_google_sub END,
+                listed = CASE WHEN admin_token IS NULL THEN $3 ELSE listed END,
                 admin_token = COALESCE(admin_token, $2)
           WHERE id = $1
           RETURNING id, topic, slug, admin_token`,
-        [existing.rows[0].id, token, listed]
+        [existing.rows[0].id, token, listed, subject]
       );
       await client.query('COMMIT');
       const row = updated.rows[0];
@@ -2441,11 +2444,11 @@ async function createDiscussion(topic, { listed = false } = {}) {
       const slug = suffixSlug(baseSlug, suffix);
       if (await lockDiscussionSlug(client, slug)) continue;
       const result = await client.query(
-        `INSERT INTO discussions (topic, slug, admin_token, listed)
-         VALUES ($1, $2, $3, $4)
+        `INSERT INTO discussions (topic, slug, admin_token, listed, creator_google_sub)
+         VALUES ($1, $2, $3, $4, $5)
          ON CONFLICT (slug) DO NOTHING
          RETURNING id, topic, slug, admin_token`,
-        [displayTopic, slug, token, listed]
+        [displayTopic, slug, token, listed, subject]
       );
 
       if (result.rows.length > 0) {
@@ -3640,6 +3643,7 @@ app.post('/api/duplicate-discussion', async (req, res) => {
       return res.status(409).json({ error: 'Discussion topic already exists' });
     }
 
+    const owner = await currentAccount(req, client);
     const newAdminToken = crypto.randomBytes(16).toString('hex');
     const baseNewSlug = slugifyTopic(displayNewTopic);
     let newDiscussion = null;
@@ -3647,8 +3651,8 @@ app.post('/api/duplicate-discussion', async (req, res) => {
       const newSlug = suffixSlug(baseNewSlug, suffix);
       if (await lockDiscussionSlug(client, newSlug)) continue;
       const newDiscussionResult = await client.query(
-        `INSERT INTO discussions (topic, slug, admin_token, reactions_enabled, reactions_visible, comments_enabled, theme, results_visibility)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        `INSERT INTO discussions (topic, slug, admin_token, reactions_enabled, reactions_visible, comments_enabled, theme, results_visibility, creator_google_sub)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
          ON CONFLICT (slug) DO NOTHING
          RETURNING id, topic, slug`,
         [displayNewTopic, newSlug, newAdminToken,
@@ -3656,7 +3660,7 @@ app.post('/api/duplicate-discussion', async (req, res) => {
           originalDiscussion.reactions_visible,
           originalDiscussion.comments_enabled,
           originalDiscussion.theme,
-          originalDiscussion.results_visibility]
+          originalDiscussion.results_visibility, owner?.google_sub]
       );
 
       if (newDiscussionResult.rows.length > 0) {
@@ -3697,6 +3701,7 @@ app.post('/api/duplicate-discussion', async (req, res) => {
       newTopic: newDiscussion.topic,
       newSlug: newDiscussion.slug,
       adminToken: newAdminToken,
+      accountLinked: !!owner,
     });
   } catch (error) {
     await client.query('ROLLBACK');

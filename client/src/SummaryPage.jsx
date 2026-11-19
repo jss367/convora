@@ -179,7 +179,7 @@ const SummaryPage = () => {
         setError(null);
 
         try {
-            const response = await fetch(`/api/discussions/${encodedTopic}/summary`, { headers: viewerHeaders(discussionSlug) });
+            const response = await fetch(`/api/discussions/${encodedTopic}/summary`, { headers: await viewerHeaders(discussionSlug) });
             if (!response.ok) {
                 throw new Error('Failed to load summary');
             }

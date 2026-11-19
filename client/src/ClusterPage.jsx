@@ -151,7 +151,7 @@ const ClusterPage = () => {
         setLoading(true);
         setError(null);
         try {
-            const response = await fetch(`/api/discussions/${encodedTopic}/clusters`, { headers: viewerHeaders(slugifyTopic(topic)) });
+            const response = await fetch(`/api/discussions/${encodedTopic}/clusters`, { headers: await viewerHeaders(slugifyTopic(topic)) });
             if (!response.ok) {
                 throw new Error('Failed to load clusters');
             }

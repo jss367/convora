@@ -18,6 +18,8 @@ function mountPrompt({ storageFails = false } = {}) {
   let prompt;
   const same = (a, b) => a && b && a.length === b.length && a.every((v, i) => Object.is(v, b[i]));
   const context = {
+    TextEncoder,
+    sha256Hex: bytes => require('node:crypto').createHash('sha256').update(bytes).digest('hex'),
     localStorage: {
       getItem(key) { if (storageFails) throw Error('blocked'); return values.get(key); },
       setItem(key, value) { if (storageFails) throw Error('blocked'); values.set(key, value); },
@@ -127,7 +129,7 @@ test('saved reminders are scoped per discussion and survive a later visit', () =
   const hook = mountPrompt();
   hook.visit('a').markSaved();
   assert.equal(hook.flush().saved, true);
-  assert.equal(hook.values.get('convora_modlink_saved_a'), 'token-a');
+  assert.match(hook.values.get('convora_modlink_saved_a'), /^[0-9a-f]{64}$/);
   assert.equal(hook.visit('b').saved, false);
   assert.equal(hook.visit('a').saved, true);
 });
@@ -141,7 +143,7 @@ test('a replacement credential restores the reminder even for the same slug', ()
   assert.equal(hook.visit('a', false, 'new-token').saved, false);
   hook.flush().markSaved();
   assert.equal(hook.flush().saved, true);
-  assert.equal(hook.values.get('convora_modlink_saved_a'), 'new-token');
+  assert.match(hook.values.get('convora_modlink_saved_a'), /^[0-9a-f]{64}$/);
 });
 
 test('clipboard completion after a credential change or unmount is ignored', () => {

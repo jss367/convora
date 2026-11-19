@@ -4,6 +4,7 @@
 // results this viewer may see; a request without them is treated as a
 // participant who has answered nothing.
 
+import { accountToken } from './account';
 import { getIdentity } from './identity';
 
 export const RESULTS_HIDDEN_HINT = 'Results appear after you vote';
@@ -13,7 +14,7 @@ const isHeaderSafe = value => typeof value === 'string' && /^[\x21-\x7e]+$/.test
 
 // Sent as headers, never in the URL: the participant id is the secret that owns
 // this browser's votes, and URLs end up in logs and history.
-export function viewerHeaders(discussionSlug) {
+export async function viewerHeaders(discussionSlug) {
     const headers = {};
     try {
         const userId = getIdentity()?.userId;
@@ -23,6 +24,10 @@ export function viewerHeaders(discussionSlug) {
     } catch (e) {
         console.warn('Failed to read viewer identity:', e);
     }
+    try {
+        const token = await accountToken(discussionSlug);
+        if (isHeaderSafe(token)) headers['X-Convora-Moderator'] = token;
+    } catch { /* Local credentials also work without the account service. */ }
     return headers;
 }
 
@@ -34,7 +39,7 @@ export async function downloadForViewer(event, discussionSlug) {
     const href = event.currentTarget.href;
     event.preventDefault();
     try {
-        const response = await fetch(href, { headers: viewerHeaders(discussionSlug) });
+        const response = await fetch(href, { headers: await viewerHeaders(discussionSlug) });
         if (!response.ok) throw new Error(`Export failed with status ${response.status}`);
         const disposition = response.headers.get('Content-Disposition') || '';
         const filename = /filename="([^"]+)"/.exec(disposition)?.[1] || href.split('/').pop();

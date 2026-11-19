@@ -81,7 +81,7 @@ const HomePage = () => {
                 // The creator is the moderator: the server hands back an admin
                 // token when this request established the discussion. Persist it
                 // under the canonical slug key DiscussionPage reads on mount.
-                if (discussion && discussion.adminToken) {
+                if (discussion?.adminToken && !discussion.accountLinked) {
                     try {
                         localStorage.setItem(`convora_admin_${discussion.slug}`, discussion.adminToken);
                     } catch (e) {
@@ -90,7 +90,7 @@ const HomePage = () => {
                 }
                 rememberDiscussion(discussion);
                 // Only the creator gets a token back; prompt them to save the link.
-                navigate(`/discussion/${discussion.slug}`, discussion?.adminToken
+                navigate(`/discussion/${discussion.slug}`, discussion?.adminToken && !discussion.accountLinked
                     ? { state: moderatorLinkPromptState(discussion.slug) } : undefined);
             } catch (error) {
                 console.error('Error creating discussion:', error);

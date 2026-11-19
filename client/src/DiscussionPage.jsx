@@ -691,7 +691,7 @@ const DiscussionPage = () => {
 
             if (response.ok) {
                 const result = await response.json();
-                if (result.adminToken) {
+                if (result.adminToken && !result.accountLinked) {
                     try {
                         localStorage.setItem(`convora_admin_${result.newSlug}`, result.adminToken);
                     } catch (e) {
@@ -703,7 +703,7 @@ const DiscussionPage = () => {
                 // button. A stacked prompt inherits this target if it outlives
                 // the Duplicate dialog.
                 duplicateReturnFocusRef.current = discussionContentRef.current;
-                navigate(`/discussion/${result.newSlug}`, result.adminToken ? { state: moderatorLinkPromptState(result.newSlug) } : undefined);
+                navigate(`/discussion/${result.newSlug}`, result.adminToken && !result.accountLinked ? { state: moderatorLinkPromptState(result.newSlug) } : undefined);
             } else {
                 const errorData = await response.json();
                 setError(`Failed to duplicate discussion: ${errorData.error}`);

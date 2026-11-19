@@ -17,6 +17,7 @@ module.exports = defineConfig({
     url: `${baseURL}/api/discussions`,
     reuseExistingServer: false,
     env: {
+      GOOGLE_CLIENT_ID: 'browser-tests.apps.googleusercontent.com',
       NODE_ENV: 'test', PORT: '4173', DATABASE_URL: databaseUrl, CLIENT_URL: baseURL,
       // Isolate the test build from local split-origin settings in .env.
       VITE_SOCKET_URL: baseURL, REACT_APP_SOCKET_URL: baseURL,

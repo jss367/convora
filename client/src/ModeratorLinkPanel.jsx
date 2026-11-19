@@ -1,10 +1,10 @@
 import React, { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import PropTypes from 'prop-types';
+import { sha256Hex } from './sha256.mjs';
 
-// Moderator rights live in a token in this browser's localStorage, so the
-// moderator link is the only way back in from another device or after site
-// data is cleared. This file owns the prompt to save that link: a one-time
+// The moderator link provides account-free access on another device or after
+// site data is cleared. This file owns the prompt to save that link: a one-time
 // panel shown to the creator right after creating a discussion, and a small
 // reminder that stays until the link has been copied once in this browser.
 
@@ -20,7 +20,8 @@ export const moderatorLinkPromptState = slug => ({ moderatorLinkPrompt: slug });
 // reminder just falls back to in-memory state for this page view.
 function readSaved(slug, token) {
     try {
-        return !!token && localStorage.getItem(`${SAVED_KEY_PREFIX}${slug}`) === token;
+        const saved = localStorage.getItem(`${SAVED_KEY_PREFIX}${slug}`);
+        return !!token && (saved === token || saved === sha256Hex(new TextEncoder().encode(token)));
     } catch {
         return false;
     }
@@ -28,7 +29,7 @@ function readSaved(slug, token) {
 
 function writeSaved(slug, token) {
     try {
-        localStorage.setItem(`${SAVED_KEY_PREFIX}${slug}`, token);
+        localStorage.setItem(`${SAVED_KEY_PREFIX}${slug}`, sha256Hex(new TextEncoder().encode(token)));
     } catch (error) {
         console.warn('Failed to remember that the moderator link was saved:', error);
     }
@@ -129,8 +130,8 @@ const ModeratorLinkPanel = ({ prompt, adminUrl, onCopy }) => {
         >
             <h2 id={titleId} className="mb-1 text-base font-semibold">Save your moderator link</h2>
             <p className="mb-3">
-                You&apos;ll need it to manage this discussion from another device or after clearing
-                this browser&apos;s data. Keep it private: anyone with this link becomes a moderator.
+                Use this link to moderate from another device or after clearing this browser&apos;s data.
+                Keep it private because anyone with the link becomes a moderator.
             </p>
             {mode === 'manual' && (
                 <div className="mb-3">
