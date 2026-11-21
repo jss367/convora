@@ -21,6 +21,7 @@ const CASES = {
     'By November 21, 2027, what chance is there that an AI system will be capable of taking control of the U.S. government against its leaders’ wishes, whether or not it tries?',
     'What chance is there of rain?',
     'By what year will fusion power be commercial?',
+    'Which year would suit you most?',
     'In how many years will this be solved?',
     'By 2030, how likely is a crewed Mars landing?',
     'We ship in June - how confident are you?',
@@ -33,6 +34,12 @@ const CASES = {
     '1. How many teams should we have?',
     'How   likely\tis it?',
     'What’s the probability of rain?',
+  ],
+  'Multiple Choice': [
+    'Which would reassure you most about a powerful AI?',
+    'Which would reassure you most',
+    'Which would you prefer?',
+    'Which option do you prefer?',
   ],
   'Yes/No': [
     'Will it rain tomorrow?',
@@ -56,6 +63,7 @@ const CASES = {
     'What are some ways to improve onboarding?',
     'What are good names for the new product?',
     'What should we build next?',
+    'What would reassure you most about a powerful AI?',
     'What else could we try?',
     'How might we reduce churn?',
     'How can we make meetings shorter?',
