@@ -32,9 +32,9 @@ and can change or undo it like an Agreement or Yes/No vote.
   option left empty is ignored, so you don't have to remove it.
 - Results show one bar per option, in the order you wrote them, with each
   option's count and share of the vote.
-- Like every question, a moderator can edit it only until someone answers, so
-  the options can't change under people who already voted. To change them after
-  that, delete the question and ask it again.
+- A moderator can edit a question until it receives an answer or a private note.
+  To change the options after that, ask a new question so the original votes
+  and notes keep their context.
 - Multiple choice answers are categories, not a scale, so they aren't counted
   in the agreement sorts, the consensus and divisive rankings, or opinion
   groups. They do appear in the summary, exports, the room display and opinion

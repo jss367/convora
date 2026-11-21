@@ -66,7 +66,8 @@ const QuestionEditor = ({ question, onSave, onCancel, draft, onDraftChange }) =>
                 setError(
                     resp && resp.reason === 'has_responses'
                         ? 'This question already has responses and can no longer be edited.'
-                        : 'Failed to save changes. Please try again.'
+                        : resp?.reason === 'has_notes' ? 'This question has private participant notes and can no longer be edited.'
+                            : 'Failed to save changes. Please try again.'
                 );
             }
             // On success the parent unmounts this editor; nothing more to do here.

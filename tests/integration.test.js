@@ -5366,6 +5366,28 @@ test('duplicating a room leaves pending suggestions behind but keeps published s
   assert.deepEqual(await questions(slug), [draft, { text: 'Pending suggestion', queued: true }, published]);
 });
 
+test('a private note prevents edits before the first vote and retains its original question', async () => {
+  const { id, slug, adminToken } = (await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('edit-after-note') })).body;
+  const moderator = await joinAsModerator(slug, adminToken);
+  const { socket: participant } = await joinAs(slug, 'note-author');
+  try {
+    for (const [kind, body] of [['clarification', 'Which day?'], ['suggestion', 'Thursday']]) {
+      const { rows: [question] } = await pool.query(`INSERT INTO questions (discussion_id, text, type, options, tools)
+        VALUES ($1, 'When?', 'Multiple Choice', $2, $3) RETURNING id`, [id, JSON.stringify(['Monday', 'Tuesday']), [kind]]);
+      assert.deepEqual(await emitWithAck(participant, 'submitQuestionNote', slug, question.id, { kind, body }), { ok: true });
+      assert.deepEqual(await emitWithAck(moderator, 'editQuestion', slug, question.id, { text: 'How many?', type: 'Numerical', minValue: 0, maxValue: 10, tools: [] }, adminToken),
+        { updated: false, reason: 'has_notes' });
+      const saved = (await pool.query('SELECT text, type, tools FROM questions WHERE id = $1', [question.id])).rows[0];
+      assert.deepEqual(saved, { text: 'When?', type: 'Multiple Choice', tools: [kind] });
+      const { notes } = await emitWithAck(moderator, 'getQuestionNotes', slug, question.id, { token: adminToken });
+      assert.deepEqual(notes.map(note => [note.kind, note.body]), [[kind, body]]);
+    }
+  } finally {
+    moderator.disconnect();
+    participant.disconnect();
+  }
+});
+
 test('posting approval migration preserves old rooms and moderator drafts', async () => {
   const client = await pool.connect();
   try {

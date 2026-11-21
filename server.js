@@ -1388,8 +1388,11 @@ io.on('connection', (socket) => {
           [questionId, discussionId]
         );
         if (existing.rows.length === 0) return 'not_found';
-        const responses = await client.query('SELECT 1 FROM votes WHERE question_id = $1 LIMIT 1', [questionId]);
-        if (responses.rows.length > 0) return 'has_responses';
+        const { rows: [participation] } = await client.query(`SELECT
+          EXISTS (SELECT 1 FROM votes WHERE question_id = $1) AS answered,
+          EXISTS (SELECT 1 FROM question_tool_notes WHERE question_id = $1) AS noted`, [questionId]);
+        if (participation.answered) return 'has_responses';
+        if (participation.noted) return 'has_notes';
         if (!normalizedUpdates) return 'invalid';
         await client.query(
           `UPDATE questions SET text = $1, type = $2, min_value = $3, max_value = $4, options = $5, max_responses = $7, show_attribution = $8
@@ -1414,6 +1417,8 @@ io.on('connection', (socket) => {
       });
       if (outcome === 'has_responses') {
         socket.emit('error', { message: 'This question already has responses and can no longer be edited.' });
+      } else if (outcome === 'has_notes') {
+        socket.emit('error', { message: 'This question has private participant notes and can no longer be edited.' });
       }
       if (outcome !== 'updated') {
         reply({ updated: false, reason: outcome });
