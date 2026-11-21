@@ -1,6 +1,6 @@
 const { test, expect } = require('./lifecycle-fixtures.cjs');
 
-const interestButton = (page, text) => page.getByRole('button', { name: `Interested in "${text}"`, exact: true });
+const interestButton = (page, text) => page.getByRole('button', { name: `Upvote "${text}"`, exact: true });
 const questionOrder = page => page.getByRole('heading', { level: 2 }).allTextContents();
 
 test('participants mark questions as interesting and sort the list by that count', async ({ page, browser, rooms }) => {
@@ -13,12 +13,12 @@ test('participants mark questions as interesting and sort the list by that count
   try {
     await page.goto(`/discussion/${room.slug}`);
     await expect(interestButton(page, 'Older question')).toHaveAttribute('aria-pressed', 'false');
-    await expect(interestButton(page, 'Older question')).toHaveAccessibleDescription('0 interested');
+    await expect(interestButton(page, 'Older question')).toHaveAccessibleDescription('0 upvotes');
     expect(await questionOrder(page)).toEqual(['Newer question', 'Older question']);
 
     await interestButton(page, 'Older question').click();
     await expect(interestButton(page, 'Older question')).toHaveAttribute('aria-pressed', 'true');
-    await expect(interestButton(page, 'Older question')).toHaveAccessibleDescription('1 interested');
+    await expect(interestButton(page, 'Older question')).toHaveAccessibleDescription('1 upvote');
     // The default order does not change until the participant picks the sort.
     expect(await questionOrder(page)).toEqual(['Newer question', 'Older question']);
     await page.getByRole('combobox').filter({ has: page.locator('option[value="Most Interesting"]') }).selectOption('Most Interesting');
@@ -27,18 +27,18 @@ test('participants mark questions as interesting and sort the list by that count
     // Another participant sees the count, but not as their own mark.
     const other = await context.newPage();
     await other.goto(page.url());
-    await expect(interestButton(other, 'Older question')).toHaveAccessibleDescription('1 interested');
+    await expect(interestButton(other, 'Older question')).toHaveAccessibleDescription('1 upvote');
     await expect(interestButton(other, 'Older question')).toHaveAttribute('aria-pressed', 'false');
     await interestButton(other, 'Newer question').click();
     await interestButton(other, 'Older question').click();
-    await expect(interestButton(page, 'Older question')).toHaveAccessibleDescription('2 interested');
-    await expect(interestButton(page, 'Newer question')).toHaveAccessibleDescription('1 interested');
+    await expect(interestButton(page, 'Older question')).toHaveAccessibleDescription('2 upvotes');
+    await expect(interestButton(page, 'Newer question')).toHaveAccessibleDescription('1 upvote');
     await expect(interestButton(page, 'Newer question')).toHaveAttribute('aria-pressed', 'false');
 
     // Removing a mark reorders the list for everyone sorting by interest.
     await interestButton(page, 'Older question').click();
     await expect(interestButton(page, 'Older question')).toHaveAttribute('aria-pressed', 'false');
-    await expect(interestButton(page, 'Older question')).toHaveAccessibleDescription('1 interested');
+    await expect(interestButton(page, 'Older question')).toHaveAccessibleDescription('1 upvote');
     await interestButton(other, 'Older question').click();
     await expect.poll(() => questionOrder(page)).toEqual(['Newer question', 'Older question']);
 
@@ -57,6 +57,33 @@ test('participants mark questions as interesting and sort the list by that count
   }
 });
 
+test('a moderator can enable and hide question downvotes live', async ({ page, browser, rooms }) => {
+  const room = await rooms.create('Downvote');
+  const participant = await browser.newPage();
+  try {
+    await page.goto(`/discussion/${room.slug}?admin=${room.adminToken}`);
+    await participant.goto(`/discussion/${room.slug}`);
+    const toggle = page.getByRole('switch', { name: 'Allow question downvotes' });
+    const up = interestButton(participant, 'Downvote question');
+    const down = participant.getByRole('button', { name: 'Downvote "Downvote question"' });
+    await expect(toggle).toHaveAttribute('aria-checked', 'false');
+    await up.click();
+    await expect(down).toHaveCount(0);
+    await toggle.click();
+    await down.click();
+    await expect(up).toHaveAccessibleDescription('0 upvotes');
+    await expect(down).toHaveAccessibleDescription('1 downvote');
+    await participant.reload();
+    await expect(down).toHaveAttribute('aria-pressed', 'true');
+    await toggle.click();
+    await expect(down).toHaveCount(0);
+    await toggle.click();
+    await expect(down).toHaveAttribute('aria-pressed', 'true');
+    await down.click();
+    await expect(down).toHaveAccessibleDescription('0 downvotes');
+  } finally { await participant.close(); }
+});
+
 for (const role of ['participant', 'moderator']) {
   test(`the interest button leaves a long question readable on a phone for a ${role}`, async ({ page, rooms }) => {
     await page.setViewportSize({ width: 390, height: 664 });
@@ -64,7 +91,7 @@ for (const role of ['participant', 'moderator']) {
     await page.goto(`/discussion/${room.slug}${role === 'moderator' ? `?admin=${room.adminToken}` : ''}`);
     const heading = page.getByRole('heading', { level: 2 });
     await expect(heading).toBeVisible();
-    const button = page.getByRole('button', { name: /^Interested in/ });
+    const button = page.getByRole('button', { name: /^Upvote/ });
     await expect(button).toBeVisible();
     if (role === 'moderator') await expect(page.getByRole('button', { name: 'Pin', exact: true })).toBeVisible();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);

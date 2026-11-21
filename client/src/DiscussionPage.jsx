@@ -93,6 +93,10 @@ const DiscussionPage = () => {
     const [showDeleteModal, setShowDeleteModal] = useState(false);
     const [deleting, setDeleting] = useState(false);
     const [deleteError, setDeleteError] = useState('');
+    const [clearTarget, setClearTarget] = useState(null);
+    const [clearing, setClearing] = useState(false);
+    const [clearError, setClearError] = useState('');
+    const [clearedRoom, setClearedRoom] = useState(null);
     const [showDuplicateModal, setShowDuplicateModal] = useState(false);
     const [showShareModal, setShowShareModal] = useState(false);
     const [showActionsMenu, setShowActionsMenu] = useState(false);
@@ -114,7 +118,7 @@ const DiscussionPage = () => {
     const [shortLinkCopied, setShortLinkCopied] = useState(false);
     const [discussionState, setDiscussionState] = useState({
         locked: false, moderatorOnly: false, hasModerator: false, theme: DEFAULT_THEME,
-        reactionsEnabled: false, reactionsVisible: true, commentsEnabled: false,
+        reactionsEnabled: false, reactionsVisible: true, commentsEnabled: false, questionDownvotesEnabled: false,
         reactionKeys: ALL_REACTION_KEYS,
     });
     // Modal panels: Escape closes, focus is kept inside while open and handed
@@ -155,11 +159,11 @@ const DiscussionPage = () => {
     const {
         identity, userId, displayName, effectivePseudonym, pseudonymReserved,
         shufflePending, selfHandle, ownedVoteIds, ownedCommentIds,
-        interestedQuestionIds, interestReady, isMyVote, handlePseudonymSync, handleRegeneratePseudonym,
+        interestedQuestionIds, downvotedQuestionIds, interestReady, isMyVote, handlePseudonymSync, handleRegeneratePseudonym,
         handleSelectNameMode, handleCustomNameChange,
     } = useParticipantIdentity(socket, { topic, discussionSlug, discussionId: discussion?.id, questions });
     const questionInterest = useQuestionInterest(socket, {
-        discussionSlug, userId, questions, interestedQuestionIds, interestReady,
+        discussionSlug, userId, questions, interestedQuestionIds, downvotedQuestionIds, interestReady,
     });
     const {
         adminToken, setAdminToken, canDemote, setCanDemote,
@@ -173,6 +177,8 @@ const DiscussionPage = () => {
     const moderatorLink = useModeratorLinkPrompt(discussionSlug, adminToken);
     useEffect(() => { setAdminLinkCopied(false); }, [discussionSlug, adminToken]);
     const isAdmin = !!adminToken;
+    const showClearModal = isAdmin && clearTarget === discussionSlug;
+    const clearDialogRef = useModalDialog(showClearModal, () => { if (!clearing) setClearTarget(null); }, actionsMenuButtonRef);
     const composer = useQuestionComposer({ socket, discussionSlug, adminToken, setError });
     const { onQuestionsLoaded, onSimilarQuestion } = composer;
     const { locked, moderatorOnly } = discussionState;
@@ -619,6 +625,25 @@ const DiscussionPage = () => {
         socket.on('discussionDeleted', onDeleted);
         return () => socket.off('discussionDeleted', onDeleted);
     }, [socket, discussionSlug, leaveDeletedDiscussion]);
+
+    const handleClearResponses = async () => {
+        if (!showClearModal || clearing) return;
+        setClearing(true);
+        setClearError('');
+        try {
+            const response = await fetch(`/api/discussions/${encodeURIComponent(clearTarget)}/responses`, {
+                method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ adminToken }),
+            });
+            if (!response.ok) throw new Error((await response.json()).error || 'Could not clear votes and responses.');
+            const refreshed = response.status === 204 || (await response.json()).refreshed === true;
+            setClearedRoom({ slug: clearTarget, refreshed });
+            setClearTarget(null);
+        } catch (error) {
+            setClearError(error.message || 'Could not confirm that votes and responses were cleared.');
+        } finally {
+            setClearing(false);
+        }
+    };
 
     const handleDeleteDiscussion = async () => {
         if (deleting) return;
@@ -1345,6 +1370,13 @@ const DiscussionPage = () => {
                                 >
                                     Duplicate Discussion
                                 </button>
+                                {isAdmin && (
+                                    <button type="button" role="menuitem" onClick={() => {
+                                        setShowActionsMenu(false); setClearError(''); setClearedRoom(null); setClearTarget(discussionSlug);
+                                    }} className="block w-full text-left px-4 py-2 text-sm text-red-700 hover:bg-red-50">
+                                        Clear votes and responses
+                                    </button>
+                                )}
                                 {canDemote && (
                                     <button
                                         type="button"
@@ -1391,6 +1423,23 @@ const DiscussionPage = () => {
                     }}
                     onDisplay={isAdmin ? (settings) => socket.emit('setDisplaySettings', discussionSlug, settings, adminToken) : undefined}
                 />
+            )}
+
+            {clearedRoom?.slug === discussionSlug && <p role="status">{clearedRoom.refreshed
+                ? 'Votes and responses cleared. Your questions are still here.'
+                : 'Votes and responses were cleared, but the live view did not update. Ask anyone still seeing old responses to reload. Do not clear again.'}</p>}
+            {showClearModal && (
+                <div className="fixed inset-0 z-50 bg-gray-600 bg-opacity-50 flex items-center justify-center p-4">
+                    <div ref={clearDialogRef} role="dialog" aria-modal="true" aria-labelledby="clear-title" aria-describedby="clear-description" tabIndex={-1} className="bg-white rounded-lg shadow-xl p-6 w-full max-w-md">
+                        <h2 id="clear-title" className="text-xl font-bold mb-4">Clear votes and responses?</h2>
+                        <p id="clear-description" className="text-gray-700 mb-4">This permanently removes all answers, interest marks, and response comments, ratings, and reactions from “{discussionTitle}”. Your questions, settings, saved snapshots, and link stay the same. This cannot be undone.</p>
+                        {clearError && <p role="alert" className="text-red-700 mb-4">{clearError}</p>}
+                        <div className="flex justify-end gap-2">
+                            <button type="button" data-autofocus disabled={clearing} onClick={() => setClearTarget(null)} className="px-4 py-2 rounded bg-gray-200 disabled:opacity-50">Cancel</button>
+                            <button type="button" disabled={clearing} onClick={handleClearResponses} className="px-4 py-2 rounded bg-red-700 text-white disabled:opacity-50">{clearing ? 'Clearing…' : 'Clear votes and responses'}</button>
+                        </div>
+                    </div>
+                </div>
             )}
 
             {showDeleteModal && (
@@ -1828,8 +1877,8 @@ const DiscussionPage = () => {
                 // it has votes, its wording is locked in (matches the server guard).
                 const hasResponses = (question.votes?.length || 0) > 0;
                 const isEditing = editingQuestionId === question.id;
-                const interestCount = question.interestCount || 0;
-                const isInterested = interestedQuestionIds.has(question.id);
+                const questionVotes = [{ name: 'Upvote', symbol: '▲', direction: true, pressed: interestedQuestionIds.has(question.id), count: question.interestCount || 0 }];
+                if (discussionState.questionDownvotesEnabled) questionVotes.push({ name: 'Downvote', symbol: '▼', direction: 'down', pressed: downvotedQuestionIds.has(question.id), count: question.downvoteCount || 0 });
                 const interestPending = questionInterest.pending.has(question.id);
                 const hiddenOnDisplay = discussionState.displayHiddenQuestionIds?.includes(question.id);
                 // Whether the room display is showing this question on its own: its
@@ -1857,28 +1906,26 @@ const DiscussionPage = () => {
                         title instead of squeezing it into a thin column. */}
                     <div className="flex flex-wrap justify-between items-start gap-x-4 gap-y-2 mb-4">
                         <div className="flex items-start gap-3 min-w-0 flex-1 basis-64">
-                            <button
+                            <div className="shrink-0 flex flex-col gap-1">
+                            {questionVotes.map(({ name, symbol, direction, pressed, count }) => <button
+                                key={name}
                                 type="button"
-                                onClick={() => handleToggleInterest(question.id)}
+                                onClick={() => handleToggleInterest(question.id, direction)}
                                 disabled={locked || !questionInterest.ready || interestPending}
                                 aria-busy={interestPending}
-                                aria-pressed={isInterested}
-                                aria-label={`Interested in "${question.text}"`}
-                                aria-describedby={`interest-count-${question.id}`}
-                                title={locked
-                                    ? 'Voting is closed'
-                                    : isInterested ? 'Remove your interest in this question' : 'I want to discuss this question'}
-                                className={`shrink-0 flex flex-col items-center px-2 py-1 rounded-md border transition duration-200 ${isInterested
+                                aria-pressed={pressed}
+                                aria-label={`${name} "${question.text}"`}
+                                aria-describedby={`${name}-count-${question.id}`}
+                                className={`flex flex-col items-center px-2 py-1 rounded-md border transition duration-200 ${pressed
                                     ? 'bg-primary text-white border-primary'
                                     : 'bg-white text-gray-600 border-gray-300 hover:border-primary'} ${locked ? 'opacity-50 cursor-not-allowed' : ''}`}
                             >
-                                <span aria-hidden="true" className="leading-none">▲</span>
-                                {/* The button's name stays the same as the count
-                                    changes; the count is read as its description. */}
-                                <span id={`interest-count-${question.id}`} className="text-xs font-semibold">
-                                    {interestCount}<span className="sr-only"> interested</span>
+                                <span aria-hidden="true" className="leading-none">{symbol}</span>
+                                <span id={`${name}-count-${question.id}`} className="text-xs font-semibold">
+                                    {count}<span className="sr-only"> {name.toLowerCase()}{count === 1 ? '' : 's'}</span>
                                 </span>
-                            </button>
+                            </button>)}
+                            </div>
                             <h2 className="text-xl font-semibold min-w-0 break-words">
                                 {question.pinned && <span className="mr-1" title="Pinned">📌</span>}
                                 {question.text}

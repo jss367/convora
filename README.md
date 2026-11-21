@@ -28,6 +28,8 @@ and can change or undo it like an Agreement or Yes/No vote.
 
 - A question has 2 to 6 options of up to 100 characters each. Options must be
   different from each other, ignoring case and extra spaces.
+- Press Enter in an option to move to the next one, adding it if needed. An
+  option left empty is ignored, so you don't have to remove it.
 - Results show one bar per option, in the order you wrote them, with each
   option's count and share of the vote.
 - Like every question, a moderator can edit it only until someone answers, so
@@ -44,7 +46,12 @@ Every question has a ▲ button with a count next to its title. Press it to say
 you find the question interesting, and press it again to take that back. Each
 participant counts once per question, and nobody can see who pressed it.
 
-To rank the list by that count, choose **Most Interesting** in the sort menu
+Moderators can turn on **Allow question downvotes** for a discussion. This adds
+a ▼ button with its own count. Press either arrow to switch your vote, or press
+the selected arrow to remove it. Turning downvotes off hides existing downvotes
+without deleting them.
+
+To rank the list by upvotes, choose **Most Interesting** in the sort menu
 above the questions. Questions with the same count stay newest first, and
 pinned questions stay on top. The sort is each viewer's own choice, so it does
 not change what other people see. Locking a discussion closes these marks along
@@ -74,6 +81,14 @@ discussion publishes nothing until it is unlocked.
 When a moderator duplicates a discussion, the copy keeps its queued questions
 queued, so a prepared agenda can be reused. A copy made by anyone else leaves
 the queued questions out.
+
+## Clear a test run without changing the link
+
+As a moderator, open **More → Clear votes and responses** and confirm. This
+removes poll votes, written responses, question interest marks, and all votes,
+comments, ratings, and reactions attached to responses. Published and queued
+questions, room settings, saved opinion snapshots, and links stay unchanged.
+The reset cannot be undone. An unlocked room accepts fresh answers immediately.
 
 ## Discussions are unlisted unless you list them
 

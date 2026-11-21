@@ -82,15 +82,16 @@ export function useParticipantIdentity(socket, { topic, discussionSlug, discussi
     const [ownedVoteIds, setOwnedVoteIds] = useState(() => new Set());
     const [upvotedVoteIds, setUpvotedVoteIds] = useState(() => new Set());
     const [ownedCommentIds, setOwnedCommentIds] = useState(() => new Set());
-    const [interestOwnership, setInterestOwnership] = useState(() => ({ ids: new Set(), questions: null, userId: null }));
+    const [interestOwnership, setInterestOwnership] = useState(() => ({ ids: new Set(), down: new Set(), questions: null, userId: null }));
     const interestedQuestionIds = interestOwnership.ids;
+    const downvotedQuestionIds = interestOwnership.down;
     const interestReady = interestOwnership.questions === questions && interestOwnership.userId === userId;
     useEffect(() => {
         if (!userId) {
             setOwnedVoteIds(new Set());
             setUpvotedVoteIds(new Set());
             setOwnedCommentIds(new Set());
-            setInterestOwnership({ ids: new Set(), questions: null, userId: null });
+            setInterestOwnership({ ids: new Set(), down: new Set(), questions: null, userId: null });
             return undefined;
         }
         let cancelled = false;
@@ -99,10 +100,12 @@ export function useParticipantIdentity(socket, { topic, discussionSlug, discussi
             const upvoted = new Set();
             const ownedComments = new Set();
             const interested = new Set();
+            const down = new Set();
             const interestChecks = (questions || []).map(async (q) => {
-                if (!Array.isArray(q?.interestVoterTokens) || q.interestVoterTokens.length === 0) return;
+                if (!q?.interestVoterTokens?.length && !q?.downvoterTokens?.length) return;
                 const myToken = await ownerToken(`question:${q.id}`, userId);
-                if (myToken && q.interestVoterTokens.includes(myToken)) interested.add(q.id);
+                if (myToken && q.interestVoterTokens?.includes(myToken)) interested.add(q.id);
+                if (myToken && q.downvoterTokens?.includes(myToken)) down.add(q.id);
             });
             const allVotes = (questions || []).flatMap(q =>
                 Array.isArray(q.votes) ? q.votes : []
@@ -127,7 +130,7 @@ export function useParticipantIdentity(socket, { topic, discussionSlug, discussi
             }));
             await Promise.all(interestChecks);
             if (!cancelled) {
-                setInterestOwnership({ ids: interested, questions, userId });
+                setInterestOwnership({ ids: interested, down, questions, userId });
                 setOwnedVoteIds(owned);
                 setUpvotedVoteIds(upvoted);
                 setOwnedCommentIds(ownedComments);
@@ -260,7 +263,7 @@ export function useParticipantIdentity(socket, { topic, discussionSlug, discussi
     return {
         identity, userId, displayName, effectivePseudonym, pseudonymReserved,
         shufflePending, selfHandle, ownedVoteIds, upvotedVoteIds, ownedCommentIds,
-        interestedQuestionIds, interestReady, isMyVote, handlePseudonymSync, handleRegeneratePseudonym,
+        interestedQuestionIds, downvotedQuestionIds, interestReady, isMyVote, handlePseudonymSync, handleRegeneratePseudonym,
         handleSelectNameMode, handleCustomNameChange,
     };
 }
