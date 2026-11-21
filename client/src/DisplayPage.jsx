@@ -10,7 +10,7 @@ import useFullscreen from './hooks/useFullscreen';
 import useIdle from './hooks/useIdle';
 import useScreenWakeLock from './hooks/useScreenWakeLock';
 import {
-    AgreementChart, MultipleChoiceChart, NumericalChart, ResponseCountOnly, YesNoChart,
+    AgreementChart, MultipleChoiceChart, NumericalChart, ResponseCount, ResponseCountOnly, YesNoChart,
 } from './display/DisplayCharts';
 import DisplayComparison from './display/DisplayComparison';
 import { EPISTEMIC_REACTIONS, QuestionTypes } from './questions/config';
@@ -67,7 +67,7 @@ const WrittenResponses = ({ question, reactionKeys, focus }) => {
     const showReactions = question.reactionsEnabled && question.reactionsVisible;
     const shown = votes.slice(0, focus ? MAX_FOCUS_WRITTEN_RESPONSES : MAX_WRITTEN_RESPONSES);
     if (votes.length === 0) {
-        return <p className={`${focus ? 'text-4xl' : 'text-2xl'} text-gray-500`}>No responses yet</p>;
+        return <ResponseCount count={0} focus={focus} />;
     }
     return (
         <div>
@@ -118,12 +118,6 @@ WrittenResponses.propTypes = {
     focus: PropTypes.bool,
 };
 
-const countLabel = question => {
-    if (TALLIED_TYPES.includes(question.type)) return plural(responseCountOf(question), 'response', 'responses');
-    const count = (question.votes || []).length;
-    return plural(count, 'response', 'responses');
-};
-
 const QuestionCard = ({ question, reactionKeys, focus }) => (
     <article
         className={`flex flex-col rounded-2xl bg-white shadow-lg ring-1 ring-black/5 ${focus ? 'p-10' : 'p-7'}`}
@@ -134,10 +128,9 @@ const QuestionCard = ({ question, reactionKeys, focus }) => (
                 {question.pinned && <span aria-label="Pinned" className="mr-3">📌</span>}
                 {formatPrompt(question.text)}
             </h2>
-            {/* With results withheld, the count is the whole chart below. */}
-            {!question.resultsHidden && (
+            {!question.resultsHidden && responseCountOf(question) > 0 && (
                 <span className={`shrink-0 rounded-full bg-gray-100 font-semibold tabular-nums text-gray-700 ${focus ? 'px-5 py-2 text-3xl' : 'px-4 py-1 text-xl'}`}>
-                    {countLabel(question)}
+                    {plural(responseCountOf(question), 'response', 'responses')}
                 </span>
             )}
         </header>

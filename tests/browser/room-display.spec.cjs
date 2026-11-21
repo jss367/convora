@@ -117,14 +117,18 @@ test('the room display shows response counts but no results until the moderator 
 
 test('the room display shows written responses and the discussion title', async ({ page, rooms }) => {
   const room = await rooms.create('Written display');
+  await page.goto(`/discussion/${room.slug}/display`);
+  const question = page.getByTestId('display-question');
+  await expect(question.getByText('0 responses', { exact: true })).toBeVisible();
+  await expect(question.locator('header')).not.toContainText('0 responses');
   await rooms.pool.query(
     `INSERT INTO votes (question_id, value, user_id)
      SELECT id, 'A response everyone can read', 'seed-a' FROM questions WHERE discussion_id = $1`, [room.id]
   );
-  await page.goto(`/discussion/${room.slug}/display`);
+  await page.reload();
   await expect(page.getByRole('heading', { level: 1 })).toHaveText(room.topic);
   await expect(page.getByText('A response everyone can read', { exact: true })).toBeVisible();
-  await expect(page.getByText('1 response', { exact: true })).toBeVisible();
+  await expect(question.locator('header').getByText('1 response', { exact: true })).toBeVisible();
   await expect(page.getByText('0 people here now', { exact: true })).toBeVisible();
 });
 
@@ -453,7 +457,8 @@ test('the room display lists Multiple Choice options while results are hidden, t
     // screen, each at zero, so the room knows what it is choosing between.
     await rooms.pool.query("UPDATE discussions SET results_visibility = 'always' WHERE id = $1", [room.id]);
     await display.goto(`/discussion/${room.slug}/display`);
-    await expect(question.getByText('No responses yet', { exact: true })).toBeVisible();
+    await expect(question.getByText('0 responses', { exact: true })).toBeVisible();
+    await expect(question.locator('header')).not.toContainText('0 responses');
     await expect(question.getByTestId('display-chart').getByLabel('Higher: 0, 0%')).toBeVisible();
     await expect(question.getByTestId('display-chart').getByLabel('Lower: 0, 0%')).toBeVisible();
     await expect(question.getByTestId('display-chart').getByLabel('About the same: 0, 0%')).toBeVisible();
