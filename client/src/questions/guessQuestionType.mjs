@@ -8,6 +8,7 @@ const { AGREEMENT, YES_NO, NUMERICAL, OPEN_ENDED } = QuestionTypes;
 
 const AUXILIARY = '(?:is|are|was|were|do|does|did|will|would|should|can|could|has|have)';
 const WH_WORD = '(?:why|how|what|which|who|whose|where|when)';
+const PROPOSED_DESCRIPTION = /^(?:can|could|would) you (?:please )?describe .+? as (?:(?:(?:very|quite|too|rather|more|less|mostly|highly) )?[a-z][\w-]*(?: to \w+(?: \w+)*)?|a (?:success|failure|strength|weakness|problem|priority))\s*[?.!"')\]]*$/;
 
 // First match wins, so the order is the precedence: "how likely" has to be
 // claimed as Numerical before the general "how ..." rule calls it Open Ended,
@@ -40,7 +41,7 @@ const RULES = [
     { type: OPEN_ENDED, pattern: new RegExp(`^${WH_WORD}(?:'s|'re| ${AUXILIARY}\\b)`) },
     { type: OPEN_ENDED, pattern: new RegExp(`^${WH_WORD}\\b`), questionOnly: true },
     { type: OPEN_ENDED, pattern: /^(?:describe|explain|elaborate on|tell (?:us|me))\b/ },
-    { type: YES_NO, pattern: new RegExp(`^(?:can|could|would) you (?:please )?describe (?!${WH_WORD}\\b).+? as \\S`) },
+    { type: YES_NO, pattern: PROPOSED_DESCRIPTION },
     { type: OPEN_ENDED, pattern: /^(?:can|could|would) you (?:please )?(?:describe|explain|elaborate on)\b/ },
 
     // The trailing space keeps a half-typed word from matching: "Is" could

@@ -145,6 +145,10 @@ test('distinguishes a proposed characterization from a request for a description
   assert.equal(guessQuestionType('Would you describe your experience as positive?'), 'Yes/No');
   assert.equal(guessQuestionType('Would you describe meetings as productive?'), 'Yes/No');
   assert.equal(guessQuestionType('Would you describe Convora as easy to use?'), 'Yes/No');
+  assert.equal(guessQuestionType('Would you describe what you do as stressful?'), 'Yes/No');
+  assert.equal(guessQuestionType('Would you describe the pilot as a success?'), 'Yes/No');
+  assert.equal(guessQuestionType('Could you describe your responsibilities as a manager?'), 'Open Ended');
+  assert.equal(guessQuestionType('Could you describe the situation as it was?'), 'Open Ended');
   assert.equal(guessQuestionType('Could you describe how meetings changed as the team grew?'), 'Open Ended');
   assert.equal(guessQuestionType('Would you describe your experience?'), 'Open Ended');
   assert.equal(guessQuestionType('Would you describe your experience as positive, and why?'), 'Open Ended');
