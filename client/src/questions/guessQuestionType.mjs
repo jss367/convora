@@ -8,28 +8,41 @@ const { AGREEMENT, YES_NO, NUMERICAL, MULTIPLE_CHOICE, OPEN_ENDED } = QuestionTy
 
 const AUXILIARY = '(?:is|are|was|were|do|does|did|will|would|should|can|could|has|have)';
 const WH_WORD = '(?:why|how|what|which|who|whose|where|when)';
-const POLITE_REQUEST = '^(?:can|could|would) you (?:(?:please|briefly|quickly|kindly|just) )*';
-const INTENSIFIER = '(?:(?:very|quite|too|rather|more|less|mostly|highly|really|extremely|somewhat|fairly|pretty) )?';
-const ADJECTIVE_COMPLEMENT = "(?: (?:to|than|for|in|with|at|on) [\\w'-]+(?: [\\w'-]+)*)?";
-// Common adjectives that end in -ly, so they are not taken for manner adverbs.
-const LY_ADJECTIVE = '(?:[\\w-]*friendly|costly|timely|lovely|likely|unlikely|lonely|ugly|silly|early|orderly|elderly|lively|deadly|daily|weekly|monthly|yearly|holy|jolly|surly|unruly|chilly|smelly)';
-// Manner adverbs ("as clearly", "as clearly and completely") describe how to
-// write the description, not what it says, so they are not characterizations.
-// An -ly adverb that modifies a following adjective ("as financially
-// sustainable") still proposes one.
-const NOT_MANNER_ADVERB = `(?!(?!${LY_ADJECTIVE}\\b)[a-z][\\w-]*ly\\b)`;
-const ADVERB_MODIFIER = "(?:[a-z][\\w-]*ly (?!(?:and|or|nor|but|as|so|to|than|for|in|with|at|on)\\b))?";
-const DESCRIPTIVE_ADJECTIVE = `${INTENSIFIER}${ADVERB_MODIFIER}${NOT_MANNER_ADVERB}[a-z][\\w-]*${ADJECTIVE_COMPLEMENT}`;
-const NOMINAL_DESCRIPTION = /a (?:success|failure|strength|weakness|problem|priority)(?: (?:for|with|of|in|to) [\w'-]+(?: [\w'-]+)*)?/;
-const PROPOSED_DESCRIPTION = new RegExp(`${POLITE_REQUEST}describe .+? as (?:not )?(?:${DESCRIPTIVE_ADJECTIVE}(?: (?:and|or) (?:not )?${DESCRIPTIVE_ADJECTIVE})*|${NOMINAL_DESCRIPTION.source})\\s*[?.!"')\\]]*$`);
-// Explicit follow-up requests that keep a proposed description open-ended:
-// common request verbs, response instructions ("and respond with details"),
-// or any word followed by a question word ("and discuss why", "and show how").
-const FOLLOW_UP_REQUEST = "(?:respond|reply|answer|write|explain|elaborate on|expand on|tell (?:us|me)|why|provide|give|share|say|list|add|include|discuss|outline|describe|detail|clarify|justify|specify|summari[sz]e|mention|comment|note|identify|suggest|walk (?:us|me) through|[\\w'-]+ (?:why|how|what))";
-const TELL_OBJECT = '(?:a|an|the|your|some|any|something|anything|one|two|three|four|five|several|\\d+)';
-const TELL_REQUEST = `tell (?:us|me) (?:about|more|${TELL_OBJECT}|${WH_WORD})`;
-const SELECTION_CONDITION = /(?:you|we|i|they|someone|one) (?:could |can |had to |have to |were to |must |only )?(?:choose|pick|select|name)\b/;
-const CONDITIONAL_DISCLOSURE = new RegExp(`(?=^would )${POLITE_REQUEST}tell (?:us|me) ${TELL_OBJECT}\\b.*? if (?!${SELECTION_CONDITION.source})\\S`);
+const POLITE_REQUEST = /^(can|could|would) you (?:(?:please|briefly|quickly|kindly|just) )*(describe|explain|elaborate on|tell (?:us|me))\b\s*(.*)$/;
+const FOLLOW_UP = /^(?:respond|reply|answer|write|explain|elaborate|expand on|describe|tell (?:us|me)|why|how|[\w-]+ (?:why|how|what|(?:your |the |some )?(?:details|reasons|examples)))\b/;
+const NOMINAL_LABEL = /^(?:a|an) (?:success|failure|strength|weakness|problem|priority)\b/;
+const MANNER = /^(?:clearly|accurately|completely|briefly|precisely|thoroughly|fully)\b/;
+const WH_CONTENT = new RegExp(`^(?:about|more|${WH_WORD})\\b`);
+const SELECTING = /\b(?:choose|pick|select|name)\b/;
+const BINARY_OPENER = new RegExp(`^(?:${AUXILIARY}(?:n't)?|won't|can't)\\s`);
+
+function descriptionType(content, laterClauses) {
+    const asIndex = content.indexOf(' as ');
+    if (asIndex < 0) return OPEN_ENDED;
+    const [predicate, ...followUps] = content.slice(asIndex + 4).split(' and ');
+    if ([...followUps, ...laterClauses].some(part => FOLLOW_UP.test(part))) return OPEN_ENDED;
+    const label = predicate.replace(/^not /, '');
+    if (NOMINAL_LABEL.test(label)) return YES_NO;
+    if (!/^[a-z]/.test(label) || /^(?:an?|the|i|we|you|he|she|it|they|if|though|part|soon|much)\b/.test(label) || MANNER.test(label)) return OPEN_ENDED;
+    return YES_NO;
+}
+
+function tellType(modal, content) {
+    if (!/^[a-z0-9]/.test(content) || /^(?:if|whether|apart|to)\b/.test(content)) return YES_NO;
+    if (WH_CONTENT.test(content)) return OPEN_ENDED;
+    const condition = content.split(' if ')[1];
+    if (modal === 'would' && condition && !SELECTING.test(condition)) return YES_NO;
+    return OPEN_ENDED;
+}
+
+function politeRequestType(clause, laterClauses) {
+    const match = POLITE_REQUEST.exec(clause);
+    if (!match) return null;
+    const [, modal, verb, content] = match;
+    if (verb === 'describe') return descriptionType(content, laterClauses);
+    if (verb.startsWith('tell ')) return tellType(modal, content);
+    return OPEN_ENDED;
+}
 const CHOICE_SET = 'of (?:these|those|the following)(?: (?:options|choices|alternatives))?';
 
 // First match wins, so the order is the precedence: "how likely" has to be
@@ -66,14 +79,6 @@ const RULES = [
     { type: OPEN_ENDED, pattern: new RegExp(`^${WH_WORD}(?:'s|'re| ${AUXILIARY}\\b)`) },
     { type: OPEN_ENDED, pattern: new RegExp(`^${WH_WORD}\\b`), questionOnly: true },
     { type: OPEN_ENDED, pattern: /^(?:describe|explain|elaborate on|tell (?:us|me))\b/ },
-    { type: OPEN_ENDED, pattern: new RegExp(`${POLITE_REQUEST}describe\\b.* and ${FOLLOW_UP_REQUEST}\\b`) },
-    { type: YES_NO, pattern: PROPOSED_DESCRIPTION },
-    { type: YES_NO, pattern: CONDITIONAL_DISCLOSURE },
-    { type: OPEN_ENDED, pattern: new RegExp(`${POLITE_REQUEST}(?:describe|explain|elaborate on|${TELL_REQUEST})\\b`) },
-
-    // The trailing space keeps a half-typed word from matching: "Is" could
-    // still become "Issues".
-    { type: YES_NO, pattern: new RegExp(`^(?:${AUXILIARY}(?:n't)?|won't|can't)\\s`) },
 ];
 
 // Returns one of the question type names, or null when nothing matches.
@@ -105,5 +110,9 @@ export function guessQuestionType(text) {
             return type;
         }
     }
-    return null;
+    for (const [index, clause] of candidates.entries()) {
+        const requestedType = politeRequestType(clause, candidates.slice(index + 1));
+        if (requestedType) return requestedType;
+    }
+    return candidates.some(clause => BINARY_OPENER.test(clause)) ? YES_NO : null;
 }

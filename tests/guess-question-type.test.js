@@ -153,81 +153,101 @@ test('guesses the question type from common wordings', async () => {
   }
 });
 
-test('distinguishes polite requests for explanations from yes/no questions', async () => {
+test('Polite request or literal capability', async () => {
   const { guessQuestionType } = await guesser;
-  assert.equal(guessQuestionType('Could you describe a time when onboarding went well?'), 'Open Ended');
-  assert.equal(guessQuestionType('Can you explain what made onboarding easier?'), 'Open Ended');
-  assert.equal(guessQuestionType('Can you tell us what happened?'), 'Open Ended');
-  assert.equal(guessQuestionType('Could you please tell me about the problem?'), 'Open Ended');
-  assert.equal(guessQuestionType('Could you tell me more about the problem?'), 'Open Ended');
-  assert.equal(guessQuestionType('Can you tell us a little about your role?'), 'Open Ended');
-  assert.equal(guessQuestionType('Would you tell us your biggest concern?'), 'Open Ended');
-  assert.equal(guessQuestionType('Would you tell us your biggest concern if you could choose just one?'), 'Open Ended');
-  assert.equal(guessQuestionType('Would you tell us your biggest concern if I asked?'), 'Yes/No');
-  assert.equal(guessQuestionType('Would you tell me if plans changed?'), 'Yes/No');
-  assert.equal(guessQuestionType('Would you tell me the truth if I asked?'), 'Yes/No');
-  assert.equal(guessQuestionType('Would you tell us a secret if you knew one?'), 'Yes/No');
-  assert.equal(guessQuestionType('Would you tell us what happens if plans change?'), 'Open Ended');
-  assert.equal(guessQuestionType('Would you please elaborate on that feedback?'), 'Open Ended');
-  assert.equal(guessQuestionType('Could you attend the next onboarding session?'), 'Yes/No');
-  assert.equal(guessQuestionType('Could you briefly describe your experience?'), 'Open Ended');
-  assert.equal(guessQuestionType('Could you please briefly explain what happened?'), 'Open Ended');
-  assert.equal(guessQuestionType('Would you usually describe the process to new hires?'), 'Yes/No');
-  assert.equal(guessQuestionType('Could you just describe your experience?'), 'Open Ended');
-  assert.equal(guessQuestionType('Can you tell us something about your role?'), 'Open Ended');
-  assert.equal(guessQuestionType('Could you tell me one thing you would change?'), 'Open Ended');
-  assert.equal(guessQuestionType('Could you tell me two things you would change?'), 'Open Ended');
-  assert.equal(guessQuestionType('Can you tell us 3 ways to improve the process?'), 'Open Ended');
-  assert.equal(guessQuestionType('Would you tell us your biggest concern if we could choose just one?'), 'Open Ended');
-  assert.equal(guessQuestionType('Would you tell us something if you knew it?'), 'Yes/No');
-  assert.equal(guessQuestionType('Would you tell me anything if you saw it?'), 'Yes/No');
-  assert.equal(guessQuestionType('Would you tell me the answer if I asked again?'), 'Yes/No');
-  assert.equal(guessQuestionType('Would you tell us anything if you could choose one thing?'), 'Open Ended');
+  const prompts = [
+    ['Could you describe a time when onboarding went well?', 'Open Ended'],
+    ['Can you explain what made onboarding easier?', 'Open Ended'],
+    ['Would you please elaborate on that feedback?', 'Open Ended'],
+    ['Could you attend the next onboarding session?', 'Yes/No'],
+    ['Could you briefly describe your experience?', 'Open Ended'],
+    ['Could you please briefly explain what happened?', 'Open Ended'],
+    ['Would you usually describe the process to new hires?', 'Yes/No'],
+    ['Could you just describe your experience?', 'Open Ended'],
+    ['Would you describe your experience?', 'Open Ended'],
+  ];
+  for (const [prompt, expected] of prompts) assert.equal(guessQuestionType(prompt), expected, prompt);
 });
 
-test('distinguishes a proposed characterization from a request for a description', async () => {
+test('Tell: requested content or conditional disclosure', async () => {
   const { guessQuestionType } = await guesser;
-  assert.equal(guessQuestionType('Would you describe your experience as positive?'), 'Yes/No');
-  assert.equal(guessQuestionType('Would you describe the process as not useful?'), 'Yes/No');
-  assert.equal(guessQuestionType('Would you describe the process as not very useful?'), 'Yes/No');
-  assert.equal(guessQuestionType('Would you describe meetings as productive?'), 'Yes/No');
-  assert.equal(guessQuestionType('Would you describe the course as useful for beginners?'), 'Yes/No');
-  assert.equal(guessQuestionType('Would you describe the course as effective in practice?'), 'Yes/No');
-  assert.equal(guessQuestionType('Would you describe the meetings as more productive than before?'), 'Yes/No');
-  assert.equal(guessQuestionType('Could you briefly describe the meetings as less useful than last year?'), 'Yes/No');
-  assert.equal(guessQuestionType('Would you describe Convora as easy to use?'), 'Yes/No');
-  assert.equal(guessQuestionType('Would you describe what you do as stressful?'), 'Yes/No');
-  assert.equal(guessQuestionType('Would you describe the pilot as a success?'), 'Yes/No');
-  assert.equal(guessQuestionType('Could you describe the pilot as a success for the team and explain why?'), 'Open Ended');
-  assert.equal(guessQuestionType('Could you describe the pilot as a success for the team and its partners?'), 'Yes/No');
-  assert.equal(guessQuestionType('Would you describe climate change as a priority for your organization?'), 'Yes/No');
-  assert.equal(guessQuestionType('Would you describe the delay as a problem with capacity?'), 'Yes/No');
-  assert.equal(guessQuestionType('Could you describe your responsibilities as a manager?'), 'Open Ended');
-  assert.equal(guessQuestionType('Could you describe the situation as it was?'), 'Open Ended');
-  assert.equal(guessQuestionType('Could you describe how meetings changed as the team grew?'), 'Open Ended');
-  assert.equal(guessQuestionType('Would you describe your experience?'), 'Open Ended');
-  assert.equal(guessQuestionType('Would you describe your experience as positive, and why?'), 'Open Ended');
-  assert.equal(guessQuestionType('Would you describe the course as really useful?'), 'Yes/No');
-  assert.equal(guessQuestionType('Would you describe the course as somewhat useful?'), 'Yes/No');
-  assert.equal(guessQuestionType('Would you describe the drug as safe and effective?'), 'Yes/No');
-  assert.equal(guessQuestionType('Would you describe the guide as clear and useful?'), 'Yes/No');
-  assert.equal(guessQuestionType('Would you describe the guide as clear and explain why?'), 'Open Ended');
-  assert.equal(guessQuestionType('Could you describe the incident as clearly and completely?'), 'Open Ended');
-  assert.equal(guessQuestionType('Would you describe the staff as friendly and helpful?'), 'Yes/No');
-  assert.equal(guessQuestionType('Would you describe the course as really useful and engaging?'), 'Yes/No');
-  assert.equal(guessQuestionType('Could you describe the pilot as a success for the team and provide details?'), 'Open Ended');
-  assert.equal(guessQuestionType('Could you describe the pilot as a success for the team and give your reasons?'), 'Open Ended');
-  assert.equal(guessQuestionType('Could you describe the incident as clearly?'), 'Open Ended');
-  assert.equal(guessQuestionType('Could you describe the process as accurately?'), 'Open Ended');
-  assert.equal(guessQuestionType('Would you describe the staff as friendly?'), 'Yes/No');
-  assert.equal(guessQuestionType('Could you describe the pilot as a success for the team and discuss why?'), 'Open Ended');
-  assert.equal(guessQuestionType('Could you describe the pilot as a success for the team and outline the reasons?'), 'Open Ended');
-  assert.equal(guessQuestionType('Could you describe the pilot as a success for the team and show how?'), 'Open Ended');
-  assert.equal(guessQuestionType('Would you describe the plan as financially sustainable?'), 'Yes/No');
-  assert.equal(guessQuestionType('Would you describe the plan as financially sustainable and clear?'), 'Yes/No');
-  assert.equal(guessQuestionType('Could you describe the incident as clearly as possible?'), 'Open Ended');
-  assert.equal(guessQuestionType('Could you describe the pilot as a success for the team and respond with details?'), 'Open Ended');
-  assert.equal(guessQuestionType('Could you describe the pilot as a success for the team and answer in your own words?'), 'Open Ended');
+  const prompts = [
+    ['Can you tell us what happened?', 'Open Ended'],
+    ['Could you please tell me about the problem?', 'Open Ended'],
+    ['Could you tell me more about the problem?', 'Open Ended'],
+    ['Can you tell us a little about your role?', 'Open Ended'],
+    ['Would you tell us your biggest concern?', 'Open Ended'],
+    ['Would you tell us your biggest concern if you could choose just one?', 'Open Ended'],
+    ['Would you tell us your biggest concern if I asked?', 'Yes/No'],
+    ['Would you tell me if plans changed?', 'Yes/No'],
+    ['Would you tell me the truth if I asked?', 'Yes/No'],
+    ['Would you tell us a secret if you knew one?', 'Yes/No'],
+    ['Would you tell us what happens if plans change?', 'Open Ended'],
+    ['Can you tell us something about your role?', 'Open Ended'],
+    ['Could you tell me one thing you would change?', 'Open Ended'],
+    ['Would you tell us your biggest concern if we could choose just one?', 'Open Ended'],
+    ['Would you tell us something if you knew it?', 'Yes/No'],
+    ['Would you tell me anything if you saw it?', 'Yes/No'],
+    ['Would you tell me the answer if I asked again?', 'Yes/No'],
+    ['Would you tell us anything if you could choose one thing?', 'Open Ended'],
+    ['Can you tell us two lessons from the pilot?', 'Open Ended'],
+    ['Could you tell me two things you would change?', 'Open Ended'],
+    ['Can you tell us 3 ways to improve the process?', 'Open Ended'],
+    ['Would you tell us your priority if the panel could pick only one?', 'Open Ended'],
+    ['Could you tell me apart from my sister?', 'Yes/No'],
+    ['Would you tell me?', 'Yes/No'],
+  ];
+  for (const [prompt, expected] of prompts) assert.equal(guessQuestionType(prompt), expected, prompt);
+});
+
+test('Describe: confirmation, context, or an explicit follow-up', async () => {
+  const { guessQuestionType } = await guesser;
+  const prompts = [
+    ['Would you describe your experience as positive?', 'Yes/No'],
+    ['Would you describe the process as not useful?', 'Yes/No'],
+    ['Would you describe the process as not very useful?', 'Yes/No'],
+    ['Would you describe meetings as productive?', 'Yes/No'],
+    ['Would you describe the course as useful for beginners?', 'Yes/No'],
+    ['Would you describe the course as effective in practice?', 'Yes/No'],
+    ['Would you describe the meetings as more productive than before?', 'Yes/No'],
+    ['Could you briefly describe the meetings as less useful than last year?', 'Yes/No'],
+    ['Would you describe Convora as easy to use?', 'Yes/No'],
+    ['Would you describe what you do as stressful?', 'Yes/No'],
+    ['Would you describe the pilot as a success?', 'Yes/No'],
+    ['Could you describe the pilot as a success for the team and explain why?', 'Open Ended'],
+    ['Could you describe the pilot as a success for the team and its partners?', 'Yes/No'],
+    ['Would you describe climate change as a priority for your organization?', 'Yes/No'],
+    ['Would you describe the delay as a problem with capacity?', 'Yes/No'],
+    ['Could you describe your responsibilities as a manager?', 'Open Ended'],
+    ['Could you describe the situation as it was?', 'Open Ended'],
+    ['Could you describe how meetings changed as the team grew?', 'Open Ended'],
+    ['Would you describe your experience as positive, and why?', 'Open Ended'],
+    ['Would you describe the course as really useful?', 'Yes/No'],
+    ['Would you describe the course as somewhat useful?', 'Yes/No'],
+    ['Would you describe the drug as safe and effective?', 'Yes/No'],
+    ['Would you describe the guide as clear and useful?', 'Yes/No'],
+    ['Would you describe research and development as useful?', 'Yes/No'],
+    ['Would you describe the guide as clear and explain why?', 'Open Ended'],
+    ['Could you describe the incident as clearly and completely?', 'Open Ended'],
+    ['Would you describe the staff as friendly and helpful?', 'Yes/No'],
+    ['Would you describe the course as really useful and engaging?', 'Yes/No'],
+    ['Could you describe the pilot as a success for the team and provide details?', 'Open Ended'],
+    ['Could you describe the pilot as a success for the team and give your reasons?', 'Open Ended'],
+    ['Could you describe the incident as clearly?', 'Open Ended'],
+    ['Could you describe the process as accurately?', 'Open Ended'],
+    ['Would you describe the staff as friendly?', 'Yes/No'],
+    ['Could you describe the pilot as a success for the team and discuss why?', 'Open Ended'],
+    ['Could you describe the pilot as a success for the team and outline the reasons?', 'Open Ended'],
+    ['Could you describe the pilot as a success for the team and show how?', 'Open Ended'],
+    ['Would you describe the course as useful for beginners, and provide details?', 'Open Ended'],
+    ['Could you describe the process as clearly as possible?', 'Open Ended'],
+    ['Would you describe the plan as financially sustainable?', 'Yes/No'],
+    ['Would you describe the plan as financially sustainable and clear?', 'Yes/No'],
+    ['Could you describe the incident as clearly as possible?', 'Open Ended'],
+    ['Could you describe the pilot as a success for the team and respond with details?', 'Open Ended'],
+    ['Could you describe the pilot as a success for the team and answer in your own words?', 'Open Ended'],
+  ];
+  for (const [prompt, expected] of prompts) assert.equal(guessQuestionType(prompt), expected, prompt);
 });
 
 test('returns null for statements and unrecognized wording', async () => {
