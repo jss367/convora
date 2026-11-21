@@ -952,6 +952,40 @@ test('moderators can generate short links that redirect to the discussion', asyn
   assert.equal(taken.status, 409);
 });
 
+test('long titles and suffixed collisions produce links that resolve to the intended discussion', async () => {
+  const prefix = 'a'.repeat(77);
+  const titles = [prefix + ' bc first', prefix + ' bc second', 'x'.repeat(79) + ' final word'];
+  for (const [index, topic] of titles.entries()) {
+    const created = await jsonRequest('POST', '/api/discussions', { topic });
+    assert.equal(created.status, 200);
+    const slug = created.body.slug;
+    assert.match(slug, /^[a-z0-9]+(?:-[a-z0-9]+)*$/);
+    assert.ok(slug.length <= 80);
+    if (index === 1) assert.ok(slug.endsWith('-2'));
+    assert.equal((await jsonRequest('GET', `/api/discussions/resolve/${slug}`)).body.id, created.body.id);
+  }
+});
+
+test('previously issued truncated links survive startup and still open their own room', async () => {
+  const prefix = 'z'.repeat(79);
+  const slugs = [prefix, prefix + '-', 'w'.repeat(77) + '--2'];
+  for (const [index, slug] of slugs.entries()) {
+    await pool.query('INSERT INTO discussions (topic, slug) VALUES ($1, $2)', [`Saved room ${index}`, slug]);
+  }
+  await stopServer();
+  await startServer();
+  const display = await connectSocket();
+  try {
+    for (const [index, slug] of slugs.entries()) {
+      const resolved = await jsonRequest('GET', `/api/discussions/resolve/${slug}`);
+      assert.equal(resolved.body.topic, `Saved room ${index}`);
+      const joined = waitForEvent(display, 'discussion');
+      display.emit('joinDisplay', slug);
+      assert.equal((await joined).slug, slug);
+    }
+  } finally { display.disconnect(); }
+});
+
 test('slug migration preserves literal slug-shaped legacy titles', async () => {
   await stopServer();
   await pool.query('TRUNCATE TABLE votes, questions, discussions RESTART IDENTITY CASCADE');

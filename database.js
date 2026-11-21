@@ -1,7 +1,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { logError } = require('./logging');
-const { slugifyTopic, formatTopicTitle, suffixSlug } = require('./discussion-names');
+const { slugifyTopic, slugFromTitle, formatTopicTitle, suffixSlug } = require('./discussion-names');
 
 // Initialize fresh or existing databases before the server accepts connections.
 // Migration order and the independent parallel group match the original startup.
@@ -164,14 +164,14 @@ async function initializeDatabase(pool) {
 
   function isSlugShapedLegacyTitle(topic) {
     const title = formatTopicTitle(topic);
-    return title === slugifyTopic(title);
+    return title === slugFromTitle(title);
   }
 
   function getMigrationBaseSlug(row) {
     if (isSlugShapedLegacyTitle(row.topic)) {
       return slugifyTopic(row.topic);
     }
-    return row.slug ? slugifyTopic(row.slug) : slugifyTopic(row.topic);
+    return row.slug ? slugifyTopic(row.slug) : slugFromTitle(row.topic);
   }
 
   // Table for upvotes on individual open-ended responses. One row per

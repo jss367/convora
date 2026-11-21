@@ -13,7 +13,7 @@ const { createInterestUpdates } = require('./interest-updates');
 const interestUpdates = createInterestUpdates();
 const { logError } = require('./logging');
 const { initializeDatabase } = require('./database');
-const { slugifyTopic, formatTopicTitle, titleFromSlug, suffixSlug, MAX_TOPIC_LENGTH } = require('./discussion-names');
+const { slugifyTopic, slugFromTitle, formatTopicTitle, titleFromSlug, suffixSlug, MAX_TOPIC_LENGTH } = require('./discussion-names');
 const { buildSummary, renderReportHtml } = require('./reports');
 const {
   AGREEMENT_OPTIONS, parseOptions, parseStoredVoteValue,
@@ -176,10 +176,22 @@ const DEFAULT_THEME = 'indigo';
 // individual questions) so a moderator opens reactions/comments for the whole
 // room at once; this channel drives the moderator's toggle buttons and gates
 // the participant-facing reaction/comment UI.
+async function comparisonIncludesQuestion(db, discussionId, beforeId, afterId, questionId) {
+  const result = await db.query(
+    `SELECT EXISTS (
+       SELECT 1 FROM opinion_snapshots
+        WHERE discussion_id = $1 AND id IN (
+          COALESCE($2, (SELECT min(id) FROM opinion_snapshots WHERE discussion_id = $1)),
+          COALESCE($3, (SELECT max(id) FROM opinion_snapshots WHERE discussion_id = $1))
+        ) AND (data->'questions') @> $4::jsonb
+     ) AS included`, [discussionId, beforeId, afterId, JSON.stringify([{ id: questionId }])]);
+  return result.rows[0].included;
+}
+
 async function getDiscussionState(topic) {
   const slug = slugifyTopic(topic);
   const result = await pool.query(
-    `SELECT locked, moderator_only_questions, theme, reaction_keys, results_visibility, listed,
+    `SELECT d.id, locked, moderator_only_questions, theme, reaction_keys, results_visibility, listed,
             display_qr, display_layout, display_sort, display_pinned_first, display_hidden_question_ids,
             (SELECT q.id FROM questions q
               WHERE q.id = d.display_question_id AND q.discussion_id = d.id AND NOT q.queued) AS display_question_id,
@@ -212,6 +224,8 @@ async function getDiscussionState(topic) {
   }
   const row = result.rows[0];
   const baseLayout = DISPLAY_LAYOUTS.includes(row.display_layout) ? row.display_layout : 'all';
+  const comparisonMissing = baseLayout === 'compare' && row.display_question_id != null
+    && !await comparisonIncludesQuestion(pool, row.id, row.display_before_snapshot_id, row.display_after_snapshot_id, row.display_question_id);
   return {
     locked: row.locked === true,
     moderatorOnly: row.moderator_only_questions === true,
@@ -230,7 +244,7 @@ async function getDiscussionState(topic) {
     displayPinnedFirst: row.display_pinned_first !== false,
     // The question a moderator put on the display, or null when they chose
     // none or it has since been deleted.
-    displayQuestionId: row.display_question_id ?? null,
+    displayQuestionId: comparisonMissing ? null : row.display_question_id ?? null,
     displayHiddenQuestionIds: row.display_hidden_question_ids,
     // The snapshots the before-and-after view compares; null means the display
     // picks the first snapshot and the latest one.
@@ -1033,14 +1047,15 @@ io.on('connection', (socket) => {
   // before-and-after view compares, or null to let the display pick the first
   // and the latest. The settings ride discussionState, which the display's room
   // receives too.
-  socket.on('setDisplaySettings', async (topic, settings, token) => {
+  socket.on('setDisplaySettings', async (topic, settings, token, ack) => {
     const discussionSlug = slugifyTopic(topic);
+    const refuse = message => {
+      if (typeof ack === 'function') ack({ ok: false, message });
+      else socket.emit('error', { message });
+    };
     try {
       const discussionId = await verifyAdmin(discussionSlug, token);
-      if (!discussionId) {
-        socket.emit('error', { message: 'Not authorized to moderate this discussion.' });
-        return;
-      }
+      if (!discussionId) return refuse('Not authorized to moderate this discussion.');
       const { qr, layout, sort, pinnedFirst, questionId, beforeSnapshotId, afterSnapshotId } = settings && typeof settings === 'object' ? settings : {};
       // An id is left out to keep the stored one, null to clear it, or a
       // Postgres integer.
@@ -1054,17 +1069,17 @@ io.on('connection', (socket) => {
           || ![questionId, beforeSnapshotId, afterSnapshotId].every(validId)
           || (beforeSnapshotId != null && afterSnapshotId != null && afterSnapshotId <= beforeSnapshotId)
           || !given) {
-        socket.emit('error', { message: 'Unknown room display setting.' });
-        return;
+        return refuse('Unknown room display setting.');
       }
       const changed = await withTransaction(async client => {
-        const current = await client.query('SELECT display_before_snapshot_id, display_after_snapshot_id, display_hidden_question_ids FROM discussions WHERE id = $1 FOR UPDATE', [discussionId]);
+        const current = await client.query(`SELECT display_before_snapshot_id, display_after_snapshot_id, display_hidden_question_ids,
+                                                  display_layout, display_question_id FROM discussions WHERE id = $1 FOR UPDATE`, [discussionId]);
         if (!current.rows.length) return false;
         const effectiveBefore = beforeSnapshotId === undefined ? current.rows[0].display_before_snapshot_id : beforeSnapshotId;
         const effectiveAfter = afterSnapshotId === undefined ? current.rows[0].display_after_snapshot_id : afterSnapshotId;
         if ((beforeSnapshotId !== undefined || afterSnapshotId !== undefined)
             && effectiveBefore != null && effectiveAfter != null && effectiveAfter <= effectiveBefore) {
-          socket.emit('error', { message: 'Unknown room display setting.' });
+          refuse('Unknown room display setting.');
           return false;
         }
         if (questionId != null) {
@@ -1074,7 +1089,7 @@ io.on('connection', (socket) => {
             [questionId, discussionId]
           );
           if (!question.rows.length || current.rows[0].display_hidden_question_ids.includes(questionId)) {
-            socket.emit('error', { message: 'That question cannot be shown on the room display.' });
+            refuse('That question cannot be shown on the room display.');
             return;
           }
         }
@@ -1085,9 +1100,19 @@ io.on('connection', (socket) => {
             [discussionId, snapshotIds]
           );
           if (found.rows.length !== snapshotIds.length) {
-            socket.emit('error', { message: 'That snapshot cannot be shown on the room display.' });
+            refuse('That snapshot cannot be shown on the room display.');
             return;
           }
+        }
+        let requestedQuestion = questionId;
+        const candidate = questionId === undefined ? current.rows[0].display_question_id : questionId;
+        if ((layout ?? current.rows[0].display_layout) === 'compare' && candidate != null
+            && !await comparisonIncludesQuestion(client, discussionId, effectiveBefore, effectiveAfter, candidate)) {
+          if (questionId != null) {
+            refuse('This question is not in the selected snapshots. Choose another question or switch to the One question layout to show it live.');
+            return false;
+          }
+          requestedQuestion = null;
         }
         await client.query(
           `UPDATE discussions
@@ -1104,7 +1129,7 @@ io.on('connection', (socket) => {
             WHERE id = $3`,
           [
             qr ?? null, layout ?? null, discussionId,
-            questionId ?? null, questionId !== undefined,
+            requestedQuestion ?? null, requestedQuestion !== undefined,
             beforeSnapshotId ?? null, beforeSnapshotId !== undefined,
             afterSnapshotId ?? null, afterSnapshotId !== undefined,
             sort ?? null, pinnedFirst ?? null,
@@ -1112,10 +1137,13 @@ io.on('connection', (socket) => {
         );
         return true;
       });
-      if (changed) await emitDiscussionState(discussionSlug);
+      if (changed) {
+        await emitDiscussionState(discussionSlug);
+        if (typeof ack === 'function') ack({ ok: true });
+      }
     } catch (error) {
       logError('Error setting room display settings:', error);
-      socket.emit('error', { message: 'Failed to update discussion' });
+      refuse('Failed to update discussion');
     }
   });
 
@@ -2452,7 +2480,7 @@ async function verifyCreator(topic, token) {
 // how a discussion someone else moderates is listed.
 async function createDiscussion(topic, { listed = false, subject = null } = {}) {
   const displayTopic = formatTopicTitle(topic);
-  const baseSlug = slugifyTopic(displayTopic);
+  const baseSlug = slugFromTitle(displayTopic);
   const token = crypto.randomBytes(16).toString('hex');
   const client = await pool.connect();
   try {
@@ -3689,7 +3717,7 @@ app.post('/api/duplicate-discussion', async (req, res) => {
 
     const owner = await currentAccount(req, client);
     const newAdminToken = crypto.randomBytes(16).toString('hex');
-    const baseNewSlug = slugifyTopic(displayNewTopic);
+    const baseNewSlug = slugFromTitle(displayNewTopic);
     let newDiscussion = null;
     for (let suffix = 1; suffix <= 1000; suffix += 1) {
       const newSlug = suffixSlug(baseNewSlug, suffix);

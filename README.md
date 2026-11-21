@@ -166,7 +166,10 @@ To end the spotlight, click the same button again. Its label tells you what
 the room will see: **Back to all questions** restores the list, **Resume automatic
 selection** returns the one-question layout to the first pinned question (or
 the newest if none are pinned), and **Back to full comparison** shows every
-question in the comparison again. Deleting the spotlighted question also
+question in the comparison again. In comparison mode, a question must be in at
+least one of the selected snapshots to be spotlighted. If it isn't, the current
+comparison stays on screen; switch to **One question** to show it live instead.
+Deleting the spotlighted question also
 restores the underlying view.
 
 When you’re done discussing a question, click **Hide from display** on its
