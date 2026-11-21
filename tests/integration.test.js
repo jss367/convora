@@ -3,7 +3,6 @@ const crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
 const net = require('node:net');
 const path = require('node:path');
-const { readFile } = require('node:fs/promises');
 const vm = require('node:vm');
 const React = require('react');
 const { renderToStaticMarkup } = require('react-dom/server');
@@ -500,12 +499,10 @@ test('snapshots preserve probabilities and opinion distributions across updates,
 });
 
 test('persisted categorical snapshots render ordered labels, zero counts, and aligned before/after values', async () => {
-  const { transformWithEsbuild } = await import('vite');
   const componentPath = path.join(rootDir, 'client/src/OpinionSnapshots.jsx');
-  const source = await readFile(componentPath, 'utf8');
-  const transformed = await transformWithEsbuild(source, componentPath, { loader: 'jsx', format: 'cjs' });
+  const { outputFiles } = await require('esbuild').build({ entryPoints: [componentPath], bundle: true, packages: 'external', platform: 'node', format: 'cjs', write: false });
   const componentModule = { exports: {} };
-  const loadComponent = vm.runInThisContext(`(function(require, module, exports) { ${transformed.code}\n})`, { filename: componentPath });
+  const loadComponent = vm.runInThisContext(`(function(require, module, exports) { ${outputFiles[0].text}\n})`, { filename: componentPath });
   loadComponent(require, componentModule, componentModule.exports);
   const { QuestionComparison } = componentModule.exports;
 

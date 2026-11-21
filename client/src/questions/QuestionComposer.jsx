@@ -113,8 +113,9 @@ export default function QuestionComposer({ composer, questionCount, isAdmin, mod
                         // Holding Enter auto-repeats; submit once per key press.
                         onKeyDown={(e) => { if (e.key === 'Enter' && e.repeat) e.preventDefault(); }}
                         placeholder="Enter a new question or statement"
-                        className="w-full p-3 border border-gray-300 rounded-md mb-4 focus:outline-none focus:ring-2 focus:ring-primary"
+                        className="w-full p-3 border border-gray-300 rounded-md mb-1 focus:outline-none focus:ring-2 focus:ring-primary"
                     />
+                    <p className="mb-4 text-xs text-gray-500">Use *italics* or **bold**.</p>
                     <div className="mb-4">
                         <label className="block mb-2">Question Type:</label>
                         <select

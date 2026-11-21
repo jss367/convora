@@ -14,7 +14,7 @@ async function controls({ saved } = {}) {
   const end = source.indexOf('    const sortedAndFilteredQuestions =', start);
   const code = transformSync(`${source.slice(start, end)}\nthis.render = renderVotingMechanism;`, { loader: 'jsx' }).code;
   const context = {
-    React, clampNumericalValue,
+    React, clampNumericalValue, plainPrompt: (await import('../client/src/questions/promptEmphasis.mjs')).plainPrompt,
     QuestionTypes: { NUMERICAL: 'Numerical' }, NumericalResults: () => null,
     pendingVotes: {}, sliderValues: {}, locked: false,
     isMyVote: () => true,

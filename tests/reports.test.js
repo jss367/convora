@@ -32,28 +32,41 @@ test('discussion reports summarize all question types without exposing stable id
   assert.doesNotMatch(JSON.stringify(summary), /secret-a|secret-b|userId/);
 });
 
-test('empty discussions produce a usable report without invalid statistics', () => {
+test('empty discussions produce a usable report without invalid statistics', async () => {
   const summary = buildSummary(discussion, []);
   assert.deepEqual(summary.counts, { questions: 0, responses: 0, participants: 0, byType: {}, hiddenResults: 0 });
   assert.deepEqual(summary.topConsensus, []);
   assert.deepEqual(summary.topDivisive, []);
-  const html = renderReportHtml(summary);
+  const html = await renderReportHtml(summary);
   assert.match(html, /Planning Report/);
   assert.match(html, /No major unresolved tensions detected/);
   assert.doesNotMatch(html, /NaN|Infinity|undefined/);
 });
 
-test('printable reports escape discussion titles and question content', () => {
+test('printable reports escape discussion titles and question content', async () => {
   const summary = buildSummary({ ...discussion, topic: '<script>alert("title")</script>' }, [
     { id: 1, text: '<img src=x onerror="alert(1)"> & details', type: 'Yes/No', votes: [] },
   ]);
-  const html = renderReportHtml(summary);
+  const html = await renderReportHtml(summary);
   assert.doesNotMatch(html, /<script>|<img /);
   assert.match(html, /&lt;script&gt;alert\(&quot;title&quot;\)&lt;\/script&gt;/);
   assert.match(html, /&lt;img src=x onerror=&quot;alert\(1\)&quot;&gt; &amp; details/);
 });
 
-test('questions with hidden results are listed but contribute to no count, ranking, or signal', () => {
+test('reports emphasize prompt phrases without interpreting HTML, answer options, or arithmetic', async () => {
+  const text = 'Would it *try* or **<wait & see>**? What is 2 * 3?';
+  const summary = buildSummary(discussion, [
+    { id: 1, text, type: 'Multiple Choice', options: ['*Yes*', '**No**'], votes: [] },
+  ]);
+  const html = await renderReportHtml(summary);
+  assert.equal(summary.questions[0].text, text);
+  assert.match(html, /Would it <em>try<\/em> or <strong>&lt;wait &amp; see&gt;<\/strong>\? What is 2 \* 3\?/);
+  assert.match(html, /\*\*No\*\*/);
+  assert.match(html, /\*Yes\*/);
+  assert.doesNotMatch(html, /<em>Yes<\/em>/);
+});
+
+test('questions with hidden results are listed but contribute to no count, ranking, or signal', async () => {
   const summary = buildSummary(discussion, [
     { id: 1, text: 'Proceed?', type: 'Agreement', votes: [vote(1, 'secret-a', 'Agree'), vote(2, 'secret-b', 'Disagree')] },
     { id: 2, text: 'Ready?', type: 'Yes/No', votes: [], resultsHidden: true },
@@ -70,13 +83,13 @@ test('questions with hidden results are listed but contribute to no count, ranki
   ]);
   // A hidden question must not be reported as a prompt nobody answered.
   assert.deepEqual(summary.facilitatorDashboard.unansweredPrompts, []);
-  const html = renderReportHtml(summary);
+  const html = await renderReportHtml(summary);
   assert.match(html, /Results for 2 questions are hidden until you vote/);
   assert.equal(html.match(/Hidden until you vote/g).length, 2);
   assert.doesNotMatch(html, /NaN|Infinity|undefined/);
 });
 
-test('Multiple Choice summaries count each option in order and stay out of the opinion rankings', () => {
+test('Multiple Choice summaries count each option in order and stay out of the opinion rankings', async () => {
   const question = {
     id: 1, text: 'p(doom) over the last year?', type: 'Multiple Choice',
     options: ['Higher', 'Lower', 'About the same'],
@@ -89,25 +102,25 @@ test('Multiple Choice summaries count each option in order and stay out of the o
   assert.deepEqual(summarized.leadingOptions, ['Lower']);
   assert.deepEqual(summary.topDivisive, []);
   assert.deepEqual(summary.facilitatorDashboard.mostDivisiveStatements, []);
-  assert.match(renderReportHtml(summary), /Higher: 1 \/ Lower: 2 \/ About the same: 0/);
+  assert.match(await renderReportHtml(summary), /Higher: 1 \/ Lower: 2 \/ About the same: 0/);
 
   const tied = buildSummary(discussion, [{ ...question, votes: [vote(1, 'a', 'Higher'), vote(2, 'b', 'Lower')] }]);
   assert.deepEqual(tied.questions[0].leadingOptions, ['Higher', 'Lower']);
   assert.deepEqual(buildSummary(discussion, [{ ...question, votes: [] }]).questions[0].leadingOptions, []);
 });
 
-test('printable reports escape Multiple Choice option text', () => {
+test('printable reports escape Multiple Choice option text', async () => {
   const summary = buildSummary(discussion, [{
     id: 1, text: 'Pick one', type: 'Multiple Choice',
     options: ['<img src=x onerror=alert(1)>', 'Plain'],
     votes: [vote(1, 'a', 'Plain')],
   }]);
-  const html = renderReportHtml(summary);
+  const html = await renderReportHtml(summary);
   assert.doesNotMatch(html, /<img src=x/);
   assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt;: 0 \/ Plain: 1/);
 });
 
-test('a hidden Multiple Choice summary keeps its options but no counts', () => {
+test('a hidden Multiple Choice summary keeps its options but no counts', async () => {
   const summary = buildSummary(discussion, [{
     id: 1, text: 'p(doom)?', type: 'Multiple Choice', options: ['Higher', 'Lower'],
     votes: [], resultsHidden: true, created_at: '2026-01-01T00:00:00Z',
@@ -116,7 +129,7 @@ test('a hidden Multiple Choice summary keeps its options but no counts', () => {
     id: 1, text: 'p(doom)?', type: 'Multiple Choice', createdAt: '2026-01-01T00:00:00Z',
     options: ['Higher', 'Lower'], resultsHidden: true,
   }]);
-  const html = renderReportHtml(summary);
+  const html = await renderReportHtml(summary);
   assert.match(html, /Options: Higher \/ Lower\. Results hidden until you vote/);
   assert.doesNotMatch(html, /Higher: \d/);
 });

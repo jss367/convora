@@ -1,3 +1,4 @@
+import { formatPrompt } from './questions/formatPrompt';
 import PropTypes from 'prop-types';
 import React, { useEffect, useState } from 'react';
 
@@ -6,8 +7,7 @@ const formatNumber = value => value == null ? '—' : Number(value.toFixed(1)).t
 // enough that one would hide the difference between, say, 0.25 and 0.34.
 const formatAverage = value => value == null ? '—' : Number(value.toFixed(Math.abs(value) < 10 ? 2 : 1)).toLocaleString();
 const formatDate = value => new Date(value).toLocaleString();
-// Kept in step with RESULTS_HIDDEN_HINT in viewer.js. This file imports nothing
-// local so the Node test suite can load it on its own.
+// Kept in step with RESULTS_HIDDEN_HINT in viewer.js.
 const RESULTS_HIDDEN_HINT = 'Results appear after you vote';
 // Header values must be plain visible ASCII or fetch() throws.
 const isHeaderSafe = value => typeof value === 'string' && /^[\x21-\x7e]+$/.test(value);
@@ -64,7 +64,7 @@ export function QuestionComparison({ before, after, comparing, beforeName, after
         return (
             <article className="border border-gray-200 rounded-lg p-4">
                 <div className="flex flex-wrap justify-between gap-2 mb-2">
-                    <h3 className="font-semibold text-gray-800 break-words">{question.text}</h3>
+                    <h3 className="font-semibold text-gray-800 break-words">{formatPrompt(question.text)}</h3>
                     <span className="text-xs text-gray-500">{question.type}</span>
                 </div>
                 <p className="text-sm text-gray-600">{RESULTS_HIDDEN_HINT}. Answer this question, then choose Refresh.</p>
@@ -88,7 +88,7 @@ export function QuestionComparison({ before, after, comparing, beforeName, after
     const renderTable = (rows, left, right, keyPrefix = '') => (
         <div className="overflow-x-auto">
             <table className="w-full text-left text-sm">
-                <caption className="sr-only">Response distribution for {question.text}{keyPrefix}</caption>
+                <caption className="sr-only">Response distribution for {formatPrompt(question.text)}{keyPrefix}</caption>
                 <thead>
                     <tr className="text-xs text-gray-500 border-b">
                         <th scope="col" className="p-2">Response</th>
@@ -111,7 +111,7 @@ export function QuestionComparison({ before, after, comparing, beforeName, after
     return (
         <article className="border border-gray-200 rounded-lg p-4">
             <div className="flex flex-wrap justify-between gap-2 mb-2">
-                <h3 className="font-semibold text-gray-800 break-words">{question.text}</h3>
+                <h3 className="font-semibold text-gray-800 break-words">{formatPrompt(question.text)}</h3>
                 <span className="text-xs text-gray-500">{question.type}</span>
             </div>
             <p className="text-sm text-gray-600 mb-2">
@@ -129,7 +129,7 @@ export function QuestionComparison({ before, after, comparing, beforeName, after
             {changed ? (
                 <>
                     <p className="text-sm text-amber-800 mb-3">The question wording, type, scale, answer options, or histogram bins changed. Results are shown separately; no change is calculated.</p>
-                    <p className="text-sm mb-2">Earlier wording: {before.text}</p>
+                    <p className="text-sm mb-2">Earlier wording: {formatPrompt(before.text)}</p>
                     {renderTable(beforeRows, before, null, ' (earlier scale)')}
                     {renderTable(afterRows, null, after, ' (later scale)')}
                 </>
