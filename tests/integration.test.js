@@ -1498,7 +1498,7 @@ function assertResultsHidden(question, label) {
   assert.equal(question.resultsHidden, true, `${label}: marked hidden`);
   assert.deepEqual(question.votes, [], `${label}: no votes on the wire`);
   assert.deepEqual(
-    Object.keys(question).filter(key => !['maxResponses', 'max_responses', 'interestCount', 'interestVoterTokens'].includes(key) && /vote|count|tally|result|average|response|distribution/i.test(key)).sort(),
+    Object.keys(question).filter(key => !['maxResponses', 'max_responses', 'interestCount', 'interestVoterTokens', 'downvoteCount', 'downvoterTokens'].includes(key) && /vote|count|tally|result|average|response|distribution/i.test(key)).sort(),
     ['resultsHidden', 'resultsRevealed', 'votes'], `${label}: no other result fields`
   );
   assert.equal(question.resultsRevealed, false, `${label}: not revealed`);
@@ -5096,6 +5096,40 @@ for (const [enabled, visible] of [[false, true], [true, false], [false, false]])
 
 const interestCount = async questionId =>
   (await pool.query('SELECT count(*)::int AS n FROM question_interest WHERE question_id = $1', [questionId])).rows[0].n;
+
+test('question downvotes require moderator opt-in and share one vote with upvotes', async () => {
+  const seed = await seedResultsDiscussion('optional-downvotes');
+  const { socket } = await joinAs(seed.slug, 'downvoter');
+  const vote = direction => emitWithAck(socket, 'setQuestionInterest', seed.slug, seed.agreement, direction, 'downvoter');
+  const recover = () => emitWithAck(socket, 'getQuestionInterestState', seed.slug, seed.agreement, 'downvoter');
+  const enable = async enabled => {
+    const changed = waitForEvent(socket, 'discussionState', state => state.questionDownvotesEnabled === enabled);
+    socket.emit('setDiscussionFlags', seed.slug, { question_downvotes_enabled: enabled }, seed.adminToken);
+    await changed;
+  };
+  try {
+    const refused = waitForEvent(socket, 'error');
+    socket.emit('setDiscussionFlags', seed.slug, { question_downvotes_enabled: true }, 'not-the-moderator');
+    await refused;
+    assert.deepEqual(await vote('down'), { updated: false });
+    await enable(true);
+    const broadcast = waitForQuestions(socket, qs => byId(qs, seed.agreement).downvoteCount === 1, 'downvote');
+    assert.deepEqual(await vote('down'), { updated: true });
+    const question = byId(await broadcast, seed.agreement);
+    assert.deepEqual(question.downvoterTokens, [crypto.createHash('sha256').update(`question:${seed.agreement}:downvoter`).digest('hex')]);
+    assert.equal(question.interestCount, 0);
+    assert.deepEqual(await recover(), { interested: false, downvoted: true });
+    await enable(false);
+    assert.deepEqual(await recover(), { interested: false, downvoted: false });
+    assert.deepEqual(await vote('down'), { updated: false });
+    assert.deepEqual(await vote(true), { updated: true });
+    await enable(true);
+    assert.deepEqual(await recover(), { interested: true, downvoted: false });
+    assert.equal(await interestCount(seed.agreement), 1);
+    await pool.query('UPDATE discussions SET locked = TRUE WHERE id=$1', [seed.id]);
+    assert.deepEqual(await vote('down'), { updated: false });
+  } finally { socket.disconnect(); }
+});
 
 test('participants mark questions as interesting; counts broadcast with tokens instead of user ids', async () => {
   const seed = await seedResultsDiscussion('interest');

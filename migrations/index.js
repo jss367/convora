@@ -388,6 +388,11 @@ async function migrateUnifiedResponses(client) {
   await client.query('CREATE UNIQUE INDEX IF NOT EXISTS votes_request_id ON votes (question_id, user_id, request_id)');
 }
 
+async function migrateQuestionDownvotes(client) {
+  await client.query('ALTER TABLE discussions ADD COLUMN IF NOT EXISTS question_downvotes_enabled BOOLEAN NOT NULL DEFAULT FALSE');
+  await client.query('ALTER TABLE question_interest ADD COLUMN IF NOT EXISTS downvote BOOLEAN NOT NULL DEFAULT FALSE');
+}
+
 module.exports = [
   [1, initSchema],
   [2, migrateModerationAndDedup],
@@ -400,4 +405,5 @@ module.exports = [
   [9, migrateDiscussionPseudonymsTable],
   [10, migrateBrainstormInteractions],
   [11, migrateUnifiedResponses],
+  [12, migrateQuestionDownvotes],
 ];

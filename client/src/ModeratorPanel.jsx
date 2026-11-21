@@ -198,6 +198,11 @@ const ModeratorPanel = ({
                             onChange={onSetModeratorOnly}
                         />
                         <Switch
+                            label="Allow question downvotes"
+                            checked={!!state.questionDownvotesEnabled}
+                            onChange={(on) => onSetFlags({ question_downvotes_enabled: on })}
+                        />
+                        <Switch
                             label="Listed publicly"
                             hint="Anyone can find this discussion on the Convora home page"
                             checked={state.listed === true}
@@ -388,6 +393,7 @@ ModeratorPanel.propTypes = {
         displayPinnedFirst: PropTypes.bool,
         displayQuestionId: PropTypes.number,
         reactionsEnabled: PropTypes.bool,
+        questionDownvotesEnabled: PropTypes.bool,
         reactionsVisible: PropTypes.bool,
         commentsEnabled: PropTypes.bool,
     }).isRequired,

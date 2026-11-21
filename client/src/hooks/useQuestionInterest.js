@@ -5,11 +5,12 @@ const SETTLEMENT_TIMEOUT = 10000;
 // One write per question, held through the server ack AND ownership hashing.
 // An interrupted write has an unknown outcome. Recovery first waits behind it
 // on the server; an arbitrary new questions array cannot prove it committed.
-export function useQuestionInterest(socket, { discussionSlug, userId, questions, interestedQuestionIds, interestReady }) {
+export function useQuestionInterest(socket, { discussionSlug, userId, questions, interestedQuestionIds, downvotedQuestionIds, interestReady }) {
     const [pending, setPending] = useState(new Set());
     const [blockedSnapshot, setBlockedSnapshot] = useState(null);
     const current = useRef();
-    current.current = { discussionSlug, userId, questions, interestedQuestionIds, interestReady };
+    current.current = { discussionSlug, userId, questions, interestReady,
+        voteFor: id => downvotedQuestionIds?.has(id) ? 'down' : interestedQuestionIds.has(id) };
     const scope = useRef(null);
 
     useEffect(() => {
@@ -30,7 +31,7 @@ export function useQuestionInterest(socket, { discussionSlug, userId, questions,
             if (!snapshot.interestReady) return;
             for (const [id, entry] of active.entries) {
                 if (entry.acked && snapshot.questions !== entry.before
-                    && snapshot.interestedQuestionIds.has(id) === entry.desired) forget(id, entry);
+                    && snapshot.voteFor(id) === entry.desired) forget(id, entry);
             }
         };
         active.recover = (id, entry) => {
@@ -54,7 +55,7 @@ export function useQuestionInterest(socket, { discussionSlug, userId, questions,
                 if (typeof result?.interested !== 'boolean') return;
                 entry.recovering = false;
                 entry.acked = true;
-                entry.desired = result.interested;
+                entry.desired = result.downvoted ? 'down' : result.interested;
                 entry.before = current.current.questions;
                 // Only now is the original write known to be settled. Keep the
                 // control pending until ownership agrees with this recovery read.
@@ -74,7 +75,7 @@ export function useQuestionInterest(socket, { discussionSlug, userId, questions,
         const recoverPending = () => {
             for (const [id, entry] of active.entries) active.recover(id, entry);
         };
-        active.toggle = id => {
+        active.toggle = (id, direction = true) => {
             const snapshot = current.current;
             if (!isActive() || !socket.connected || !userId || !snapshot.interestReady
                 || snapshot.questions === active.blocked || active.entries.has(id)) return false;
@@ -84,7 +85,7 @@ export function useQuestionInterest(socket, { discussionSlug, userId, questions,
                 active.interrupted();
                 return false;
             }
-            const entry = { desired: !snapshot.interestedQuestionIds.has(id), before: snapshot.questions, acked: false, generation: 0 };
+            const entry = { desired: snapshot.voteFor(id) === direction ? false : direction, before: snapshot.questions, acked: false, generation: 0 };
             active.entries.set(id, entry);
             publish();
             entry.timer = setTimeout(() => {
@@ -117,8 +118,8 @@ export function useQuestionInterest(socket, { discussionSlug, userId, questions,
         };
     }, [socket, discussionSlug, userId]);
 
-    useEffect(() => { scope.current?.reconcile(); }, [questions, interestedQuestionIds, interestReady]);
+    useEffect(() => { scope.current?.reconcile(); }, [questions, interestedQuestionIds, downvotedQuestionIds, interestReady]);
 
     const ready = socket.connected && Boolean(userId) && interestReady && questions !== blockedSnapshot;
-    return { pending, ready, toggle: id => scope.current?.toggle(id) ?? false };
+    return { pending, ready, toggle: (id, direction) => scope.current?.toggle(id, direction) ?? false };
 }
