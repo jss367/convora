@@ -93,6 +93,10 @@ const DiscussionPage = () => {
     const [showDeleteModal, setShowDeleteModal] = useState(false);
     const [deleting, setDeleting] = useState(false);
     const [deleteError, setDeleteError] = useState('');
+    const [clearTarget, setClearTarget] = useState(null);
+    const [clearing, setClearing] = useState(false);
+    const [clearError, setClearError] = useState('');
+    const [clearedRoom, setClearedRoom] = useState(null);
     const [showDuplicateModal, setShowDuplicateModal] = useState(false);
     const [showShareModal, setShowShareModal] = useState(false);
     const [showActionsMenu, setShowActionsMenu] = useState(false);
@@ -173,6 +177,8 @@ const DiscussionPage = () => {
     const moderatorLink = useModeratorLinkPrompt(discussionSlug, adminToken);
     useEffect(() => { setAdminLinkCopied(false); }, [discussionSlug, adminToken]);
     const isAdmin = !!adminToken;
+    const showClearModal = isAdmin && clearTarget === discussionSlug;
+    const clearDialogRef = useModalDialog(showClearModal, () => { if (!clearing) setClearTarget(null); }, actionsMenuButtonRef);
     const composer = useQuestionComposer({ socket, discussionSlug, adminToken, setError });
     const { onQuestionsLoaded, onSimilarQuestion } = composer;
     const { locked, moderatorOnly } = discussionState;
@@ -619,6 +625,24 @@ const DiscussionPage = () => {
         socket.on('discussionDeleted', onDeleted);
         return () => socket.off('discussionDeleted', onDeleted);
     }, [socket, discussionSlug, leaveDeletedDiscussion]);
+
+    const handleClearResponses = async () => {
+        if (!showClearModal || clearing) return;
+        setClearing(true);
+        setClearError('');
+        try {
+            const response = await fetch(`/api/discussions/${encodeURIComponent(clearTarget)}/responses`, {
+                method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ adminToken }),
+            });
+            if (!response.ok) throw new Error((await response.json()).error || 'Could not clear votes and responses.');
+            setClearedRoom(clearTarget);
+            setClearTarget(null);
+        } catch (error) {
+            setClearError(error.message || 'Could not confirm that votes and responses were cleared.');
+        } finally {
+            setClearing(false);
+        }
+    };
 
     const handleDeleteDiscussion = async () => {
         if (deleting) return;
@@ -1343,6 +1367,13 @@ const DiscussionPage = () => {
                                 >
                                     Duplicate Discussion
                                 </button>
+                                {isAdmin && (
+                                    <button type="button" role="menuitem" onClick={() => {
+                                        setShowActionsMenu(false); setClearError(''); setClearedRoom(null); setClearTarget(discussionSlug);
+                                    }} className="block w-full text-left px-4 py-2 text-sm text-red-700 hover:bg-red-50">
+                                        Clear votes and responses
+                                    </button>
+                                )}
                                 {canDemote && (
                                     <button
                                         type="button"
@@ -1389,6 +1420,21 @@ const DiscussionPage = () => {
                     }}
                     onDisplay={isAdmin ? (settings) => socket.emit('setDisplaySettings', discussionSlug, settings, adminToken) : undefined}
                 />
+            )}
+
+            {clearedRoom === discussionSlug && <p role="status">Votes and responses cleared. Your questions are still here.</p>}
+            {showClearModal && (
+                <div className="fixed inset-0 z-50 bg-gray-600 bg-opacity-50 flex items-center justify-center p-4">
+                    <div ref={clearDialogRef} role="dialog" aria-modal="true" aria-labelledby="clear-title" aria-describedby="clear-description" tabIndex={-1} className="bg-white rounded-lg shadow-xl p-6 w-full max-w-md">
+                        <h2 id="clear-title" className="text-xl font-bold mb-4">Clear votes and responses?</h2>
+                        <p id="clear-description" className="text-gray-700 mb-4">This permanently removes all answers, interest marks, and response comments, ratings, and reactions from “{discussionTitle}”. Your questions, settings, saved snapshots, and link stay the same. This cannot be undone.</p>
+                        {clearError && <p role="alert" className="text-red-700 mb-4">{clearError}</p>}
+                        <div className="flex justify-end gap-2">
+                            <button type="button" data-autofocus disabled={clearing} onClick={() => setClearTarget(null)} className="px-4 py-2 rounded bg-gray-200 disabled:opacity-50">Cancel</button>
+                            <button type="button" disabled={clearing} onClick={handleClearResponses} className="px-4 py-2 rounded bg-red-700 text-white disabled:opacity-50">{clearing ? 'Clearing…' : 'Clear votes and responses'}</button>
+                        </div>
+                    </div>
+                </div>
             )}
 
             {showDeleteModal && (
