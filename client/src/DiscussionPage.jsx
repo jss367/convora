@@ -116,7 +116,7 @@ const DiscussionPage = () => {
     const [shortLinkCopied, setShortLinkCopied] = useState(false);
     const [discussionState, setDiscussionState] = useState({
         locked: false, moderatorOnly: false, hasModerator: false, theme: DEFAULT_THEME,
-        reactionsEnabled: false, reactionsVisible: true, commentsEnabled: false,
+        reactionsEnabled: false, reactionsVisible: true, commentsEnabled: false, questionDownvotesEnabled: false,
         reactionKeys: ALL_REACTION_KEYS,
     });
     // Modal panels: Escape closes, focus is kept inside while open and handed
@@ -157,11 +157,11 @@ const DiscussionPage = () => {
     const {
         identity, userId, displayName, effectivePseudonym, pseudonymReserved,
         shufflePending, selfHandle, ownedVoteIds, ownedCommentIds,
-        interestedQuestionIds, interestReady, isMyVote, handlePseudonymSync, handleRegeneratePseudonym,
+        interestedQuestionIds, downvotedQuestionIds, interestReady, isMyVote, handlePseudonymSync, handleRegeneratePseudonym,
         handleSelectNameMode, handleCustomNameChange,
     } = useParticipantIdentity(socket, { topic, discussionSlug, discussionId: discussion?.id, questions });
     const questionInterest = useQuestionInterest(socket, {
-        discussionSlug, userId, questions, interestedQuestionIds, interestReady,
+        discussionSlug, userId, questions, interestedQuestionIds, downvotedQuestionIds, interestReady,
     });
     const {
         adminToken, setAdminToken, canDemote, setCanDemote,
@@ -1816,8 +1816,8 @@ const DiscussionPage = () => {
                 // it has votes, its wording is locked in (matches the server guard).
                 const hasResponses = (question.votes?.length || 0) > 0;
                 const isEditing = editingQuestionId === question.id;
-                const interestCount = question.interestCount || 0;
-                const isInterested = interestedQuestionIds.has(question.id);
+                const questionVotes = [{ name: 'Upvote', symbol: '▲', direction: true, pressed: interestedQuestionIds.has(question.id), count: question.interestCount || 0 }];
+                if (discussionState.questionDownvotesEnabled) questionVotes.push({ name: 'Downvote', symbol: '▼', direction: 'down', pressed: downvotedQuestionIds.has(question.id), count: question.downvoteCount || 0 });
                 const interestPending = questionInterest.pending.has(question.id);
                 const hiddenOnDisplay = discussionState.displayHiddenQuestionIds?.includes(question.id);
                 // Whether the room display is showing this question on its own: its
@@ -1845,28 +1845,26 @@ const DiscussionPage = () => {
                         title instead of squeezing it into a thin column. */}
                     <div className="flex flex-wrap justify-between items-start gap-x-4 gap-y-2 mb-4">
                         <div className="flex items-start gap-3 min-w-0 flex-1 basis-64">
-                            <button
+                            <div className="shrink-0 flex flex-col gap-1">
+                            {questionVotes.map(({ name, symbol, direction, pressed, count }) => <button
+                                key={name}
                                 type="button"
-                                onClick={() => handleToggleInterest(question.id)}
+                                onClick={() => handleToggleInterest(question.id, direction)}
                                 disabled={locked || !questionInterest.ready || interestPending}
                                 aria-busy={interestPending}
-                                aria-pressed={isInterested}
-                                aria-label={`Interested in "${plainPrompt(question.text)}"`}
-                                aria-describedby={`interest-count-${question.id}`}
-                                title={locked
-                                    ? 'Voting is closed'
-                                    : isInterested ? 'Remove your interest in this question' : 'I want to discuss this question'}
-                                className={`shrink-0 flex flex-col items-center px-2 py-1 rounded-md border transition duration-200 ${isInterested
+                                aria-pressed={pressed}
+                                aria-label={`${name} "${plainPrompt(question.text)}"`}
+                                aria-describedby={`${name}-count-${question.id}`}
+                                className={`flex flex-col items-center px-2 py-1 rounded-md border transition duration-200 ${pressed
                                     ? 'bg-primary text-white border-primary'
                                     : 'bg-white text-gray-600 border-gray-300 hover:border-primary'} ${locked ? 'opacity-50 cursor-not-allowed' : ''}`}
                             >
-                                <span aria-hidden="true" className="leading-none">▲</span>
-                                {/* The button's name stays the same as the count
-                                    changes; the count is read as its description. */}
-                                <span id={`interest-count-${question.id}`} className="text-xs font-semibold">
-                                    {interestCount}<span className="sr-only"> interested</span>
+                                <span aria-hidden="true" className="leading-none">{symbol}</span>
+                                <span id={`${name}-count-${question.id}`} className="text-xs font-semibold">
+                                    {count}<span className="sr-only"> {name.toLowerCase()}{count === 1 ? '' : 's'}</span>
                                 </span>
-                            </button>
+                            </button>)}
+                            </div>
                             <h2 className="text-xl font-semibold min-w-0 break-words">
                                 {question.pinned && <span className="mr-1" title="Pinned">📌</span>}
                                 {formatPrompt(question.text)}

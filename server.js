@@ -204,14 +204,14 @@ async function getDiscussionState(topic) {
             (SELECT s.id FROM opinion_snapshots s
               WHERE s.id = d.display_after_snapshot_id AND s.discussion_id = d.id) AS display_after_snapshot_id,
             admin_token IS NOT NULL AS has_moderator,
-            reactions_enabled, reactions_visible, comments_enabled
+            reactions_enabled, reactions_visible, comments_enabled, question_downvotes_enabled
        FROM discussions d WHERE slug = $1`,
     [slug]
   );
   if (result.rows.length === 0) {
     return {
       locked: false, moderatorOnly: false, hasModerator: false, theme: DEFAULT_THEME,
-      reactionsEnabled: false, reactionsVisible: true, commentsEnabled: false,
+      reactionsEnabled: false, reactionsVisible: true, commentsEnabled: false, questionDownvotesEnabled: false,
       reactionKeys: [...DEFAULT_REACTION_KEYS],
       resultsVisibility: DEFAULT_RESULTS_VISIBILITY,
       listed: false,
@@ -233,6 +233,7 @@ async function getDiscussionState(topic) {
   return {
     locked: row.locked === true,
     moderatorOnly: row.moderator_only_questions === true,
+    questionDownvotesEnabled: row.question_downvotes_enabled === true,
     hasModerator: row.has_moderator === true,
     theme: row.theme || DEFAULT_THEME,
     reactionsEnabled: row.reactions_enabled === true,
@@ -1397,7 +1398,7 @@ io.on('connection', (socket) => {
     const userId = bindSocketUser(socket, claimedUserId);
     // Question ids are Postgres integers; anything else cannot match a question.
     const validId = Number.isInteger(questionId) && questionId > 0 && questionId <= 2147483647;
-    if (!userId || !validId || typeof interested !== 'boolean') { reply(false); return; }
+    if (!userId || !validId || ![true, false, 'down'].includes(interested)) { reply(false); return; }
     try {
       const changed = await interestUpdates.run(discussionSlug, questionId, userId,
         () => setQuestionInterest(discussionSlug, questionId, userId, interested));
@@ -1423,9 +1424,10 @@ io.on('connection', (socket) => {
     }
     try {
       const result = await interestUpdates.run(discussionSlug, questionId, userId, () => pool.query(
-        `SELECT EXISTS (SELECT 1 FROM question_interest qi
-                        WHERE qi.question_id=q.id AND qi.user_id=$3) AS interested
+        `SELECT COALESCE(NOT qi.downvote, false) AS interested,
+                COALESCE(qi.downvote AND d.question_downvotes_enabled, false) AS downvoted
          FROM questions q JOIN discussions d ON d.id=q.discussion_id
+         LEFT JOIN question_interest qi ON qi.question_id=q.id AND qi.user_id=$3
          WHERE q.id=$1 AND d.slug=$2 AND NOT q.queued`, [questionId, discussionSlug, userId]
       ));
       ack(result.rows[0] || { error: 'not_found' });
@@ -1612,7 +1614,7 @@ io.on('connection', (socket) => {
         socket.emit('error', { message: 'Not authorized to moderate this discussion.' });
         return;
       }
-      const allowed = ['reactions_enabled', 'reactions_visible', 'comments_enabled'];
+      const allowed = ['reactions_enabled', 'reactions_visible', 'comments_enabled', 'question_downvotes_enabled'];
       const sets = [];
       const values = [];
       for (const key of allowed) {
@@ -2017,7 +2019,9 @@ async function getQuestions(topic, { includeUserIds = false, respondents = null 
       d.reactions_visible,
       d.comments_enabled,
       (SELECT COALESCE(json_agg(qi.user_id ORDER BY qi.id), '[]'::json)
-         FROM question_interest qi WHERE qi.question_id = q.id) AS interest_voters,
+         FROM question_interest qi WHERE qi.question_id = q.id AND NOT qi.downvote) AS interest_voters,
+      (SELECT COALESCE(json_agg(qi.user_id ORDER BY qi.id), '[]'::json)
+         FROM question_interest qi WHERE qi.question_id = q.id AND qi.downvote AND d.question_downvotes_enabled) AS downvoters,
       COALESCE(json_agg(
         json_build_object(
           'id', v.id,
@@ -2047,13 +2051,15 @@ async function getQuestions(topic, { includeUserIds = false, respondents = null 
   }
   // interest_voters holds raw user ids, so it is taken out of the row here and
   // only its count and per-question tokens are sent.
-  const questions = result.rows.map(({ results_revealed: revealed, interest_voters: interestVoters, ...row }) => ({
+  const questions = result.rows.map(({ results_revealed: revealed, interest_voters: interestVoters, downvoters, ...row }) => ({
     ...row,
     // How many participants marked this question as interesting, and a token
     // for each so a client can recognize its own mark. Tokens are namespaced
     // (`question:<id>`) so one can never equal a response's ownership token
     // and link a participant to an anonymous response with the same numeric id.
     interestCount: Array.isArray(interestVoters) ? interestVoters.length : 0,
+    downvoteCount: downvoters.length,
+    downvoterTokens: downvoters.map(uid => ownerToken(`question:${row.id}`, uid)),
     interestVoterTokens: (Array.isArray(interestVoters) ? interestVoters : [])
       .map(uid => ownerToken(`question:${row.id}`, uid)),
     maxResponses: row.max_responses,
@@ -3005,20 +3011,23 @@ async function setQuestionInterest(topic, questionId, userId, interested) {
     // Hold the discussion row so a moderator's lock waits for this write, and a
     // write that waited for a lock sees it.
     const found = await client.query(
-      `SELECT q.id
+      `SELECT q.id, d.question_downvotes_enabled
        FROM questions q
        JOIN discussions d ON q.discussion_id = d.id
        WHERE q.id = $1 AND d.slug = $2 AND NOT d.locked AND NOT q.queued FOR SHARE OF d`,
       [questionId, slug]
     );
     if (found.rows.length === 0) return false;
+    if (interested === 'down' && !found.rows[0].question_downvotes_enabled) return false;
     if (interested) {
       await client.query(
-        'INSERT INTO question_interest (question_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
-        [questionId, userId]
+        `INSERT INTO question_interest (question_id, user_id, downvote) VALUES ($1, $2, $3)
+         ON CONFLICT (question_id, user_id) DO UPDATE SET downvote = EXCLUDED.downvote`,
+        [questionId, userId, interested === 'down']
       );
     } else {
-      await client.query('DELETE FROM question_interest WHERE question_id = $1 AND user_id = $2', [questionId, userId]);
+      await client.query('DELETE FROM question_interest WHERE question_id = $1 AND user_id = $2 AND (NOT downvote OR $3)',
+        [questionId, userId, found.rows[0].question_downvotes_enabled]);
     }
     return true;
   });
@@ -3592,7 +3601,7 @@ app.post('/api/duplicate-discussion', async (req, res) => {
     // preserves whether reactions/comments were enabled (and reactions
     // revealed) rather than silently resetting them to the defaults.
     const originalDiscussionResult = await client.query(
-      'SELECT id, reactions_enabled, reactions_visible, comments_enabled, theme, results_visibility FROM discussions WHERE slug = $1',
+      'SELECT id, reactions_enabled, reactions_visible, comments_enabled, theme, results_visibility, question_downvotes_enabled FROM discussions WHERE slug = $1',
       [slugifyTopic(originalTopic)]
     );
 
@@ -3633,8 +3642,8 @@ app.post('/api/duplicate-discussion', async (req, res) => {
       const newSlug = suffixSlug(baseNewSlug, suffix);
       if (await lockDiscussionSlug(client, newSlug)) continue;
       const newDiscussionResult = await client.query(
-        `INSERT INTO discussions (topic, slug, admin_token, reactions_enabled, reactions_visible, comments_enabled, theme, results_visibility, creator_google_sub)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        `INSERT INTO discussions (topic, slug, admin_token, reactions_enabled, reactions_visible, comments_enabled, theme, results_visibility, creator_google_sub, question_downvotes_enabled)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
          ON CONFLICT (slug) DO NOTHING
          RETURNING id, topic, slug`,
         [displayNewTopic, newSlug, newAdminToken,
@@ -3642,7 +3651,7 @@ app.post('/api/duplicate-discussion', async (req, res) => {
           originalDiscussion.reactions_visible,
           originalDiscussion.comments_enabled,
           originalDiscussion.theme,
-          originalDiscussion.results_visibility, owner?.google_sub]
+          originalDiscussion.results_visibility, owner?.google_sub, originalDiscussion.question_downvotes_enabled]
       );
 
       if (newDiscussionResult.rows.length > 0) {
