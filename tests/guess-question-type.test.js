@@ -38,6 +38,8 @@ const CASES = {
   'Multiple Choice': [
     'Which would reassure you most about a powerful AI?',
     'Which would reassure you most',
+    'Which option would reassure you most?',
+    'Which of these would reassure you most?',
     'Which would you prefer?',
     'Which option do you prefer?',
   ],
@@ -70,6 +72,7 @@ const CASES = {
     'What features are we missing?',
     'Which topics should the offsite cover?',
     'Which ideas would help most?',
+    'Which ideas would reassure you most?',
     'Which suggestions matter most?',
     'Which cities have the most parks?',
     'Any ideas for the team offsite?',

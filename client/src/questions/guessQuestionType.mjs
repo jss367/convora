@@ -26,7 +26,7 @@ const RULES = [
     { type: NUMERICAL, pattern: /\bon a scale\b|\bscale (?:of|from) \d/ },
 
     { type: MULTIPLE_CHOICE, pattern: /^which\b.*\b(?:would|do) you prefer\b/ },
-    { type: MULTIPLE_CHOICE, pattern: /^which (?:would|could)\b.*\byou (?:the )?most\b/ },
+    { type: MULTIPLE_CHOICE, pattern: /^which(?: (?:one|option|of (?:these|those|the following)))? (?:would|could)\b.*\byou (?:the )?most\b/ },
 
     { type: OPEN_ENDED, pattern: /^what(?:'re| are) (?:some|a few|good|other|possible|potential)\b/ },
     { type: OPEN_ENDED, pattern: /^what (?:else )?(?:should|could|can|might) we\b/ },
