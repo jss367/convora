@@ -1123,9 +1123,11 @@ const DiscussionPage = () => {
 
     const sortedAndFilteredQuestions = filterQuestions(sortQuestions(questions.filter(question => !question.queued)));
     // Queued questions reach moderators only (the server sends them to nobody
-    // else). They are listed apart from the live questions, in the order they
-    // were written, which is the order a moderator would publish them in.
-    const queuedQuestions = questions.filter(question => question.queued).sort((a, b) => a.id - b.id);
+    // else). Keep the saved agenda order supplied by the server.
+    const queuedQuestions = questions.filter(question => question.queued);
+    const swapQueuedQuestions = (earlier, later) => {
+        socket.emit('swapQueuedQuestions', discussionSlug, earlier.id, later.id, adminToken);
+    };
     // Pinned questions float to the top, preserving the chosen sort within each
     // group (Array.prototype.sort is stable).
     const orderedQuestions = [...sortedAndFilteredQuestions].sort(
@@ -1790,10 +1792,10 @@ const DiscussionPage = () => {
                         Queued questions ({queuedQuestions.length})
                     </h2>
                     <p className="mb-3 text-sm text-indigo-800">
-                        Only moderators see these drafts and suggestions. Publish one to open it for answers, or delete it to discard it.
+                        Only moderators see these drafts and suggestions. Reorder them to plan the agenda, publish any question to open it for answers, or delete it to discard it.
                     </p>
                     <ol className="space-y-3">
-                        {queuedQuestions.map((question) => (
+                        {queuedQuestions.map((question, index) => (
                             <li key={question.id} className="rounded-md border border-indigo-100 bg-white p-4" data-testid="queued-question">
                                 {question.suggested && <p className="text-xs font-medium text-indigo-700">Participant suggestion</p>}
                                 {editingQuestionId === question.id ? (
@@ -1814,7 +1816,19 @@ const DiscussionPage = () => {
                                                 {question.type === QuestionTypes.MULTIPLE_CHOICE && ` (${(question.options || []).join(' · ')})`}
                                             </p>
                                         </div>
-                                        <div className="flex gap-2 ml-auto shrink-0">
+                                        <div className="flex flex-wrap gap-2 ml-auto">
+                                            <button
+                                                disabled={index === 0}
+                                                aria-label={`Move up: ${question.text}`}
+                                                onClick={() => swapQueuedQuestions(queuedQuestions[index - 1], question)}
+                                                className="text-xs px-2 py-1 rounded border border-gray-300 hover:bg-gray-100 disabled:opacity-50"
+                                            >Move up</button>
+                                            <button
+                                                disabled={index === queuedQuestions.length - 1}
+                                                aria-label={`Move down: ${question.text}`}
+                                                onClick={() => swapQueuedQuestions(question, queuedQuestions[index + 1])}
+                                                className="text-xs px-2 py-1 rounded border border-gray-300 hover:bg-gray-100 disabled:opacity-50"
+                                            >Move down</button>
                                             <button
                                                 onClick={() => handlePublishQuestion(question.id)}
                                                 disabled={locked}

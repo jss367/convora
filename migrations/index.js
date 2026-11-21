@@ -393,6 +393,10 @@ async function migrateQuestionDownvotes(client) {
   await client.query('ALTER TABLE question_interest ADD COLUMN IF NOT EXISTS downvote BOOLEAN NOT NULL DEFAULT FALSE');
 }
 
+async function migrateQueueOrder(client) {
+  await client.query('ALTER TABLE questions ADD COLUMN IF NOT EXISTS queue_position INTEGER');
+}
+
 async function migrateIndependentAnswers(client) {
   await client.query('ALTER TABLE questions ADD COLUMN IF NOT EXISTS independent_answers BOOLEAN NOT NULL DEFAULT FALSE');
 }
@@ -443,8 +447,9 @@ module.exports = [
   [10, migrateBrainstormInteractions],
   [11, migrateUnifiedResponses],
   [12, migrateQuestionDownvotes],
-  [13, migrateQuestionApproval],
-  [14, migrateQuestionTools],
-  [15, migrateIndependentAnswers],
-  [16, migrateSpeakingQueue],
+  [13, migrateQueueOrder],
+  [14, migrateQuestionApproval],
+  [15, migrateQuestionTools],
+  [16, migrateIndependentAnswers],
+  [17, migrateSpeakingQueue],
 ];
