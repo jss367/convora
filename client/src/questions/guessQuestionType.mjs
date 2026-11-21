@@ -4,10 +4,11 @@
 // does not recognize, so the caller keeps its default.
 import { QuestionTypes } from './questionTypes.mjs';
 import { plainPrompt } from './promptEmphasis.mjs';
-const { AGREEMENT, YES_NO, NUMERICAL, OPEN_ENDED } = QuestionTypes;
+const { AGREEMENT, YES_NO, NUMERICAL, MULTIPLE_CHOICE, OPEN_ENDED } = QuestionTypes;
 
 const AUXILIARY = '(?:is|are|was|were|do|does|did|will|would|should|can|could|has|have)';
 const WH_WORD = '(?:why|how|what|which|who|whose|where|when)';
+const CHOICE_SET = 'of (?:these|those|the following)(?: (?:options|choices|alternatives))?';
 
 // First match wins, so the order is the precedence: "how likely" has to be
 // claimed as Numerical before the general "how ..." rule calls it Open Ended,
@@ -25,6 +26,9 @@ const RULES = [
     { type: NUMERICAL, pattern: /^(?:estimate|guess)\b/ },
     { type: NUMERICAL, pattern: /^rate (?:your|the|this|our|how)\b/ },
     { type: NUMERICAL, pattern: /\bon a scale\b|\bscale (?:of|from) \d/ },
+
+    { type: MULTIPLE_CHOICE, pattern: /^which\b.*\b(?:would|do) you prefer\b/ },
+    { type: MULTIPLE_CHOICE, pattern: new RegExp(`^which(?: (?:one|option))?(?: ${CHOICE_SET})? (?:would|could)\\b.*\\byou (?:the )?most\\b`) },
 
     { type: OPEN_ENDED, pattern: /^what(?:'re| are) (?:some|a few|good|other|possible|potential)\b/ },
     { type: OPEN_ENDED, pattern: /^what (?:else )?(?:should|could|can|might) we\b/ },
@@ -52,6 +56,7 @@ export function guessQuestionType(text) {
         .toLowerCase()
         .replace(/[‘’]/g, "'")
         .replace(/\s+/g, ' ')
+        .replace(/, ?if any, /g, ' ')
         // Drop leading quotes, bullets and numbering such as "1. ".
         .replace(/^(?:\d+[.)] )?[^a-z0-9]*/, '');
     if (normalized.trim() === '') {
