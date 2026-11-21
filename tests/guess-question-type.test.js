@@ -178,6 +178,8 @@ test('distinguishes polite requests for explanations from yes/no questions', asy
   assert.equal(guessQuestionType('Could you tell me one thing you would change?'), 'Open Ended');
   assert.equal(guessQuestionType('Would you tell us your biggest concern if we could choose just one?'), 'Open Ended');
   assert.equal(guessQuestionType('Would you tell us something if you knew it?'), 'Yes/No');
+  assert.equal(guessQuestionType('Would you tell me anything if you saw it?'), 'Yes/No');
+  assert.equal(guessQuestionType('Would you tell us anything if you could choose one thing?'), 'Open Ended');
 });
 
 test('distinguishes a proposed characterization from a request for a description', async () => {
