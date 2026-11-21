@@ -272,6 +272,7 @@ const ModeratorPanel = ({
                                     onChange={(sort) => onSetDisplaySettings({ sort })}
                                     options={[
                                         ['oldest', 'Oldest first'], ['newest', 'Newest first'],
+                                        ['moderator', 'Moderator order'],
                                         ['interesting', 'Most interesting'], ['agreement', 'Most agreement'],
                                         ['disagreement', 'Most disagreement'], ['controversial', 'Most controversial'],
                                     ]}

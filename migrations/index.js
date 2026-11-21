@@ -434,6 +434,10 @@ async function migrateQuestionApproval(client) {
   await client.query('ALTER TABLE questions ADD COLUMN IF NOT EXISTS participant_suggested BOOLEAN NOT NULL DEFAULT FALSE');
 }
 
+async function migratePublishedOrder(client) {
+  await client.query('ALTER TABLE questions ADD COLUMN IF NOT EXISTS published_position INTEGER');
+}
+
 module.exports = [
   [1, initSchema],
   [2, migrateModerationAndDedup],
@@ -452,4 +456,5 @@ module.exports = [
   [15, migrateQuestionTools],
   [16, migrateIndependentAnswers],
   [17, migrateSpeakingQueue],
+  [18, migratePublishedOrder],
 ];

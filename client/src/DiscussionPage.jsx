@@ -43,6 +43,7 @@ const THEME_KEYS = THEMES.map((t) => t.key);
 const DEFAULT_THEME = 'indigo';
 
 const SortOptions = {
+    MODERATOR: 'Moderator order',
     MOST_RECENT: 'Most Recent',
     MOST_INTERESTING: 'Most Interesting',
     MOST_AGREEMENT: 'Most Agreement',
@@ -60,7 +61,7 @@ const DiscussionPage = () => {
     const [discussion, setDiscussion] = useState(null);
     const [questions, setQuestions] = useState([]);
     const [sliderValues, setSliderValues] = useState({});
-    const [sortOption, setSortOption] = useState(SortOptions.MOST_RECENT);
+    const [sortOption, setSortOption] = useState(SortOptions.MODERATOR);
     const [showUnansweredOnly, setShowUnansweredOnly] = useState(false);
     const [editingIdentity, setEditingIdentity] = useState(false);
     const [error, setError] = useState(null);
@@ -738,6 +739,8 @@ const DiscussionPage = () => {
 
     const sortQuestions = (questions) => {
         switch (sortOption) {
+            case SortOptions.MODERATOR:
+                return [...questions].sort((first, second) => first.moderatorOrder - second.moderatorOrder);
             case SortOptions.MOST_RECENT:
                 return sortQuestionsMostRecent(questions);
             case SortOptions.MOST_INTERESTING:
@@ -988,6 +991,10 @@ const DiscussionPage = () => {
     // Queued questions reach moderators only (the server sends them to nobody
     // else). Keep the saved agenda order supplied by the server.
     const queuedQuestions = questions.filter(question => question.queued);
+    const canArrangePublished = sortOption === SortOptions.MODERATOR && !showUnansweredOnly;
+    const swapPublishedQuestions = (earlier, later) => {
+        socket.emit('swapPublishedQuestions', discussionSlug, earlier.id, later.id, adminToken);
+    };
     const swapQueuedQuestions = (earlier, later) => {
         socket.emit('swapQueuedQuestions', discussionSlug, earlier.id, later.id, adminToken);
     };
@@ -1687,6 +1694,7 @@ const DiscussionPage = () => {
             <div className="mb-6 flex justify-between items-center">
                 <select
                     value={sortOption}
+                    aria-label="Sort submitted questions"
                     onChange={(e) => setSortOption(e.target.value)}
                     className="p-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary"
                 >
@@ -1706,7 +1714,14 @@ const DiscussionPage = () => {
             </div>
 
             {/* Questions list */}
-            {orderedQuestions.map((question) => {
+            {isAdmin && orderedQuestions.length > 1 && (
+                <p className="mb-3 text-sm text-gray-600">{canArrangePublished
+                    ? 'Use Move up or Move down to change the order participants see. Pinned questions stay first.'
+                    : 'To rearrange questions, choose Moderator order and turn off the unanswered filter.'}</p>
+            )}
+            {orderedQuestions.map((question, index) => {
+                const previous = orderedQuestions[index - 1];
+                const next = orderedQuestions[index + 1];
                 // A question can only be edited before anyone has responded — once
                 // it has votes, its wording is locked in (matches the server guard).
                 const hasResponses = (question.votes?.length || 0) > 0;
@@ -1767,6 +1782,13 @@ const DiscussionPage = () => {
                         </div>
                         {isAdmin && (
                             <div className="flex flex-wrap justify-end gap-2 ml-auto max-w-full">
+                                {canArrangePublished && [['up', previous], ['down', next]].map(([direction, neighbor]) => (
+                                    <button key={direction} disabled={!neighbor || neighbor.pinned !== question.pinned}
+                                        aria-label={`Move ${direction}: ${question.text}`}
+                                        onClick={() => direction === 'up' ? swapPublishedQuestions(neighbor, question) : swapPublishedQuestions(question, neighbor)}
+                                        className="text-xs px-2 py-1 rounded border border-gray-300 hover:bg-gray-100 disabled:opacity-50"
+                                    >Move {direction}</button>
+                                ))}
                                 {!hasResponses && (
                                     <button
                                         onClick={() => setEditingQuestionId(question.id)}
