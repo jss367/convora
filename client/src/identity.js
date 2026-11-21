@@ -118,22 +118,29 @@ function withDefaults(identity) {
     };
 }
 
+// The identity last written by this page. When storage is blocked or full it
+// is the only copy, and without it every read would mint a new user id: the
+// server keeps the connection on the first id, so the participant would stop
+// being recognized as the author of their own answers.
+let sessionIdentity = null;
+
 function readStored() {
     try {
         const raw = localStorage.getItem(STORAGE_KEY);
-        if (!raw) return null;
+        if (!raw) return sessionIdentity;
         const parsed = JSON.parse(raw);
         if (parsed && typeof parsed.userId === 'string' && typeof parsed.pseudonym === 'string') {
             return withDefaults(parsed);
         }
-        return null;
+        return sessionIdentity;
     } catch (e) {
         console.warn('Failed to read stored identity:', e);
-        return null;
+        return sessionIdentity;
     }
 }
 
 function writeStored(identity) {
+    sessionIdentity = withDefaults(identity);
     try {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(identity));
     } catch (e) {

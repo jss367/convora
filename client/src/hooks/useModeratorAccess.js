@@ -8,6 +8,12 @@ export function useModeratorAccess(socket, { topic, discussionSlug, discussionTi
     const accessRef = useRef(access);
     const activeSlug = useRef(discussionSlug);
     activeSlug.current = discussionSlug;
+    // A moderator link opened in a browser that already holds a different
+    // token for this room: { slug, token } of the link's token, kept aside
+    // until the held one has been checked (see the verification below).
+    const linkToken = useRef(null);
+    // The token that was replaced by a link's, restored if the link's is refused.
+    const replacedToken = useRef(null);
     // A route change invalidates the previous room's authority immediately,
     // before passive effects adopt credentials for the new room.
     const adminToken = access.slug === discussionSlug ? access.token : null;
@@ -39,9 +45,20 @@ export function useModeratorAccess(socket, { topic, discussionSlug, discussionTi
             const params = new URLSearchParams(window.location.search);
             const fromUrl = params.get('admin');
             if (fromUrl) {
-                try { localStorage.setItem(storageKey, fromUrl); }
-                catch { /* The private link also grants access for this visit. */ }
-                setAdminToken(fromUrl);
+                let held = null;
+                try { held = localStorage.getItem(storageKey); } catch { /* Treated as holding none. */ }
+                if (held && held !== fromUrl) {
+                    // The held token may be the creator's, which a link's token
+                    // must not replace: a co-moderator's link would take away
+                    // the creator's own powers, and a revoked one all access.
+                    // Check the held token first and decide then.
+                    linkToken.current = { slug: discussionSlug, token: fromUrl };
+                    setAdminToken(held);
+                } else {
+                    try { localStorage.setItem(storageKey, fromUrl); }
+                    catch { /* The private link also grants access for this visit. */ }
+                    setAdminToken(fromUrl);
+                }
                 getAccount().then(info => info.signedIn && accountRequest('/link', {
                     discussions: [{ slug: discussionSlug, token: fromUrl }],
                 })).catch(() => {}); // The saved link can still be imported on the account page.
@@ -61,7 +78,12 @@ export function useModeratorAccess(socket, { topic, discussionSlug, discussionTi
             if (storedToken) {
                 localStorage.setItem(storageKey, storedToken);
             }
-            setAdminToken(storedToken);
+            // This also runs when the title arrives or changes. A token already
+            // held for this room stays: it may exist only in memory (from the
+            // account, or a link opened while storage was full), and dropping
+            // it would take the moderator's controls away.
+            const current = accessRef.current;
+            if (!(current.slug === discussionSlug && current.token)) setAdminToken(storedToken);
         } catch (e) {
             console.warn('Failed to read admin token:', e);
         }
@@ -95,9 +117,31 @@ export function useModeratorAccess(socket, { topic, discussionSlug, discussionTi
             socket.emit('checkModerator', discussionSlug, checked, (resp) => {
                 if (cancelled || !resp || !resp.ok) return;
                 if (!isCurrent()) return;
+                const key = `convora_admin_${discussionSlug}`;
+                const store = token => {
+                    try { localStorage.setItem(key, token); }
+                    catch { /* Access still holds for this visit. */ }
+                };
+                const fromLink = linkToken.current?.slug === discussionSlug ? linkToken.current.token : null;
+                linkToken.current = null;
+                if (fromLink && fromLink !== checked && !(resp.isModerator && resp.isCreator)) {
+                    // The held token is not the creator's, so the link's takes
+                    // over. A held token that still works is kept to fall back on.
+                    replacedToken.current = resp.isModerator ? { slug: discussionSlug, token: checked } : null;
+                    store(fromLink);
+                    setAdminToken(fromLink);
+                    return;
+                }
+                const replaced = replacedToken.current?.slug === discussionSlug ? replacedToken.current.token : null;
+                replacedToken.current = null;
+                if (resp.isModerator === false && replaced && replaced !== checked) {
+                    // The link's token was refused; go back to the one it replaced.
+                    store(replaced);
+                    setAdminToken(replaced);
+                    return;
+                }
                 if (resp.isModerator === false) {
                     try {
-                        const key = `convora_admin_${discussionSlug}`;
                         if (localStorage.getItem(key) === checked) localStorage.removeItem(key);
                     } catch (e) {
                         console.warn('Failed to clear admin token:', e);

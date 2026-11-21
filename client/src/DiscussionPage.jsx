@@ -170,6 +170,8 @@ const DiscussionPage = () => {
     // Id of the question a moderator is currently editing inline (null when none).
     const [editingQuestionId, setEditingQuestionId] = useState(null);
     const [editingDrafts, setEditingDrafts] = useState({});
+    const editingQuestionIdRef = useRef(editingQuestionId);
+    editingQuestionIdRef.current = editingQuestionId;
     const closeQuestionEditor = () => { setEditingQuestionId(null); setEditingDrafts({}); };
     // Experimental "opinion groups" view, hidden behind a ?clusters=1 flag so it
     // can be evaluated on a real discussion without exposing it to everyone. Once
@@ -470,7 +472,9 @@ const DiscussionPage = () => {
     // close the inline editor, otherwise the editor stays open to show the error.
     const handleEditQuestion = (questionId, updates, onResult) => {
         socket.emit('editQuestion', discussionSlug, questionId, updates, adminToken, (resp) => {
-            if (resp && resp.updated) closeQuestionEditor();
+            // Close only the editor this save came from: by the time a slow
+            // acknowledgment arrives the moderator may be editing another question.
+            if (resp && resp.updated && editingQuestionIdRef.current === questionId) closeQuestionEditor();
             if (typeof onResult === 'function') onResult(resp);
         });
     };
@@ -746,6 +750,9 @@ const DiscussionPage = () => {
         onSimilarQuestion: setSimilarPrompt, onBrainstormState: setMyBrainstorm,
         onModeratorGranted: handleModeratorGranted, onModeratorRevoked: handleModeratorRevoked,
         onPseudonymSync: handlePseudonymSync,
+        // The server's reason for refusing an action, such as a vote sent just
+        // as the discussion was locked. Nothing else would tell the participant.
+        onError: payload => { if (typeof payload?.message === 'string') setError(payload.message); },
     });
 
     // Mirror the discussion's chosen theme onto <html data-theme="..."> so the
@@ -770,6 +777,13 @@ const DiscussionPage = () => {
         // open composer during live updates, but start fresh after navigation.
         setComposerOpen(false);
         setQuestionsLoaded(false);
+    }, [discussionSlug]);
+
+    // The participant list is fetched on request, so after navigation the
+    // previous room's would stay on screen with buttons that act on this one.
+    useEffect(() => {
+        setParticipants([]);
+        setShowParticipants(false);
     }, [discussionSlug]);
 
     const handleAddQuestion = (event) => {
@@ -860,6 +874,10 @@ const DiscussionPage = () => {
                     setError('Only the moderator can add questions right now.');
                 } else if (resp && resp.reason === 'not_authorized') {
                     setError('Only a moderator can add a question to the queue.');
+                } else if (resp && resp.reason === 'locked') {
+                    setError('This discussion is locked, so new questions are closed.');
+                } else if (!resp || resp.reason !== 'similar') {
+                    setError('Could not add the question. Please try again.');
                 }
             });
         } catch (error) {
@@ -888,7 +906,15 @@ const DiscussionPage = () => {
         // acknowledgment the question's controls are disabled and a second
         // submission is refused (#72).
         const args = [discussionSlug, questionId, value, userId, displayName, getEffectiveNameMode(identity)];
-        if (typeof onResult === 'function') args.push(onResult);
+        const draft = sliderValues[questionId];
+        args.push(result => {
+            // A refused answer goes back into the draft it was cleared from
+            // below, unless the participant has started another since.
+            if (!result?.ok && draft !== undefined) {
+                setSliderValues(prev => (prev[questionId] === undefined ? { ...prev, [questionId]: draft } : prev));
+            }
+            if (typeof onResult === 'function') onResult(result);
+        });
         const sent = sendVote(questionId, value, 'vote', ...args);
         if (!sent) return;
         setSliderValues(prev => ({ ...prev, [questionId]: undefined }));
@@ -1240,7 +1266,7 @@ const DiscussionPage = () => {
                         value={titleDraft}
                         onChange={(e) => setTitleDraft(e.target.value)}
                         onKeyDown={(e) => {
-                            if (e.key === 'Enter') handleRenameDiscussion();
+                            if (e.key === 'Enter' && !e.nativeEvent.isComposing && e.nativeEvent.keyCode !== 229) handleRenameDiscussion();
                             if (e.key === 'Escape') setEditingTitle(false);
                         }}
                         autoFocus

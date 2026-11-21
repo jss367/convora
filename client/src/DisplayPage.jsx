@@ -280,11 +280,13 @@ const DisplayPage = () => {
         setDiscussion(undefined);
         setQuestions(null);
         setLoadFailed(false);
+        // Only another discussion's settings are stale. A reconnect or a retry
+        // keeps the ones on screen until the server sends them again.
+        setState({});
         let retry = null;
         const join = () => {
             clearTimeout(retry);
             retry = null;
-            setState({});
             socket.emit('joinDisplay', discussionSlug);
         };
         const handlers = {
