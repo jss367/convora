@@ -68,13 +68,13 @@ the worker; the worker has 30 seconds to finish.
 
 ### Question interest
 
-`question_interest` holds one row per participant who marked a question as
-interesting (the `setQuestionInterest` socket event, which sets the state and is
-safe to repeat). `getQuestions` sends each question's `interestCount` and
-`interestVoterTokens`. A token is `ownerToken('question:<id>', userId)`, which a
-client recomputes to recognize its own mark (`interestedQuestionIds` in
-`useParticipantIdentity.js`). The raw user ids never leave the server. Interest
-is not a result, so it stays visible on questions whose results are hidden.
+`question_interest` holds one vote per participant per question. The idempotent
+`setQuestionInterest` event accepts `true` (upvote), `false` (clear), or `"down"`
+(downvote, only when the moderator has enabled it). `getQuestions` sends each
+direction's count and per-question ownership tokens, not raw participant IDs.
+The client recomputes `ownerToken('question:<id>', userId)` to recognize its own
+vote. These counts are independent of poll results. When downvotes are disabled,
+their count and tokens are hidden; the Most Interesting sort always uses upvotes.
 
 ## Running the Application Locally
 
