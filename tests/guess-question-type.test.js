@@ -215,6 +215,12 @@ test('distinguishes a proposed characterization from a request for a description
   assert.equal(guessQuestionType('Would you describe the course as really useful and engaging?'), 'Yes/No');
   assert.equal(guessQuestionType('Could you describe the pilot as a success for the team and provide details?'), 'Open Ended');
   assert.equal(guessQuestionType('Could you describe the pilot as a success for the team and give your reasons?'), 'Open Ended');
+  assert.equal(guessQuestionType('Could you describe the incident as clearly?'), 'Open Ended');
+  assert.equal(guessQuestionType('Could you describe the process as accurately?'), 'Open Ended');
+  assert.equal(guessQuestionType('Would you describe the staff as friendly?'), 'Yes/No');
+  assert.equal(guessQuestionType('Could you describe the pilot as a success for the team and discuss why?'), 'Open Ended');
+  assert.equal(guessQuestionType('Could you describe the pilot as a success for the team and outline the reasons?'), 'Open Ended');
+  assert.equal(guessQuestionType('Could you describe the pilot as a success for the team and show how?'), 'Open Ended');
 });
 
 test('returns null for statements and unrecognized wording', async () => {
