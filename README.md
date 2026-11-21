@@ -162,6 +162,12 @@ new question from a participant does not replace it. Click **On display** to
 stop showing it; the display then shows the first pinned question, or the
 newest one when nothing is pinned. It does the same if you delete the question.
 
+When you’re done discussing a question, click **Hide from display** on its
+moderator card. It disappears from all room display layouts, but participants
+can still see and answer it on their devices. Hiding the spotlighted question
+ends its spotlight. Click **Restore to display** to include it again without
+changing the current layout or spotlight.
+
 To put one question's results on the screen, click **Show results** on that
 question from your own moderator page, phone or laptop. The display updates at
 once. Anyone with the link can open the display, so a revealed question's
