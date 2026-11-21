@@ -10,13 +10,14 @@ for (const [type, options] of [
   ['Agreement', ['Strongly Agree', 'Agree', 'Unsure', 'Disagree', 'Strongly Disagree']],
   ['Yes/No', ['Yes', 'No']],
 ]) {
-  test(`${type} vote names stay stable through selection, pending replacement, and undo`, () => {
+  test(`${type} vote names stay stable through selection, pending replacement, and undo`, async () => {
     const source = readFileSync(require.resolve('../client/src/DiscussionPage.jsx'), 'utf8');
     const start = source.indexOf('    const renderVotingMechanism =');
     const end = source.indexOf('    const sortedAndFilteredQuestions =', start);
     const code = transformSync(`${source.slice(start, end)}\nthis.render = renderVotingMechanism;`, { loader: 'jsx' }).code;
     const context = {
-      React, locked: false, pendingVotes: {}, isMyVote: () => true,
+      React, plainPrompt: (await import('../client/src/questions/promptEmphasis.mjs')).plainPrompt,
+      locked: false, pendingVotes: {}, isMyVote: () => true,
       QuestionTypes: { AGREEMENT: 'Agreement', YES_NO: 'Yes/No' },
       VoteOptions: { STRONGLY_AGREE: options[0], AGREE: options[1], UNSURE: options[2], DISAGREE: options[3], STRONGLY_DISAGREE: options[4] },
       YesNoOptions: { YES: 'Yes', NO: 'No' }, AgreementResults: () => null, YesNoResults: () => null,
@@ -24,7 +25,7 @@ for (const [type, options] of [
     };
     vm.createContext(context);
     vm.runInContext(code, context);
-    const question = { id: 7, type, text: 'Proceed?', votes: [] };
+    const question = { id: 7, type, text: '*Proceed*?', votes: [] };
     function render() {
       const nodes = [];
       function visit(node) {

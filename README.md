@@ -19,6 +19,12 @@ You can still create, join, and moderate discussions without signing in. Save
 the private moderator link if you want to moderate a guest-created discussion
 from another browser.
 
+## Emphasis in questions
+
+Wrap a word or phrase in single asterisks for italics (`*try*`) or double
+asterisks for strong emphasis (`**only the U.S. labs**`). Answer choices and responses stay plain text. Other
+Markdown formatting is not supported.
+
 ## Multiple choice questions
 
 Choose **Multiple Choice** as the question type to write your own answers, for

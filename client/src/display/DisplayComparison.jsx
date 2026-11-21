@@ -1,3 +1,4 @@
+import { formatPrompt } from '../questions/formatPrompt';
 import PropTypes from 'prop-types';
 import React from 'react';
 import { distributionRows, snapshotQuestionChanged } from '../OpinionSnapshots';
@@ -159,7 +160,7 @@ const ComparisonCard = ({ before, after, beforeName, afterName, focus }) => {
             className={`flex flex-col rounded-2xl bg-white shadow-lg ring-1 ring-black/5 ${focus ? 'p-10' : 'p-7'}`}
             data-testid="display-comparison"
         >
-            <h2 className={`${s.title} ${focus ? 'mb-8' : 'mb-5'} break-words font-bold leading-tight text-gray-900`}>{question.text}</h2>
+            <h2 className={`${s.title} ${focus ? 'mb-8' : 'mb-5'} break-words font-bold leading-tight text-gray-900`}>{formatPrompt(question.text)}</h2>
             {!hidden && question.type === 'Numerical' && (
                 <p className={`${s.headline} mb-6 font-bold tabular-nums text-gray-900`} data-testid="display-comparison-average">
                     Average {formatNumerical(before?.average)}

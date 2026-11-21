@@ -1,3 +1,5 @@
+import { formatPrompt } from './questions/formatPrompt';
+import { plainPrompt } from './questions/promptEmphasis.mjs';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { QRCodeSVG } from 'qrcode.react';
@@ -798,7 +800,7 @@ const DiscussionPage = () => {
                 <button
                     onClick={() => (isMine ? handleClearVote(question.id) : handleVote(question.id, option))}
                     disabled={votePending}
-                    aria-label={`Vote ${option} on "${question.text}"`}
+                    aria-label={`Vote ${option} on "${plainPrompt(question.text)}"`}
                     aria-pressed={isMine}
                     aria-busy={saving || undefined}
                     className={`px-4 py-2 rounded-md transition duration-300 disabled:opacity-60 disabled:cursor-not-allowed ${isMine
@@ -809,7 +811,7 @@ const DiscussionPage = () => {
                     {saving ? 'Saving…' : isMine ? 'Undo Vote' : 'Vote'}
                 </button>
                 <span role="status" className="sr-only">
-                    {saving ? `Saving your vote on "${question.text}"…` : ''}
+                    {saving ? `Saving your vote on "${plainPrompt(question.text)}"…` : ''}
                 </span>
                 </>
             );
@@ -903,7 +905,7 @@ const DiscussionPage = () => {
                                         min={minValue}
                                         max={maxValue}
                                         value={isUnset ? minValue : sliderValue}
-                                        aria-label={`Your answer to: ${question.text}`}
+                                        aria-label={`Your answer to: ${plainPrompt(question.text)}`}
                                         aria-valuetext={isUnset ? 'No value selected' : String(sliderValue)}
                                         className={`flex-grow min-w-0 ${isUnset ? 'slider-unset' : ''}`}
                                         onChange={(e) => handleSliderChange(question.id, parseInt(e.target.value))}
@@ -920,7 +922,7 @@ const DiscussionPage = () => {
                                         inputMode="decimal"
                                         value={inputValue}
                                         placeholder="–"
-                                        aria-label={`Type your answer to: ${question.text}`}
+                                        aria-label={`Type your answer to: ${plainPrompt(question.text)}`}
                                         className="w-24 p-2 border border-gray-300 rounded-md text-center focus:outline-none focus:ring-2 focus:ring-primary"
                                         // Keep what is typed as-is so multi-digit
                                         // or decimal entry ("0." on the way to
@@ -1625,7 +1627,7 @@ const DiscussionPage = () => {
                                 ) : (
                                     <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
                                         <div className="min-w-0 flex-1 basis-64">
-                                            <h3 className="font-semibold break-words">{question.text}</h3>
+                                            <h3 className="font-semibold break-words">{formatPrompt(question.text)}</h3>
                                             <p className="text-sm text-gray-500 break-words">
                                                 Type: {question.type}
                                                 {question.type === QuestionTypes.NUMERICAL && ` (${question.minValue} to ${question.maxValue})`}
@@ -1738,7 +1740,7 @@ const DiscussionPage = () => {
                                 disabled={locked || !questionInterest.ready || interestPending}
                                 aria-busy={interestPending}
                                 aria-pressed={pressed}
-                                aria-label={`${name} "${question.text}"`}
+                                aria-label={`${name} "${plainPrompt(question.text)}"`}
                                 aria-describedby={`${name}-count-${question.id}`}
                                 className={`flex flex-col items-center px-2 py-1 rounded-md border transition duration-200 ${pressed
                                     ? 'bg-primary text-white border-primary'
@@ -1752,7 +1754,7 @@ const DiscussionPage = () => {
                             </div>
                             <h2 className="text-xl font-semibold min-w-0 break-words">
                                 {question.pinned && <span className="mr-1" title="Pinned">📌</span>}
-                                {question.text}
+                                {formatPrompt(question.text)}
                             </h2>
                         </div>
                         {isAdmin && (

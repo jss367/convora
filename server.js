@@ -3570,7 +3570,7 @@ app.get('/api/discussions/:topic/report.html', async (req, res) => {
 
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="${sanitizeFilename(req.params.topic)}-final-report.html"`);
-    res.send(renderReportHtml(summary));
+    res.send(await renderReportHtml(summary));
   } catch (err) {
     logError('Request failed:', err);
     res.status(500).json({ error: 'Server error' });
