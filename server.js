@@ -12,6 +12,7 @@ const { createVoteStore } = require('./votes');
 const { registerQuestionTools } = require('./question-tools');
 const { normalizeQuestionTools } = require('./question-data');
 const { createQuestionBroadcaster } = require('./question-broadcaster');
+const { createDiscussionStateSender } = require('./discussion-state-sender');
 const { independentAnswerView } = require('./independent-answers');
 const { POSTING_MODES, postingMode, questionDisposition } = require('./question-posting');
 const { createInterestUpdates } = require('./interest-updates');
@@ -282,9 +283,7 @@ const DISPLAY_LAYOUTS = ['all', 'focus', 'compare'];
 const DISPLAY_SORTS = ['oldest', 'newest', 'interesting', 'agreement', 'disagreement', 'controversial', 'moderator'];
 const MODERATOR_ORDER_SQL = 'q.published_position ASC NULLS LAST, q.created_at DESC NULLS LAST, q.id DESC';
 
-async function emitDiscussionState(topic) {
-  audience(topic).emit('discussionState', await getDiscussionState(topic));
-}
+const emitDiscussionState = createDiscussionStateSender(getDiscussionState, audience);
 
 // When participants may see the results of Agreement, Yes/No, Multiple Choice
 // and Numerical questions (the tallied types, OPINION_TYPES). 'after_vote' is the default:
@@ -503,9 +502,8 @@ io.on('connection', (socket) => {
       if (!current()) return;
       socket.emit('discussion', discussion);
       await emitQuestions(discussionSlug, socket, current);
-      const state = await getDiscussionState(discussionSlug);
+      await emitDiscussionState(discussionSlug, socket, current);
       if (!current()) return;
-      socket.emit('discussionState', state);
       emitPresence(discussionSlug);
     } catch (error) {
       logError('Error opening room display:', error);
@@ -557,9 +555,7 @@ io.on('connection', (socket) => {
       if (!current()) return;
       socket.emit('discussion', discussion);
       await emitQuestions(discussionSlug, socket, current);
-      const state = await getDiscussionState(discussionSlug);
-      if (!current()) return;
-      socket.emit('discussionState', state);
+      await emitDiscussionState(discussionSlug, socket, current);
     } catch (error) {
       logError('Error getting questions:', error);
       if (current()) socket.emit('error', { message: 'Failed to get questions' });
