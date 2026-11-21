@@ -204,7 +204,9 @@ With **All questions**, use **Display question type** to show only one type on
 the projector without changing anyone’s personal list. Spotlighting a question
 temporarily overrides the list filter; returning to the list restores it.
 **Sort** offers Oldest first (the default), Newest
-first, Most interesting, Most agreement, Most disagreement and Most controversial.
+first, Most interesting, Most agreed with, Most disagreed with and Most divisive.
+**Most agreed with** counts Yes or agreement votes; **Most disagreed with** counts
+No or disagreement votes. **Most divisive** ranks by the number of votes on the smaller side.
 **Pinned questions first** is on by default; turn it off to apply the sort across
 all questions. Ranking ties use newest first. Agreement-based sorts use only
 results visible on the display, so hidden answers never influence the order.
