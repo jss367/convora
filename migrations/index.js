@@ -393,6 +393,10 @@ async function migrateQuestionDownvotes(client) {
   await client.query('ALTER TABLE question_interest ADD COLUMN IF NOT EXISTS downvote BOOLEAN NOT NULL DEFAULT FALSE');
 }
 
+async function migrateQueueOrder(client) {
+  await client.query('ALTER TABLE questions ADD COLUMN IF NOT EXISTS queue_position INTEGER');
+}
+
 module.exports = [
   [1, initSchema],
   [2, migrateModerationAndDedup],
@@ -406,4 +410,5 @@ module.exports = [
   [10, migrateBrainstormInteractions],
   [11, migrateUnifiedResponses],
   [12, migrateQuestionDownvotes],
+  [13, migrateQueueOrder],
 ];

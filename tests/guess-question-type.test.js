@@ -39,6 +39,7 @@ const CASES = {
     'Which would reassure you most about a powerful AI?',
     'Which would reassure you most',
     'Which option would reassure you most?',
+    'Which **option** would reassure you *most*?',
     'Which of these would reassure you most?',
     'Which would you prefer?',
     'Which option do you prefer?',
@@ -142,6 +143,12 @@ test('returns null for statements and unrecognized wording', async () => {
   for (const title of NO_GUESS) {
     assert.equal(guessQuestionType(title), null, String(title));
   }
+});
+
+test('uses visible wording to infer the type of an emphasized question', async () => {
+  const { guessQuestionType } = await guesser;
+  assert.equal(guessQuestionType('*Should* we proceed?'), 'Yes/No');
+  assert.equal(guessQuestionType('**How** likely is rain?'), 'Numerical');
 });
 
 test('the guess can change as the title is typed', async () => {

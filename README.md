@@ -19,6 +19,12 @@ You can still create, join, and moderate discussions without signing in. Save
 the private moderator link if you want to moderate a guest-created discussion
 from another browser.
 
+## Emphasis in questions
+
+Wrap a word or phrase in single asterisks for italics (`*try*`) or double
+asterisks for strong emphasis (`**only the U.S. labs**`). Answer choices and responses stay plain text. Other
+Markdown formatting is not supported.
+
 ## Multiple choice questions
 
 Choose **Multiple Choice** as the question type to write your own answers, for
@@ -64,7 +70,10 @@ room. In the Add Question form, tick **Add to the queue**. The box stays ticked
 from one question to the next, so a whole agenda can be entered in a row.
 
 Queued questions are listed under **Queued questions** on the moderator's page,
-in the order they were written. Only moderators receive them: participants, the
+in the order they were written until a moderator uses **Move up** or **Move down**.
+The order is saved for all moderators, including in moderator-created copies.
+New questions go at the end, and any queued question can still be published next.
+Only moderators receive them: participants, the
 room display, the summary, exports and snapshots do not. Nobody can answer a
 queued question, and it can be edited or deleted like any question without
 responses.
@@ -78,6 +87,14 @@ discussion publishes nothing until it is unlocked.
 When a moderator duplicates a discussion, the copy keeps its queued questions
 queued, so a prepared agenda can be reused. A copy made by anyone else leaves
 the queued questions out.
+
+## Clear a test run without changing the link
+
+As a moderator, open **More → Clear votes and responses** and confirm. This
+removes poll votes, written responses, question interest marks, and all votes,
+comments, ratings, and reactions attached to responses. Published and queued
+questions, room settings, saved opinion snapshots, and links stay unchanged.
+The reset cannot be undone. An unlocked room accepts fresh answers immediately.
 
 ## Discussions are unlisted unless you list them
 

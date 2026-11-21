@@ -1257,6 +1257,34 @@ io.on('connection', (socket) => {
     }
   });
 
+  socket.on('swapQueuedQuestions', async (topic, earlierId, laterId, token) => {
+    const discussionSlug = slugifyTopic(topic);
+    try {
+      const discussionId = await verifyAdmin(discussionSlug, token);
+      if (!discussionId) {
+        socket.emit('error', { message: 'Not authorized to moderate this discussion.' });
+        return;
+      }
+      if (![earlierId, laterId].every(id => Number.isInteger(id) && id > 0 && id <= 2147483647)) return;
+      const moved = await withTransaction(async client => {
+        await client.query('SELECT id FROM discussions WHERE id = $1 FOR UPDATE', [discussionId]);
+        const { rows } = await client.query(`SELECT id, COALESCE(queue_position, id) AS position
+          FROM questions WHERE discussion_id = $1 AND queued ORDER BY position FOR UPDATE`, [discussionId]);
+        const index = rows.findIndex(row => row.id === earlierId);
+        if (index < 0 || rows[index + 1]?.id !== laterId) return false;
+        await client.query(`UPDATE questions SET queue_position = CASE WHEN id = $2 THEN $4::integer ELSE $5::integer END
+          WHERE discussion_id = $1 AND queued AND id IN ($2, $3)`,
+        [discussionId, earlierId, laterId, rows[index + 1].position, rows[index].position]);
+        return true;
+      });
+      if (!moved) socket.emit('error', { message: 'The queue has changed. Check the order before moving a question again.' });
+      await emitQuestions(discussionSlug);
+    } catch (error) {
+      logError('Error reordering queue:', error);
+      socket.emit('error', { message: 'Failed to update the queue order.' });
+    }
+  });
+
   // Moderator-only: publish a queued question, showing it to everyone and
   // opening it for answers. Its creation time becomes now, so it arrives as the
   // newest question for participants and for the room display. There is no way
@@ -1862,6 +1890,35 @@ app.get('/api/discussions/resolve/:topic', async (req, res) => {
   }
 });
 
+app.delete('/api/discussions/:topic/responses', async (req, res) => {
+  const slug = slugifyTopic(req.params.topic);
+  const token = req.body?.adminToken;
+  const forbidden = () => res.status(403).json({ error: 'Only a moderator can clear votes and responses.' });
+  if (typeof token !== 'string' || !token) return forbidden();
+  try {
+    const cleared = await withTransaction(async client => {
+      const id = await verifyAdmin(slug, token, client);
+      if (!id) return false;
+      await client.query('SELECT id FROM discussions WHERE id = $1 FOR UPDATE', [id]);
+      await client.query('SELECT id FROM questions WHERE discussion_id = $1 ORDER BY id FOR UPDATE', [id]);
+      await client.query('DELETE FROM votes WHERE question_id IN (SELECT id FROM questions WHERE discussion_id = $1)', [id]);
+      await client.query('DELETE FROM question_interest WHERE question_id IN (SELECT id FROM questions WHERE discussion_id = $1)', [id]);
+      return true;
+    });
+    if (!cleared) return forbidden();
+  } catch (error) {
+    logError('Error clearing discussion responses:', error);
+    return res.status(500).json({ error: 'Could not clear votes and responses.' });
+  }
+  try {
+    await emitQuestions(slug);
+    res.sendStatus(204);
+  } catch (error) {
+    logError('Error broadcasting cleared responses:', error);
+    res.json({ refreshed: false });
+  }
+});
+
 // Only the creator credential can permanently delete a discussion. Lock the
 // parent and questions before removing children so concurrent inserts cannot
 // slip between the deletes. All other dependent tables cascade automatically.
@@ -2038,7 +2095,8 @@ async function getQuestions(topic, { includeUserIds = false, respondents = null 
     LEFT JOIN votes v ON q.id = v.question_id
     WHERE d.slug = $1
     GROUP BY q.id, d.id
-    ORDER BY q.pinned DESC, q.created_at NULLS FIRST, q.id
+    ORDER BY q.queued, CASE WHEN q.queued THEN COALESCE(q.queue_position, q.id) END,
+             q.pinned DESC, q.created_at NULLS FIRST, q.id
   `;
 
   const result = await pool.query(query, [slug]);
@@ -3512,7 +3570,7 @@ app.get('/api/discussions/:topic/report.html', async (req, res) => {
 
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="${sanitizeFilename(req.params.topic)}-final-report.html"`);
-    res.send(renderReportHtml(summary));
+    res.send(await renderReportHtml(summary));
   } catch (err) {
     logError('Request failed:', err);
     res.status(500).json({ error: 'Server error' });
@@ -3674,7 +3732,7 @@ app.post('/api/duplicate-discussion', async (req, res) => {
       SELECT $1, text, type, min_value, max_value, options, max_responses, show_attribution, queued
       FROM questions
       WHERE discussion_id = $2 AND ($3 OR NOT queued)
-      ORDER BY id
+      ORDER BY CASE WHEN queued THEN COALESCE(queue_position, id) ELSE id END, id
     `, [newDiscussionId, originalDiscussionId, copyQueued]);
 
     // Carry the session-level reaction set (see reaction_keys) for the same
