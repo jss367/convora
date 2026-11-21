@@ -11,13 +11,13 @@ const WH_WORD = '(?:why|how|what|which|who|whose|where|when)';
 const POLITE_REQUEST = '^(?:can|could|would) you (?:(?:please|briefly|quickly|kindly|just) )*';
 const DESCRIPTIVE_ADJECTIVE = /(?:(?:very|quite|too|rather|more|less|mostly|highly|really|extremely|somewhat|fairly|pretty) )?[a-z][\w-]*(?: (?:to|than|for|in|with|at|on) [\w'-]+(?: [\w'-]+)*)?/;
 const NOMINAL_DESCRIPTION = /a (?:success|failure|strength|weakness|problem|priority)(?: (?:for|with|of|in|to) [\w'-]+(?: [\w'-]+)*)?/;
-const PROPOSED_DESCRIPTION = new RegExp(`${POLITE_REQUEST}describe .+? as (?:not )?(?:${DESCRIPTIVE_ADJECTIVE.source}|${NOMINAL_DESCRIPTION.source})\\s*[?.!"')\\]]*$`);
+const PROPOSED_DESCRIPTION = new RegExp(`${POLITE_REQUEST}describe .+? as (?:not )?(?:${DESCRIPTIVE_ADJECTIVE.source}(?: (?:and|or) (?:not )?${DESCRIPTIVE_ADJECTIVE.source})*|${NOMINAL_DESCRIPTION.source})\\s*[?.!"')\\]]*$`);
 // Explicit follow-up requests that keep a proposed description open-ended.
 const FOLLOW_UP_REQUEST = '(?:explain|elaborate on|tell (?:us|me)|why|provide|give|share|say|list|add|include)';
 const TELL_OBJECT = '(?:a|an|the|your|some|any|something|anything|one)';
 const TELL_REQUEST = `tell (?:us|me) (?:about|more|${TELL_OBJECT}|${WH_WORD})`;
 const SELECTION_CONDITION = /(?:you|we|i|they|someone|one) (?:could |can |had to |have to |were to |must |only )?(?:choose|pick|select|name)\b/;
-const CONDITIONAL_DISCLOSURE = new RegExp(`(?=^would )${POLITE_REQUEST}tell (?:us|me) ${TELL_OBJECT}\\b.*? if(?!${SELECTION_CONDITION.source})\\S`);
+const CONDITIONAL_DISCLOSURE = new RegExp(`(?=^would )${POLITE_REQUEST}tell (?:us|me) ${TELL_OBJECT}\\b.*? if (?!${SELECTION_CONDITION.source})\\S`);
 const CHOICE_SET = 'of (?:these|those|the following)(?: (?:options|choices|alternatives))?';
 
 // First match wins, so the order is the precedence: "how likely" has to be

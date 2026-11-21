@@ -179,6 +179,7 @@ test('distinguishes polite requests for explanations from yes/no questions', asy
   assert.equal(guessQuestionType('Would you tell us your biggest concern if we could choose just one?'), 'Open Ended');
   assert.equal(guessQuestionType('Would you tell us something if you knew it?'), 'Yes/No');
   assert.equal(guessQuestionType('Would you tell me anything if you saw it?'), 'Yes/No');
+  assert.equal(guessQuestionType('Would you tell me the answer if I asked again?'), 'Yes/No');
   assert.equal(guessQuestionType('Would you tell us anything if you could choose one thing?'), 'Open Ended');
 });
 
@@ -206,6 +207,9 @@ test('distinguishes a proposed characterization from a request for a description
   assert.equal(guessQuestionType('Would you describe your experience as positive, and why?'), 'Open Ended');
   assert.equal(guessQuestionType('Would you describe the course as really useful?'), 'Yes/No');
   assert.equal(guessQuestionType('Would you describe the course as somewhat useful?'), 'Yes/No');
+  assert.equal(guessQuestionType('Would you describe the drug as safe and effective?'), 'Yes/No');
+  assert.equal(guessQuestionType('Would you describe the guide as clear and useful?'), 'Yes/No');
+  assert.equal(guessQuestionType('Would you describe the guide as clear and explain why?'), 'Open Ended');
   assert.equal(guessQuestionType('Could you describe the pilot as a success for the team and provide details?'), 'Open Ended');
   assert.equal(guessQuestionType('Could you describe the pilot as a success for the team and give your reasons?'), 'Open Ended');
 });
