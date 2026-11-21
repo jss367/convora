@@ -162,6 +162,8 @@ test('distinguishes polite requests for explanations from yes/no questions', asy
   assert.equal(guessQuestionType('Could you tell me more about the problem?'), 'Open Ended');
   assert.equal(guessQuestionType('Can you tell us a little about your role?'), 'Open Ended');
   assert.equal(guessQuestionType('Would you tell us your biggest concern?'), 'Open Ended');
+  assert.equal(guessQuestionType('Would you tell us your biggest concern if you could choose just one?'), 'Open Ended');
+  assert.equal(guessQuestionType('Would you tell us your biggest concern if I asked?'), 'Yes/No');
   assert.equal(guessQuestionType('Would you tell me if plans changed?'), 'Yes/No');
   assert.equal(guessQuestionType('Would you tell me the truth if I asked?'), 'Yes/No');
   assert.equal(guessQuestionType('Would you tell us a secret if you knew one?'), 'Yes/No');
@@ -179,6 +181,8 @@ test('distinguishes a proposed characterization from a request for a description
   assert.equal(guessQuestionType('Would you describe the process as not useful?'), 'Yes/No');
   assert.equal(guessQuestionType('Would you describe the process as not very useful?'), 'Yes/No');
   assert.equal(guessQuestionType('Would you describe meetings as productive?'), 'Yes/No');
+  assert.equal(guessQuestionType('Would you describe the course as useful for beginners?'), 'Yes/No');
+  assert.equal(guessQuestionType('Would you describe the course as effective in practice?'), 'Yes/No');
   assert.equal(guessQuestionType('Would you describe the meetings as more productive than before?'), 'Yes/No');
   assert.equal(guessQuestionType('Could you briefly describe the meetings as less useful than last year?'), 'Yes/No');
   assert.equal(guessQuestionType('Would you describe Convora as easy to use?'), 'Yes/No');
