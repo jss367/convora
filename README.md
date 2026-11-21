@@ -149,7 +149,7 @@ The moderator’s **Display controls** box changes the shared screen live.
 Settings are saved for the discussion and do not change anyone’s personal sort:
 
 - **QR code**: the join QR code and link **Large** in a sidebar (the
-  default), **Small, in a corner** of the header, or **Hidden**.
+  default), **Small, in a corner** at the bottom-left, or **Hidden**.
 - **Layout**: **All questions** (the default), **One question**
   filling the screen, or **Before and after**, which compares two opinion
   snapshots (see [Show the comparison on the room display](#show-the-comparison-on-the-room-display)).

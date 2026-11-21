@@ -108,9 +108,9 @@ test('the moderator moves or hides the display QR code and shows one question at
     const qrSetting = moderator.getByLabel('QR code', { exact: true });
     const layoutSetting = moderator.getByLabel('Layout', { exact: true });
 
-    // A small QR code in the header still lets people join.
+    // A small QR code at the bottom-left still lets people join.
     await qrSetting.selectOption('corner');
-    await expect(page.getByTestId('display-header').getByTestId('display-join')).toBeVisible();
+    await expect(page.getByTestId('display-footer').getByTestId('display-join')).toBeVisible();
     await expect(qr).toBeVisible();
     await expect(page.getByTestId('display-join-link')).toBeVisible();
 
@@ -522,6 +522,46 @@ for (const layout of ['all', 'focus']) {
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   });
 }
+
+
+test('corner QR stays in view while long questions scroll above it', async ({ page, rooms }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
+  const room = await rooms.create('Long corner display', 'Open Ended');
+  await rooms.pool.query("UPDATE discussions SET display_qr = 'corner' WHERE id = $1", [room.id]);
+  await rooms.pool.query('UPDATE questions SET text = $1 WHERE discussion_id = $2',
+    ['Long question content '.repeat(500), room.id]);
+  await page.goto(`/discussion/${room.slug}/display`);
+  const footer = page.getByTestId('display-footer');
+  await expect(footer).toBeInViewport({ ratio: 1 });
+  const questions = page.getByRole('region', { name: 'Questions', exact: true });
+  const bounds = await questions.evaluate(element => {
+    const scroller = element.parentElement;
+    const box = scroller.getBoundingClientRect();
+    return { bottom: box.bottom, scrollable: scroller.scrollHeight > scroller.clientHeight };
+  });
+  expect(bounds.scrollable).toBe(true);
+  const footerBox = await footer.boundingBox();
+  expect(bounds.bottom).toBeLessThanOrEqual(footerBox.y);
+  const joinBox = await page.getByTestId('display-join').boundingBox();
+  expect(joinBox.x).toBeLessThan(100);
+  await questions.evaluate(element => { element.parentElement.scrollTop = element.parentElement.scrollHeight; });
+  await expect(footer).toBeInViewport({ ratio: 1 });
+});
+
+
+test('corner QR and questions remain reachable below a tall header', async ({ page, rooms }) => {
+  await page.setViewportSize({ width: 480, height: 360 });
+  const room = await rooms.create('A long room title that wraps onto many lines on a small display '.repeat(2), 'Open Ended');
+  await rooms.pool.query("UPDATE discussions SET display_qr = 'corner' WHERE id = $1", [room.id]);
+  await page.goto(`/discussion/${room.slug}/display`);
+  const questions = page.getByRole('region', { name: 'Questions', exact: true });
+  await expect(questions).toBeVisible();
+  await questions.scrollIntoViewIfNeeded();
+  await expect(questions).toBeInViewport();
+  const qr = page.getByRole('img', { name: /^QR code to join/ });
+  await qr.scrollIntoViewIfNeeded();
+  await expect(qr).toBeInViewport({ ratio: 1 });
+});
 
 test('display sorting updates live, persists and is available only in the all-questions layout', async ({ page, browser, rooms }) => {
   const room = await rooms.create('Sort display', 'Agreement');
