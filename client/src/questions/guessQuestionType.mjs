@@ -15,14 +15,18 @@ const ADJECTIVE_COMPLEMENT = "(?: (?:to|than|for|in|with|at|on) [\\w'-]+(?: [\\w
 const LY_ADJECTIVE = '(?:[\\w-]*friendly|costly|timely|lovely|likely|unlikely|lonely|ugly|silly|early|orderly|elderly|lively|deadly|daily|weekly|monthly|yearly|holy|jolly|surly|unruly|chilly|smelly)';
 // Manner adverbs ("as clearly", "as clearly and completely") describe how to
 // write the description, not what it says, so they are not characterizations.
-const DESCRIPTIVE_ADJECTIVE = `${INTENSIFIER}(?!(?!${LY_ADJECTIVE}\\b)[a-z][\\w-]*ly\\b)[a-z][\\w-]*${ADJECTIVE_COMPLEMENT}`;
+// An -ly adverb that modifies a following adjective ("as financially
+// sustainable") still proposes one.
+const NOT_MANNER_ADVERB = `(?!(?!${LY_ADJECTIVE}\\b)[a-z][\\w-]*ly\\b)`;
+const ADVERB_MODIFIER = "(?:[a-z][\\w-]*ly (?!(?:and|or|nor|but|as|so|to|than|for|in|with|at|on)\\b))?";
+const DESCRIPTIVE_ADJECTIVE = `${INTENSIFIER}${ADVERB_MODIFIER}${NOT_MANNER_ADVERB}[a-z][\\w-]*${ADJECTIVE_COMPLEMENT}`;
 const NOMINAL_DESCRIPTION = /a (?:success|failure|strength|weakness|problem|priority)(?: (?:for|with|of|in|to) [\w'-]+(?: [\w'-]+)*)?/;
 const PROPOSED_DESCRIPTION = new RegExp(`${POLITE_REQUEST}describe .+? as (?:not )?(?:${DESCRIPTIVE_ADJECTIVE}(?: (?:and|or) (?:not )?${DESCRIPTIVE_ADJECTIVE})*|${NOMINAL_DESCRIPTION.source})\\s*[?.!"')\\]]*$`);
 // Explicit follow-up requests that keep a proposed description open-ended:
-// common request verbs, or any word followed by a question word ("and
-// discuss why", "and show how").
-const FOLLOW_UP_REQUEST = "(?:explain|elaborate on|expand on|tell (?:us|me)|why|provide|give|share|say|list|add|include|discuss|outline|describe|detail|clarify|justify|specify|summari[sz]e|mention|comment|note|identify|suggest|walk (?:us|me) through|[\\w'-]+ (?:why|how|what))";
-const TELL_OBJECT = '(?:a|an|the|your|some|any|something|anything|one)';
+// common request verbs, response instructions ("and respond with details"),
+// or any word followed by a question word ("and discuss why", "and show how").
+const FOLLOW_UP_REQUEST = "(?:respond|reply|answer|write|explain|elaborate on|expand on|tell (?:us|me)|why|provide|give|share|say|list|add|include|discuss|outline|describe|detail|clarify|justify|specify|summari[sz]e|mention|comment|note|identify|suggest|walk (?:us|me) through|[\\w'-]+ (?:why|how|what))";
+const TELL_OBJECT = '(?:a|an|the|your|some|any|something|anything|one|two|three|four|five|several|\\d+)';
 const TELL_REQUEST = `tell (?:us|me) (?:about|more|${TELL_OBJECT}|${WH_WORD})`;
 const SELECTION_CONDITION = /(?:you|we|i|they|someone|one) (?:could |can |had to |have to |were to |must |only )?(?:choose|pick|select|name)\b/;
 const CONDITIONAL_DISCLOSURE = new RegExp(`(?=^would )${POLITE_REQUEST}tell (?:us|me) ${TELL_OBJECT}\\b.*? if (?!${SELECTION_CONDITION.source})\\S`);
