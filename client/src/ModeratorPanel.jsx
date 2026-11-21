@@ -107,7 +107,6 @@ const ModeratorPanel = ({
     onSetLocked, onSetModeratorOnly, onSetListed, onSetResultsVisibility,
     onSetDisplaySettings, onSetTheme, onSetFlags, onSetReactionKeys,
     linkPrompt, linkCopied, onCopyLink,
-    showJoinQr, onToggleJoinQr,
     showParticipants, onToggleParticipants, children,
 }) => {
     const [open, setOpen] = useState(readInitialOpen);
@@ -275,15 +274,6 @@ const ModeratorPanel = ({
                         )}
                     </Group>
 
-                    <Group title="This page">
-                        <Switch
-                            label="Join QR on this page"
-                            hint="A floating code you can resize, for when you project this page"
-                            checked={showJoinQr}
-                            onChange={onToggleJoinQr}
-                        />
-                    </Group>
-
                     {/* Discussion-wide response feedback: these apply to every
                         Open Ended prompt at once (read silently, then open
                         reactions, then open comments). */}
@@ -418,8 +408,6 @@ ModeratorPanel.propTypes = {
     }).isRequired,
     linkCopied: PropTypes.bool.isRequired,
     onCopyLink: PropTypes.func.isRequired,
-    showJoinQr: PropTypes.bool.isRequired,
-    onToggleJoinQr: PropTypes.func.isRequired,
     showParticipants: PropTypes.bool.isRequired,
     onToggleParticipants: PropTypes.func.isRequired,
     children: PropTypes.node,
