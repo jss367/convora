@@ -175,8 +175,10 @@ const comparisonOf = (snapshots, beforeId, afterId) => {
 // The display asks as an anonymous viewer, so with results shown after voting
 // the server sends a snapshot's results only for questions the moderator has
 // shown to everyone. `reloadKey` changes when that set might have changed.
+// `syncCount` changes on each periodic display sync, which reloads the list
+// in place in case a snapshotsChanged event was missed.
 // Returns null while loading, or { snapshots } / { failed: true }.
-const useSnapshots = (socket, discussionSlug, enabled, reloadKey) => {
+const useSnapshots = (socket, discussionSlug, enabled, reloadKey, syncCount) => {
     const visibilityContext = JSON.stringify([discussionSlug, reloadKey]);
     const [result, setResult] = useState(null);
     const [version, setVersion] = useState(0);
@@ -213,7 +215,7 @@ const useSnapshots = (socket, discussionSlug, enabled, reloadKey) => {
             controller.abort();
             clearTimeout(retry);
         };
-    }, [discussionSlug, enabled, reloadKey, version]);
+    }, [discussionSlug, enabled, reloadKey, version, syncCount]);
     return enabled && result?.visibilityContext === visibilityContext ? result : null;
 };
 
@@ -278,6 +280,8 @@ const DisplayPage = () => {
     const [loadFailed, setLoadFailed] = useState(false);
     const [presence, setPresence] = useState(0);
     const [state, setState] = useState({});
+    // Counts periodic syncs, so the snapshots reload along with everything else.
+    const [syncCount, setSyncCount] = useState(0);
 
     useEffect(() => {
         setDiscussion(undefined);
@@ -293,7 +297,9 @@ const DisplayPage = () => {
             if (socket.connected) socket.emit('joinDisplay', discussionSlug);
         };
         const syncVisibleDisplay = () => {
-            if (document.visibilityState === 'visible') join();
+            if (document.visibilityState !== 'visible') return;
+            join();
+            setSyncCount(count => count + 1);
         };
         const restorePage = event => { if (event.persisted) syncVisibleDisplay(); };
         const handlers = {
@@ -353,7 +359,7 @@ const DisplayPage = () => {
     // Which questions' results this screen may see decides what the server
     // sends of each snapshot, so reload them when that changes.
     const snapshotReloadKey = `${state.resultsVisibility}|${(questions || []).map(q => `${q.id}${q.resultsHidden ? 'h' : ''}`).join(',')}`;
-    const snapshotResult = useSnapshots(socket, discussionSlug, state.displayLayout === 'compare' && discussion != null, snapshotReloadKey);
+    const snapshotResult = useSnapshots(socket, discussionSlug, state.displayLayout === 'compare' && discussion != null, snapshotReloadKey, syncCount);
 
     if (discussion === null) {
         return (

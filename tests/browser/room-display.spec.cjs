@@ -660,3 +660,22 @@ test('a fullscreen display follows live sorts and recovers a missed update witho
     await moderator.close();
   }
 });
+
+test('a comparison display recovers a missed snapshot on its periodic sync', async ({ page, request, rooms }) => {
+  const room = await rooms.create('Missed snapshot', 'Agreement');
+  await rooms.pool.query("UPDATE discussions SET results_visibility = 'always', display_layout = 'compare' WHERE id = $1", [room.id]);
+  const save = await request.post(`/api/discussions/${room.slug}/snapshots`, { data: { name: 'Before', adminToken: room.adminToken } });
+  expect(save.status()).toBe(201);
+  await page.clock.install();
+  await page.goto(`/discussion/${room.slug}/display`);
+  const comparison = page.getByTestId('display-comparison-view');
+  await expect(comparison.getByText('Save a second snapshot to see what changed.')).toBeVisible();
+  // Saved straight to the database, so no snapshotsChanged event reaches the display.
+  await rooms.pool.query(
+    "INSERT INTO opinion_snapshots (discussion_id, name, data) SELECT discussion_id, 'Later', data FROM opinion_snapshots WHERE discussion_id = $1",
+    [room.id]
+  );
+  await page.clock.fastForward(31_000);
+  await expect(comparison.getByText('Later', { exact: true })).toBeVisible();
+  await expect(comparison.getByText('Save a second snapshot to see what changed.')).toHaveCount(0);
+});
