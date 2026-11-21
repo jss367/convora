@@ -1,0 +1,5 @@
+[
+  { "kind": "clarification", "label": "Ask for clarification", "limit": 1000 },
+  { "kind": "explanation", "label": "Explain my vote", "limit": 1000, "types": ["Agreement", "Yes/No", "Multiple Choice", "Numerical"] },
+  { "kind": "suggestion", "label": "Suggest a missing answer", "limit": 100, "types": ["Multiple Choice"] }
+]

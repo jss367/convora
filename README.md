@@ -19,6 +19,12 @@ You can still create, join, and moderate discussions without signing in. Save
 the private moderator link if you want to moderate a guest-created discussion
 from another browser.
 
+## Emphasis in questions
+
+Wrap a word or phrase in single asterisks for italics (`*try*`) or double
+asterisks for strong emphasis (`**only the U.S. labs**`). Answer choices and responses stay plain text. Other
+Markdown formatting is not supported.
+
 ## Multiple choice questions
 
 Choose **Multiple Choice** as the question type to write your own answers, for
@@ -33,9 +39,9 @@ and can change or undo it like an Agreement or Yes/No vote.
   without activating it. Blank options are ignored; there's no need to remove them.
 - Results show one bar per option, in the order you wrote them, with each
   option's count and share of the vote.
-- Like every question, a moderator can edit it only until someone answers, so
-  the options can't change under people who already voted. To change them after
-  that, delete the question and ask it again.
+- A moderator can edit a question until it receives an answer or a private note.
+  To change the options after that, ask a new question so the original votes
+  and notes keep their context.
 - Multiple choice answers are categories, not a scale, so they aren't counted
   in the agreement sorts, the consensus and divisive rankings, or opinion
   groups. They do appear in the summary, exports, the room display and opinion
@@ -65,7 +71,10 @@ room. In the Add Question form, tick **Add to the queue**. The box stays ticked
 from one question to the next, so a whole agenda can be entered in a row.
 
 Queued questions are listed under **Queued questions** on the moderator's page,
-in the order they were written. Only moderators receive them: participants, the
+in the order they were written until a moderator uses **Move up** or **Move down**.
+The order is saved for all moderators, including in moderator-created copies.
+New questions go at the end, and any queued question can still be published next.
+Only moderators receive them: participants, the
 room display, the summary, exports and snapshots do not. Nobody can answer a
 queued question, and it can be edited or deleted like any question without
 responses.
@@ -76,17 +85,28 @@ Recent**. Publishing cannot be undone, because hiding a question again would
 hide the answers people gave to it; delete the question instead. A locked
 discussion publishes nothing until it is unlocked.
 
-When a moderator duplicates a discussion, the copy keeps its queued questions
-queued, so a prepared agenda can be reused. A copy made by anyone else leaves
-the queued questions out.
+When a moderator duplicates a discussion, the copy keeps moderator drafts in
+agenda order. Pending participant suggestions stay in the original room. Anyone
+else duplicating the discussion gets only published questions.
+
+## Optional ways to participate
+
+In the moderator panel, **Question posting** lets you choose who can publish. Choose **Participants suggest for approval** to put audience questions into a private review queue. Approve a suggestion to open it for answers, or delete it without showing it to the room. Use **Hand raising** when you're calling on people: participants can raise or lower their hand on a question, and only moderators see the ordered list. Mark a speaker as called on to remove them. Turning hand raising off empties the queues.
+
+When creating or editing a question as moderator, you can also enable:
+
+- **Clarification:** participants can privately ask about wording before answering. This is not an “unsure” vote.
+- **Vote explanations:** on a poll, participants can privately explain their own answer after voting. Changing or undoing the vote removes its old explanation.
+- **Missing answers:** on multiple-choice questions, participants can suggest an alternative privately. It doesn't change the options other people voted on.
+- **Independent answers:** on open-ended questions, each participant sees only their own responses until a moderator reveals everyone's answers together. The shared display does not show hidden responses.
 
 ## Clear a test run without changing the link
 
 As a moderator, open **More → Clear votes and responses** and confirm. This
-removes poll votes, written responses, question interest marks, and all votes,
+removes private question notes, speaking queues, poll votes, written responses, question interest marks, and all votes,
 comments, ratings, and reactions attached to responses. Published and queued
 questions, room settings, saved opinion snapshots, and links stay unchanged.
-The reset cannot be undone. An unlocked room accepts fresh answers immediately.
+The reset cannot be undone. An unlocked room accepts fresh answers immediately; independent-answer questions start collecting privately again.
 
 ## Discussions are unlisted unless you list them
 

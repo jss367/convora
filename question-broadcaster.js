@@ -1,3 +1,5 @@
+const { collectingIndependentAnswers, independentAnswerView } = require('./independent-answers');
+
 function createQuestionBroadcaster({
   getQuestions, getResultsAccess, withoutQueued, displayView, hideUnansweredResults,
   audience, displays, participants,
@@ -17,20 +19,25 @@ function createQuestionBroadcaster({
 
   async function load(slug) {
     const respondents = new Map();
-    const questions = await getQuestions(slug, { respondents });
+    const independentOwners = new Map();
+    const questions = await getQuestions(slug, { respondents, independentOwners });
     const access = await getResultsAccess(slug);
-    return { questions, respondents, access };
+    return { questions, respondents, independentOwners, access };
   }
 
-  function deliver(slug, { questions, respondents, access }, socket = null) {
+  function deliver(slug, { questions, respondents, independentOwners, access }, socket = null) {
     if (socket?.data.isDisplay && socket.data.display !== slug) return;
     const published = withoutQueued(questions);
-    if (access.alwaysShow && published === questions) {
+    const collecting = published.some(collectingIndependentAnswers);
+    if (access.alwaysShow && published === questions && !collecting) {
       (socket || audience(slug)).emit('questions', questions);
       return;
     }
 
-    const forDisplay = () => access.alwaysShow ? published : displayView(published, respondents);
+    const forDisplay = () => {
+      const safe = collecting ? independentAnswerView(published) : published;
+      return access.alwaysShow ? safe : displayView(safe, respondents);
+    };
     if (socket?.data.isDisplay) {
       socket.emit('questions', forDisplay());
       return;
@@ -42,11 +49,14 @@ function createQuestionBroadcaster({
       const moderator = target.data.moderator;
       if (moderator && moderator.slug === slug && access.isModerator(moderator.token)) {
         target.emit('questions', questions);
-      } else if (access.alwaysShow) {
+      } else if (access.alwaysShow && !collecting) {
         target.emit('questions', published);
       } else {
         const userId = target.data.userId || null;
-        if (!views.has(userId)) views.set(userId, hideUnansweredResults(published, respondents, userId));
+        if (!views.has(userId)) {
+          const safe = collecting ? independentAnswerView(published, independentOwners.get(userId)) : published;
+          views.set(userId, access.alwaysShow ? safe : hideUnansweredResults(safe, respondents, userId));
+        }
         target.emit('questions', views.get(userId));
       }
     }

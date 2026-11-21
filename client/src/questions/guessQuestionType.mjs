@@ -3,6 +3,7 @@
 // classifier: it is right for common openings and returns null for anything it
 // does not recognize, so the caller keeps its default.
 import { QuestionTypes } from './questionTypes.mjs';
+import { plainPrompt } from './promptEmphasis.mjs';
 const { AGREEMENT, YES_NO, NUMERICAL, OPEN_ENDED } = QuestionTypes;
 
 const AUXILIARY = '(?:is|are|was|were|do|does|did|will|would|should|can|could|has|have)';
@@ -47,7 +48,7 @@ const RULES = [
 
 // Returns one of the question type names, or null when nothing matches.
 export function guessQuestionType(text) {
-    const normalized = String(text ?? '')
+    const normalized = plainPrompt(String(text ?? ''))
         .toLowerCase()
         .replace(/[‘’]/g, "'")
         .replace(/\s+/g, ' ')

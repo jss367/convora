@@ -1,3 +1,4 @@
+import { formatPrompt } from './questions/formatPrompt';
 import PropTypes from 'prop-types';
 import React, { useCallback, useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
@@ -63,7 +64,7 @@ const GroupCard = ({ cluster }) => (
                     const lean = leaning(st.mean);
                     return (
                         <li key={st.id} className="border-b border-gray-100 last:border-0 pb-3 last:pb-0">
-                            <div className="text-gray-900">{st.text}</div>
+                            <div className="text-gray-900">{formatPrompt(st.text)}</div>
                             <div className={`text-sm font-semibold mt-1 ${lean.tone}`}>
                                 <span className={`inline-block w-2 h-2 rounded-full mr-1.5 ${lean.dot}`} />
                                 {lean.label}
@@ -106,7 +107,7 @@ const StatementList = ({ title, subtitle, items, clusters, emptyText }) => (
             <ol className="space-y-4">
                 {items.map(st => (
                     <li key={st.id} className="border-b border-gray-100 last:border-0 pb-4 last:pb-0">
-                        <div className="text-gray-900 font-medium">{st.text}</div>
+                        <div className="text-gray-900 font-medium">{formatPrompt(st.text)}</div>
                         <div className="flex flex-wrap gap-2 mt-2">
                             {st.clusterMeans.map((mean, idx) => {
                                 const didVote = !st.clusterVoters || st.clusterVoters[idx] > 0;

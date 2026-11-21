@@ -1,3 +1,5 @@
+import { formatPrompt } from './questions/formatPrompt';
+import { plainPrompt } from './questions/promptEmphasis.mjs';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { QRCodeSVG } from 'qrcode.react';
@@ -14,9 +16,11 @@ import ModeratorLinkPanel, { moderatorLinkPromptState, useModeratorLinkPrompt } 
 import ModeratorPanel from './ModeratorPanel';
 import { downloadForViewer } from './viewer';
 import QuestionEditor from './questions/QuestionEditor';
+import QuestionTools from './questions/QuestionTools';
 import { AgreementResults, YesNoResults, MultipleChoiceResults } from './questions/OpinionResults';
 import OpenEndedQuestion from './questions/OpenEndedQuestion';
 import NumericalResults from './questions/NumericalResults';
+import SpeakingQueue, { useSpeakingQueue } from './questions/SpeakingQueue';
 import { clampNumericalValue, getNumericalRange, sortQuestionsMostRecent, sortQuestionsMostInteresting } from './questions/questionHelpers.mjs';
 import QuestionComposer, { useQuestionComposer } from './questions/QuestionComposer.jsx';
 import {
@@ -37,22 +41,6 @@ const THEMES = [
 ];
 const THEME_KEYS = THEMES.map((t) => t.key);
 const DEFAULT_THEME = 'indigo';
-
-// The floating "Scan to join" QR the moderator can pop up. It starts large so
-// it's readable across a room and can be drag-resized by the moderator to fit
-// whatever screen they're presenting on.
-const MIN_JOIN_QR_SIZE = 140;
-const DEFAULT_JOIN_QR_SIZE = 300;
-
-// Largest square the QR panel can grow to without overflowing the viewport
-// (leaves a margin for the panel's padding/caption and screen edges).
-const maxJoinQrSize = () => {
-    if (typeof window === 'undefined') return DEFAULT_JOIN_QR_SIZE;
-    return Math.max(MIN_JOIN_QR_SIZE, Math.min(window.innerWidth, window.innerHeight) - 120);
-};
-
-// Clamp a QR size to the range the current viewport can accommodate.
-const clampJoinQrSize = (size) => Math.min(maxJoinQrSize(), Math.max(MIN_JOIN_QR_SIZE, size));
 
 const SortOptions = {
     MOST_RECENT: 'Most Recent',
@@ -144,11 +132,6 @@ const DiscussionPage = () => {
     const [showClusters, setShowClusters] = useState(false);
     const [participants, setParticipants] = useState([]);
     const [showParticipants, setShowParticipants] = useState(false);
-    const [showJoinQr, setShowJoinQr] = useState(false);
-    const [joinQrSize, setJoinQrSize] = useState(DEFAULT_JOIN_QR_SIZE);
-    // Holds the in-flight resize drag (start pointer + start size + latest size)
-    // so the move/end handlers don't depend on stale render-time closures.
-    const joinQrDragRef = useRef(null);
     // This user's own brainstorm ratings/reactions, kept separately from the
     // (aggregate-only, unattributable) broadcast so we can highlight their
     // selections. Only this user mutates it, so optimistic updates are safe; we
@@ -179,7 +162,8 @@ const DiscussionPage = () => {
     const isAdmin = !!adminToken;
     const showClearModal = isAdmin && clearTarget === discussionSlug;
     const clearDialogRef = useModalDialog(showClearModal, () => { if (!clearing) setClearTarget(null); }, actionsMenuButtonRef);
-    const composer = useQuestionComposer({ socket, discussionSlug, adminToken, setError });
+    const approvalRequired = discussionState.postingMode === 'approval' && !isAdmin;
+    const composer = useQuestionComposer({ socket, discussionSlug, adminToken, setError, approvalRequired });
     const { onQuestionsLoaded, onSimilarQuestion } = composer;
     const { locked, moderatorOnly } = discussionState;
     const theme = THEME_KEYS.includes(discussionState.theme) ? discussionState.theme : DEFAULT_THEME;
@@ -189,10 +173,9 @@ const DiscussionPage = () => {
     const activeReactionKeys = discussionState.reactionKeys || ALL_REACTION_KEYS;
     const discussionTitle = discussion?.topic || topic;
 
-    const joinUrl = typeof window !== 'undefined'
+    const shareUrl = typeof window !== 'undefined'
         ? `${window.location.origin}/discussion/${discussionSlug}`
         : '';
-    const shareUrl = joinUrl;
     const adminUrl = typeof window !== 'undefined' && adminToken
         ? `${window.location.origin}/discussion/${discussionSlug}?admin=${adminToken}`
         : '';
@@ -272,123 +255,6 @@ const DiscussionPage = () => {
             console.warn('Failed to read clusters flag:', e);
         }
     }, [topic]);
-
-    useEffect(() => {
-        try {
-            setShowJoinQr(localStorage.getItem(`convora_show_join_qr_${discussionSlug}`) === 'true');
-            const storedSize = parseInt(localStorage.getItem(`convora_join_qr_size_${discussionSlug}`), 10);
-            setJoinQrSize(clampJoinQrSize(Number.isFinite(storedSize) ? storedSize : DEFAULT_JOIN_QR_SIZE));
-        } catch (e) {
-            console.warn('Failed to read QR visibility:', e);
-            setShowJoinQr(false);
-            setJoinQrSize(clampJoinQrSize(DEFAULT_JOIN_QR_SIZE));
-        }
-    }, [discussionSlug]);
-
-    const handleToggleJoinQr = () => {
-        setShowJoinQr(prev => {
-            const next = !prev;
-            try {
-                localStorage.setItem(`convora_show_join_qr_${discussionSlug}`, String(next));
-            } catch (e) {
-                console.warn('Failed to store QR visibility:', e);
-            }
-            return next;
-        });
-    };
-
-    const handleJoinQrResizeStart = (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        joinQrDragRef.current = { startX: e.clientX, startY: e.clientY, startSize: joinQrSize, latest: joinQrSize };
-        try {
-            e.currentTarget.setPointerCapture(e.pointerId);
-        } catch {
-            // setPointerCapture isn't critical; drag still works via the bound handlers.
-        }
-    };
-
-    const handleJoinQrResizeMove = (e) => {
-        const drag = joinQrDragRef.current;
-        if (!drag) return;
-        // Panel is anchored bottom-left, so dragging the handle right (+x) or up
-        // (-y) grows it; average the two axes so the corner tracks the pointer.
-        const delta = ((e.clientX - drag.startX) - (e.clientY - drag.startY)) / 2;
-        const next = Math.round(clampJoinQrSize(drag.startSize + delta));
-        drag.latest = next;
-        setJoinQrSize(next);
-    };
-
-    const persistJoinQrSize = (size) => {
-        try {
-            localStorage.setItem(`convora_join_qr_size_${discussionSlug}`, String(size));
-        } catch (err) {
-            console.warn('Failed to store QR size:', err);
-        }
-    };
-
-    const handleJoinQrResizeEnd = (e) => {
-        const drag = joinQrDragRef.current;
-        if (!drag) return;
-        joinQrDragRef.current = null;
-        try {
-            e.currentTarget.releasePointerCapture(e.pointerId);
-        } catch {
-            // Ignore — capture may not have been set.
-        }
-        persistJoinQrSize(drag.latest);
-    };
-
-    // Keyboard support for the resize handle so the advertised slider role is
-    // actually operable for keyboard/assistive-tech users (arrows step, Home/End jump).
-    const handleJoinQrResizeKeyDown = (e) => {
-        const step = 20;
-        let next;
-        switch (e.key) {
-            case 'ArrowRight':
-            case 'ArrowUp':
-                next = joinQrSize + step;
-                break;
-            case 'ArrowLeft':
-            case 'ArrowDown':
-                next = joinQrSize - step;
-                break;
-            case 'Home':
-                next = MIN_JOIN_QR_SIZE;
-                break;
-            case 'End':
-                next = maxJoinQrSize();
-                break;
-            default:
-                return;
-        }
-        e.preventDefault();
-        next = Math.round(clampJoinQrSize(next));
-        setJoinQrSize(next);
-        persistJoinQrSize(next);
-    };
-
-    // Re-clamp the open QR panel when the viewport shrinks (moving the browser
-    // between displays, rotating a tablet) so the fixed bottom-left panel and its
-    // resize handle can't drift off-screen. clampJoinQrSize bounds to
-    // [MIN, maxJoinQrSize()], so this only ever shrinks — it never auto-grows the
-    // moderator's chosen size on a larger viewport.
-    useEffect(() => {
-        if (!showJoinQr) return;
-        const handleResize = () => {
-            setJoinQrSize(prev => {
-                const next = clampJoinQrSize(prev);
-                if (next !== prev) persistJoinQrSize(next);
-                return next;
-            });
-        };
-        // Clamp immediately on becoming visible: if the viewport shrank while the
-        // panel was hidden, the stored size would otherwise render off-screen
-        // until the next resize event fires.
-        handleResize();
-        window.addEventListener('resize', handleResize);
-        return () => window.removeEventListener('resize', handleResize);
-    }, [showJoinQr, discussionSlug]);
 
     const handleClaimModerator = () => {
         socket.emit('claimModerator', discussionSlug, (resp) => {
@@ -746,6 +612,8 @@ const DiscussionPage = () => {
         onError: payload => { if (typeof payload?.message === 'string') setError(payload.message); },
     });
 
+    const speakingQueue = useSpeakingQueue(socket, discussionSlug, discussion?.slug === discussionSlug && discussionState.handsEnabled, userId, adminToken, displayName);
+
     // Mirror the discussion's chosen theme onto <html data-theme="..."> so the
     // CSS-variable palette (index.css) recolors every primary/secondary class,
     // including the app-wide header that lives outside this page. Cleared on
@@ -937,7 +805,7 @@ const DiscussionPage = () => {
                 <button
                     onClick={() => (isMine ? handleClearVote(question.id) : handleVote(question.id, option))}
                     disabled={votePending}
-                    aria-label={`Vote ${option} on "${question.text}"`}
+                    aria-label={`Vote ${option} on "${plainPrompt(question.text)}"`}
                     aria-pressed={isMine}
                     aria-busy={saving || undefined}
                     className={`px-4 py-2 rounded-md transition duration-300 disabled:opacity-60 disabled:cursor-not-allowed ${isMine
@@ -948,7 +816,7 @@ const DiscussionPage = () => {
                     {saving ? 'Saving…' : isMine ? 'Undo Vote' : 'Vote'}
                 </button>
                 <span role="status" className="sr-only">
-                    {saving ? `Saving your vote on "${question.text}"…` : ''}
+                    {saving ? `Saving your vote on "${plainPrompt(question.text)}"…` : ''}
                 </span>
                 </>
             );
@@ -1042,7 +910,7 @@ const DiscussionPage = () => {
                                         min={minValue}
                                         max={maxValue}
                                         value={isUnset ? minValue : sliderValue}
-                                        aria-label={`Your answer to: ${question.text}`}
+                                        aria-label={`Your answer to: ${plainPrompt(question.text)}`}
                                         aria-valuetext={isUnset ? 'No value selected' : String(sliderValue)}
                                         className={`flex-grow min-w-0 ${isUnset ? 'slider-unset' : ''}`}
                                         onChange={(e) => handleSliderChange(question.id, parseInt(e.target.value))}
@@ -1059,7 +927,7 @@ const DiscussionPage = () => {
                                         inputMode="decimal"
                                         value={inputValue}
                                         placeholder="–"
-                                        aria-label={`Type your answer to: ${question.text}`}
+                                        aria-label={`Type your answer to: ${plainPrompt(question.text)}`}
                                         className="w-24 p-2 border border-gray-300 rounded-md text-center focus:outline-none focus:ring-2 focus:ring-primary"
                                         // Keep what is typed as-is so multi-digit
                                         // or decimal entry ("0." on the way to
@@ -1118,9 +986,11 @@ const DiscussionPage = () => {
 
     const sortedAndFilteredQuestions = filterQuestions(sortQuestions(questions.filter(question => !question.queued)));
     // Queued questions reach moderators only (the server sends them to nobody
-    // else). They are listed apart from the live questions, in the order they
-    // were written, which is the order a moderator would publish them in.
-    const queuedQuestions = questions.filter(question => question.queued).sort((a, b) => a.id - b.id);
+    // else). Keep the saved agenda order supplied by the server.
+    const queuedQuestions = questions.filter(question => question.queued);
+    const swapQueuedQuestions = (earlier, later) => {
+        socket.emit('swapQueuedQuestions', discussionSlug, earlier.id, later.id, adminToken);
+    };
     // Pinned questions float to the top, preserving the chosen sort within each
     // group (Array.prototype.sort is stable).
     const orderedQuestions = [...sortedAndFilteredQuestions].sort(
@@ -1430,7 +1300,7 @@ const DiscussionPage = () => {
                 <div className="fixed inset-0 z-50 bg-gray-600 bg-opacity-50 flex items-center justify-center p-4">
                     <div ref={clearDialogRef} role="dialog" aria-modal="true" aria-labelledby="clear-title" aria-describedby="clear-description" tabIndex={-1} className="bg-white rounded-lg shadow-xl p-6 w-full max-w-md">
                         <h2 id="clear-title" className="text-xl font-bold mb-4">Clear votes and responses?</h2>
-                        <p id="clear-description" className="text-gray-700 mb-4">This permanently removes all answers, interest marks, and response comments, ratings, and reactions from “{discussionTitle}”. Your questions, settings, saved snapshots, and link stay the same. This cannot be undone.</p>
+                        <p id="clear-description" className="text-gray-700 mb-4">This permanently removes all answers, interest marks, private question notes, raised hands, and response comments, ratings, and reactions from “{discussionTitle}”. Independent-answer questions start collecting privately again. Your questions, settings, saved snapshots, and link stay the same. This cannot be undone.</p>
                         {clearError && <p role="alert" className="text-red-700 mb-4">{clearError}</p>}
                         <div className="flex justify-end gap-2">
                             <button type="button" data-autofocus disabled={clearing} onClick={() => setClearTarget(null)} className="px-4 py-2 rounded bg-gray-200 disabled:opacity-50">Cancel</button>
@@ -1629,7 +1499,9 @@ const DiscussionPage = () => {
                         themes={THEMES}
                         activeReactionKeys={activeReactionKeys}
                         onSetLocked={(on) => socket.emit('setLocked', discussionSlug, on, adminToken)}
-                        onSetModeratorOnly={(on) => socket.emit('setModeratorOnly', discussionSlug, on, adminToken)}
+                        onSetPostingMode={(mode) => discussionState.postingMode
+                            ? socket.emit('setPostingMode', discussionSlug, mode, adminToken)
+                            : socket.emit('setModeratorOnly', discussionSlug, mode === 'moderator_only', adminToken)}
                         onSetListed={(on) => socket.emit('setListed', discussionSlug, on, adminToken)}
                         onSetResultsVisibility={(value) => socket.emit('setResultsVisibility', discussionSlug, value, adminToken)}
                         onSetDisplaySettings={(settings) => socket.emit('setDisplaySettings', discussionSlug, settings, adminToken)}
@@ -1639,8 +1511,6 @@ const DiscussionPage = () => {
                         linkPrompt={moderatorLink}
                         linkCopied={adminLinkCopied}
                         onCopyLink={handleCopyAdminLink}
-                        showJoinQr={showJoinQr}
-                        onToggleJoinQr={handleToggleJoinQr}
                         showParticipants={showParticipants}
                         onToggleParticipants={handleToggleParticipants}
                     >
@@ -1725,44 +1595,9 @@ const DiscussionPage = () => {
                 </div>
             )}
 
-            {isAdmin && showJoinQr && (
-                <div
-                    className="fixed bottom-4 left-4 z-40 rounded-md border border-gray-200 bg-white p-3 text-center shadow-xl"
-                    style={{ width: joinQrSize + 24 }}
-                >
-                    <div className="flex justify-center">
-                        <QRCodeSVG value={joinUrl} size={joinQrSize} includeMargin />
-                    </div>
-                    <div className="mt-2 text-xs font-semibold uppercase tracking-wide text-gray-500">Scan to join</div>
-                    <div className="mt-1 truncate text-sm font-semibold text-gray-800" title={discussionTitle}>{discussionTitle}</div>
-                    {/* Drag this corner to resize the QR for the room/screen. */}
-                    <div
-                        onPointerDown={handleJoinQrResizeStart}
-                        onPointerMove={handleJoinQrResizeMove}
-                        onPointerUp={handleJoinQrResizeEnd}
-                        onPointerCancel={handleJoinQrResizeEnd}
-                        onKeyDown={handleJoinQrResizeKeyDown}
-                        tabIndex={0}
-                        role="slider"
-                        aria-label="Resize join QR code"
-                        aria-valuemin={MIN_JOIN_QR_SIZE}
-                        aria-valuemax={maxJoinQrSize()}
-                        aria-valuenow={joinQrSize}
-                        title="Drag to resize"
-                        className="absolute -right-2 -top-2 flex h-7 w-7 cursor-nesw-resize touch-none items-center justify-center rounded-full border border-gray-300 bg-white text-gray-400 shadow hover:text-gray-600 focus:outline-none focus:ring-2 focus:ring-indigo-400"
-                    >
-                        <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                            <path d="M14 2 2 14" />
-                            <path d="M14 8v6H8" />
-                            <path d="M2 8V2h6" />
-                        </svg>
-                    </div>
-                </div>
-            )}
-
             {/* Near-duplicate prompt */}
             <QuestionComposer composer={composer} questionCount={questions.length}
-                locked={locked} moderatorOnly={moderatorOnly} isAdmin={isAdmin} />
+                locked={locked} moderatorOnly={moderatorOnly} isAdmin={isAdmin} approvalRequired={approvalRequired} />
             {error && <div className="text-red-500 mb-4">{error}</div>}
             {connectionLost && (
                 <div
@@ -1783,11 +1618,12 @@ const DiscussionPage = () => {
                         Queued questions ({queuedQuestions.length})
                     </h2>
                     <p className="mb-3 text-sm text-indigo-800">
-                        Only moderators see these. Publish one to show it to everyone and open it for answers.
+                        Only moderators see these drafts and suggestions. Reorder them to plan the agenda, publish any question to open it for answers, or delete it to discard it.
                     </p>
                     <ol className="space-y-3">
-                        {queuedQuestions.map((question) => (
+                        {queuedQuestions.map((question, index) => (
                             <li key={question.id} className="rounded-md border border-indigo-100 bg-white p-4" data-testid="queued-question">
+                                {question.suggested && <p className="text-xs font-medium text-indigo-700">Participant suggestion</p>}
                                 {editingQuestionId === question.id ? (
                                     <QuestionEditor
                                         question={question}
@@ -1799,21 +1635,33 @@ const DiscussionPage = () => {
                                 ) : (
                                     <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
                                         <div className="min-w-0 flex-1 basis-64">
-                                            <h3 className="font-semibold break-words">{question.text}</h3>
+                                            <h3 className="font-semibold break-words">{formatPrompt(question.text)}</h3>
                                             <p className="text-sm text-gray-500 break-words">
                                                 Type: {question.type}
                                                 {question.type === QuestionTypes.NUMERICAL && ` (${question.minValue} to ${question.maxValue})`}
                                                 {question.type === QuestionTypes.MULTIPLE_CHOICE && ` (${(question.options || []).join(' · ')})`}
                                             </p>
                                         </div>
-                                        <div className="flex gap-2 ml-auto shrink-0">
+                                        <div className="flex flex-wrap gap-2 ml-auto">
+                                            <button
+                                                disabled={index === 0}
+                                                aria-label={`Move up: ${question.text}`}
+                                                onClick={() => swapQueuedQuestions(queuedQuestions[index - 1], question)}
+                                                className="text-xs px-2 py-1 rounded border border-gray-300 hover:bg-gray-100 disabled:opacity-50"
+                                            >Move up</button>
+                                            <button
+                                                disabled={index === queuedQuestions.length - 1}
+                                                aria-label={`Move down: ${question.text}`}
+                                                onClick={() => swapQueuedQuestions(question, queuedQuestions[index + 1])}
+                                                className="text-xs px-2 py-1 rounded border border-gray-300 hover:bg-gray-100 disabled:opacity-50"
+                                            >Move down</button>
                                             <button
                                                 onClick={() => handlePublishQuestion(question.id)}
                                                 disabled={locked}
                                                 title={locked ? 'Unlock the discussion to publish questions' : 'Show this question to everyone and open it for answers'}
                                                 className="text-xs px-2 py-1 rounded bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
                                             >
-                                                Publish
+                                                {question.suggested ? 'Approve and publish' : 'Publish'}
                                             </button>
                                             <button
                                                 onClick={() => setEditingQuestionId(question.id)}
@@ -1877,7 +1725,7 @@ const DiscussionPage = () => {
                     compare: 'Back to full comparison',
                 }[discussionState.displayBaseLayout || discussionState.displayLayout];
                 return (
-                <div key={question.id} className="bg-white shadow-lg rounded-lg p-6 mb-6">
+                <div key={question.id} data-question-id={question.id} className="bg-white shadow-lg rounded-lg p-6 mb-6">
                     {isEditing ? (
                         <QuestionEditor
                             question={question}
@@ -1900,7 +1748,7 @@ const DiscussionPage = () => {
                                 disabled={locked || !questionInterest.ready || interestPending}
                                 aria-busy={interestPending}
                                 aria-pressed={pressed}
-                                aria-label={`${name} "${question.text}"`}
+                                aria-label={`${name} "${plainPrompt(question.text)}"`}
                                 aria-describedby={`${name}-count-${question.id}`}
                                 className={`flex flex-col items-center px-2 py-1 rounded-md border transition duration-200 ${pressed
                                     ? 'bg-primary text-white border-primary'
@@ -1914,7 +1762,7 @@ const DiscussionPage = () => {
                             </div>
                             <h2 className="text-xl font-semibold min-w-0 break-words">
                                 {question.pinned && <span className="mr-1" title="Pinned">📌</span>}
-                                {question.text}
+                                {formatPrompt(question.text)}
                             </h2>
                         </div>
                         {isAdmin && (
@@ -1925,6 +1773,12 @@ const DiscussionPage = () => {
                                         className="text-xs px-2 py-1 rounded border border-gray-300 text-gray-600 hover:bg-gray-100"
                                     >
                                         Edit
+                                    </button>
+                                )}
+                                {question.independentAnswers && !question.queued && !question.resultsRevealed && (
+                                    <button onClick={() => handleToggleResultsRevealed(question.id, false)}
+                                        className="text-xs px-2 py-1 rounded border border-indigo-300 text-indigo-700 hover:bg-indigo-50">
+                                        Reveal answers
                                     </button>
                                 )}
                                 {discussionState.resultsVisibility !== 'always'
@@ -1976,6 +1830,11 @@ const DiscussionPage = () => {
                     </div>
                     <p className="mb-4 text-sm text-gray-500">Type: {question.type}</p>
                     {renderVotingMechanism(question)}
+                    <QuestionTools question={question} socket={socket} slug={discussionSlug} token={adminToken}
+                        vote={question.votes?.find(vote => isMyVote(question, vote))} locked={locked}
+                        disabled={!interestReady || !userId || connectionLost || pendingVotes[question.id] !== undefined} />
+                    {discussionState.handsEnabled && <SpeakingQueue queue={speakingQueue} questionId={question.id} moderator={isAdmin}
+                        locked={!!locked || connectionLost} name={displayName} />}
                     </>
                     )}
                 </div>

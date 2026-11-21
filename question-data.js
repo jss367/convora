@@ -1,3 +1,10 @@
+const toolDefinitions = require('./question-tools.json');
+
+function normalizeQuestionTools(tools, type) {
+  if (!Array.isArray(tools) || tools.some(kind => !toolDefinitions.some(tool => tool.kind === kind))) return null;
+  return toolDefinitions.filter(tool => tools.includes(tool.kind) && (!tool.types || tool.types.includes(type))).map(tool => tool.kind);
+}
+
 // Question parsing and validation shared by transport and reporting.
 function parseOptions(options) {
   if (Array.isArray(options)) {
@@ -149,6 +156,7 @@ function normalizeQuestionPayload(question) {
   }
 
   let minValue = null;
+  if (question.independentAnswers !== undefined && typeof question.independentAnswers !== 'boolean') return null;
   let maxValue = null;
   if (type === 'Numerical') {
     minValue = parseIntegerInput(question.minValue);
@@ -168,11 +176,15 @@ function normalizeQuestionPayload(question) {
     if (!options) return null;
   }
 
+  const tools = question.tools === undefined ? [] : normalizeQuestionTools(question.tools, type);
+  if (!tools) return null;
   return {
+    ...(question.tools === undefined ? {} : { tools }),
     maxResponses: type === 'Open Ended' ? maxResponses : null,
     showAttribution: question.showAttribution ?? question.type !== 'Brainstorm',
     text,
     type,
+    independentAnswers: type === 'Open Ended' && question.independentAnswers === true,
     minValue,
     maxValue,
     options,
@@ -180,6 +192,7 @@ function normalizeQuestionPayload(question) {
 }
 
 module.exports = {
+  normalizeQuestionTools,
   AGREEMENT_OPTIONS, YES_NO_OPTIONS, parseOptions, parseStoredVoteValue,
   getQuestionRange, normalizeNumericalVote, NUMERICAL_DECIMALS, normalizeQuestionPayload, normalizeChoiceOptions, choiceOptionsFor, isValidVote,
   MULTIPLE_CHOICE_MIN_OPTIONS, MULTIPLE_CHOICE_MAX_OPTIONS, MULTIPLE_CHOICE_MAX_OPTION_LENGTH,
