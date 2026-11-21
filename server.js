@@ -89,8 +89,11 @@ function escapeCsv(value) {
   if (value === null || value === undefined) {
     return '';
   }
-  const stringValue = Array.isArray(value) ? JSON.stringify(value) : String(value);
-  const neutralizedValue = /^[=+\-@]/.test(stringValue) ? `'${stringValue}` : stringValue;
+  const stringValue = Array.isArray(value) ? JSON.stringify(value)
+    : value instanceof Date ? value.toISOString() : String(value);
+  // Neutralize text a spreadsheet would run as a formula. A number is not one,
+  // and quoting it would turn a negative answer into text.
+  const neutralizedValue = typeof value !== 'number' && /^[=+\-@]/.test(stringValue) ? `'${stringValue}` : stringValue;
   return `"${neutralizedValue.replace(/"/g, '""')}"`;
 }
 
@@ -594,6 +597,10 @@ io.on('connection', (socket) => {
   socket.on('joinDiscussion', async (topic) => {
     const discussionSlug = slugifyTopic(topic);
     socket.data.discussionVisit = (socket.data.discussionVisit || 0) + 1;
+    // A join still loading when the socket moves to another discussion must not
+    // send this one's data after it (the client cannot tell the payloads apart).
+    const visit = socket.data.discussionVisit;
+    const current = () => socket.data.topic === discussionSlug && socket.data.discussionVisit === visit;
     // If this socket was viewing another discussion, leave it so presence
     // counts stay accurate as the user navigates within the SPA.
     const previousTopic = socket.data.topic;
@@ -611,7 +618,7 @@ io.on('connection', (socket) => {
       // Null discussion data alone also means a never-created lazy route, so
       // distinguish a permanently deleted route using its durable tombstone.
       const deleted = await pool.query('SELECT 1 FROM deleted_discussion_slugs WHERE slug = $1', [discussionSlug]);
-      if (socket.data.topic !== discussionSlug) return;
+      if (!current()) return;
       if (deleted.rows.length) {
         socket.leave(discussionSlug);
         socket.data.topic = null;
@@ -619,12 +626,16 @@ io.on('connection', (socket) => {
         socket.emit('discussionDeleted', { slug: discussionSlug });
         return;
       }
-      socket.emit('discussion', await getDiscussionBySlug(discussionSlug));
-      await emitQuestions(discussionSlug, socket);
-      socket.emit('discussionState', await getDiscussionState(discussionSlug));
+      const discussion = await getDiscussionBySlug(discussionSlug);
+      if (!current()) return;
+      socket.emit('discussion', discussion);
+      await emitQuestions(discussionSlug, socket, current);
+      const state = await getDiscussionState(discussionSlug);
+      if (!current()) return;
+      socket.emit('discussionState', state);
     } catch (error) {
       logError('Error getting questions:', error);
-      socket.emit('error', { message: 'Failed to get questions' });
+      if (current()) socket.emit('error', { message: 'Failed to get questions' });
     }
   });
 
@@ -1013,17 +1024,22 @@ io.on('connection', (socket) => {
         socket.emit('error', { message: 'Not authorized to moderate this discussion.' });
         return;
       }
-      // Scope the vote delete through the question's discussion so a moderator of
+      // Scope the delete through the question's discussion so a moderator of
       // one discussion can never wipe another discussion's votes by passing a
-      // foreign questionId. Delete votes first to satisfy the FK constraint, then
-      // the question itself (also constrained by discussion_id).
-      await pool.query(
-        `DELETE FROM votes
-         WHERE question_id = $1
-           AND question_id IN (SELECT id FROM questions WHERE discussion_id = $2)`,
-        [questionId, discussionId]
-      );
-      await pool.query('DELETE FROM questions WHERE id = $1 AND discussion_id = $2', [questionId, discussionId]);
+      // foreign questionId. Votes go first to satisfy the FK constraint. The
+      // question row is locked for the whole transaction: a vote locks it FOR
+      // SHARE while it is stored (see addVote), so one that arrives during the
+      // delete waits and then finds no question, instead of landing between
+      // the two deletes and leaving the question behind with its votes gone.
+      await withTransaction(async client => {
+        const target = await client.query(
+          'SELECT id FROM questions WHERE id = $1 AND discussion_id = $2 FOR UPDATE',
+          [questionId, discussionId]
+        );
+        if (!target.rows.length) return;
+        await client.query('DELETE FROM votes WHERE question_id = $1', [target.rows[0].id]);
+        await client.query('DELETE FROM questions WHERE id = $1', [target.rows[0].id]);
+      });
       await emitQuestions(discussionSlug);
       // Removing the spotlighted question also restores the underlying layout.
       const cleared = await pool.query(

@@ -174,7 +174,7 @@ const WrittenResponse = ({
                                         type="text"
                                         value={comment}
                                         onChange={(e) => setComment(e.target.value)}
-                                        onKeyDown={(e) => { if (e.key === 'Enter') submitComment(); }}
+                                        onKeyDown={(e) => { if (e.key === 'Enter' && !e.nativeEvent.isComposing && e.nativeEvent.keyCode !== 229) submitComment(); }}
                                         placeholder="Add a comment"
                                         className="flex-1 min-w-0 p-1.5 border rounded text-sm focus:outline-none focus:ring-2 focus:ring-primary"
                                     />

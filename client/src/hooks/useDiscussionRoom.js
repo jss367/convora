@@ -120,7 +120,7 @@ export function useDiscussionRoom(socket, handlers) {
             discussion: 'onDiscussion', questions: 'onQuestions', presence: 'onPresence',
             discussionState: 'onState', similarQuestion: 'onSimilarQuestion',
             moderatorGranted: 'onModeratorGranted', moderatorRevoked: 'onModeratorRevoked',
-            pseudonymSync: 'onPseudonymSync',
+            pseudonymSync: 'onPseudonymSync', error: 'onError',
         };
         const listeners = Object.entries(events).map(([event, callback]) => {
             const listener = payload => {
