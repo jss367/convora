@@ -180,7 +180,7 @@ async function getDiscussionState(topic) {
   const slug = slugifyTopic(topic);
   const result = await pool.query(
     `SELECT locked, moderator_only_questions, theme, reaction_keys, results_visibility, listed,
-            display_qr, display_layout, display_sort, display_pinned_first,
+            display_qr, display_layout, display_sort, display_pinned_first, display_hidden_question_ids,
             (SELECT q.id FROM questions q
               WHERE q.id = d.display_question_id AND q.discussion_id = d.id AND NOT q.queued) AS display_question_id,
             (SELECT s.id FROM opinion_snapshots s
@@ -204,6 +204,7 @@ async function getDiscussionState(topic) {
       displaySort: DISPLAY_SORTS[0],
       displayPinnedFirst: true,
       displayQuestionId: null,
+      displayHiddenQuestionIds: [],
       displayBeforeSnapshotId: null,
       displayAfterSnapshotId: null,
     };
@@ -227,6 +228,7 @@ async function getDiscussionState(topic) {
     // The question a moderator put on the display, or null when they chose
     // none or it has since been deleted.
     displayQuestionId: row.display_question_id ?? null,
+    displayHiddenQuestionIds: row.display_hidden_question_ids,
     // The snapshots the before-and-after view compares; null means the display
     // picks the first snapshot and the latest one.
     displayBeforeSnapshotId: row.display_before_snapshot_id ?? null,
@@ -1053,7 +1055,7 @@ io.on('connection', (socket) => {
         return;
       }
       const changed = await withTransaction(async client => {
-        const current = await client.query('SELECT display_before_snapshot_id, display_after_snapshot_id FROM discussions WHERE id = $1 FOR UPDATE', [discussionId]);
+        const current = await client.query('SELECT display_before_snapshot_id, display_after_snapshot_id, display_hidden_question_ids FROM discussions WHERE id = $1 FOR UPDATE', [discussionId]);
         if (!current.rows.length) return false;
         const effectiveBefore = beforeSnapshotId === undefined ? current.rows[0].display_before_snapshot_id : beforeSnapshotId;
         const effectiveAfter = afterSnapshotId === undefined ? current.rows[0].display_after_snapshot_id : afterSnapshotId;
@@ -1068,7 +1070,7 @@ io.on('connection', (socket) => {
             'SELECT 1 FROM questions WHERE id = $1 AND discussion_id = $2 AND NOT queued',
             [questionId, discussionId]
           );
-          if (!question.rows.length) {
+          if (!question.rows.length || current.rows[0].display_hidden_question_ids.includes(questionId)) {
             socket.emit('error', { message: 'That question cannot be shown on the room display.' });
             return;
           }
@@ -1107,6 +1109,31 @@ io.on('connection', (socket) => {
       if (changed) await emitDiscussionState(discussionSlug);
     } catch (error) {
       logError('Error setting room display settings:', error);
+      socket.emit('error', { message: 'Failed to update discussion' });
+    }
+  });
+
+  socket.on('setQuestionHiddenOnDisplay', async (topic, questionId, hidden, token) => {
+    const slug = slugifyTopic(topic);
+    try {
+      const discussionId = await verifyAdmin(slug, token);
+      if (!discussionId) return socket.emit('error', { message: 'Not authorized to moderate this discussion.' });
+      if (!Number.isInteger(questionId) || questionId < 1 || questionId > 2147483647 || typeof hidden !== 'boolean') {
+        return socket.emit('error', { message: 'Unknown room display setting.' });
+      }
+      const changed = await pool.query(
+        `UPDATE discussions SET display_hidden_question_ids = CASE
+            WHEN NOT $3 THEN array_remove(display_hidden_question_ids, $2)
+            WHEN $2 = ANY(display_hidden_question_ids) THEN display_hidden_question_ids
+            ELSE array_append(display_hidden_question_ids, $2) END,
+          display_question_id = CASE WHEN $3 AND display_question_id = $2 THEN NULL ELSE display_question_id END
+         WHERE id = $1 AND EXISTS (SELECT 1 FROM questions WHERE discussion_id = $1 AND id = $2 AND NOT queued)`,
+        [discussionId, questionId, hidden]
+      );
+      if (!changed.rowCount) return socket.emit('error', { message: 'That question is not available on the room display.' });
+      await emitDiscussionState(slug);
+    } catch (error) {
+      logError('Error changing question visibility on the room display:', error);
       socket.emit('error', { message: 'Failed to update discussion' });
     }
   });
