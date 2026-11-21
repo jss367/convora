@@ -48,6 +48,14 @@ test.describe('on a phone', () => {
       // Not just the card's top edge: the question text itself is on screen.
       expect(headingBox.y + headingBox.height).toBeLessThanOrEqual(PHONE.height);
 
+      const filters = page.getByRole('button', { name: 'Sort and filter' });
+      const questionType = page.getByRole('combobox', { name: 'Question type', exact: true });
+      await expect(filters).toHaveAttribute('aria-expanded', 'false');
+      await filters.click();
+      await expect(questionType).toBeVisible();
+      await filters.click();
+      await expect(questionType).toBeHidden();
+
       // The composer is collapsed behind one button; expanding it focuses the
       // text box, and Enter still submits the form.
       const questionInput = page.getByPlaceholder('Enter a new question or statement');

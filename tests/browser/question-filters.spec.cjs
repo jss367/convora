@@ -23,7 +23,7 @@ test('personal question filters combine independently of the live room display f
     await expect(cards).toHaveCount(1);
     await expect(cards.getByRole('heading')).toHaveText('Reflection question');
     await participant.getByRole('button', { name: 'Vote Strongly Agree on "Poll"', exact: true }).click();
-    await participant.getByLabel('Show questions I haven’t answered').check();
+    await participant.getByRole('checkbox', { name: 'Show only questions I haven’t answered', exact: true }).check();
     await expect(participant.getByText('No questions match your filters.')).toBeVisible();
     await personal.selectOption('all');
     await expect(participant.getByRole('heading', { level: 2 })).toHaveText(['Reflection question']);

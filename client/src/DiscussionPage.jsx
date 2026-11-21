@@ -65,6 +65,7 @@ const DiscussionPage = () => {
     const [sortOption, setSortOption] = useState(SortOptions.MODERATOR);
     const [showUnansweredOnly, setShowUnansweredOnly] = useState(false);
     const [questionTypeFilter, setQuestionTypeFilter] = useState('all');
+    const [filtersOpen, setFiltersOpen] = useState(false);
     const [editingIdentity, setEditingIdentity] = useState(false);
     const [error, setError] = useState(null);
     const [spotlightError, setSpotlightError] = useState(null);
@@ -1690,7 +1691,11 @@ const DiscussionPage = () => {
                 </section>
             )}
             {/* Sorting and filtering controls */}
-            <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
+            <button type="button" aria-expanded={filtersOpen} aria-controls="question-filters"
+                onClick={() => setFiltersOpen(open => !open)} className="mb-2 rounded-md border px-3 py-2 sm:hidden">
+                Sort and filter{filtersActive ? ' (filtered)' : ''}
+            </button>
+            <div id="question-filters" className={`mb-6 flex-wrap items-center justify-between gap-3 sm:flex ${filtersOpen ? 'flex' : 'hidden'}`}>
                 <select
                     value={sortOption}
                     aria-label="Sort submitted questions"
