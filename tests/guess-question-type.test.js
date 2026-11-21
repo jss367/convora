@@ -140,6 +140,13 @@ test('distinguishes polite requests for explanations from yes/no questions', asy
   assert.equal(guessQuestionType('Could you attend the next onboarding session?'), 'Yes/No');
 });
 
+test('distinguishes a proposed characterization from a request for a description', async () => {
+  const { guessQuestionType } = await guesser;
+  assert.equal(guessQuestionType('Would you describe your experience as positive?'), 'Yes/No');
+  assert.equal(guessQuestionType('Would you describe your experience?'), 'Open Ended');
+  assert.equal(guessQuestionType('Would you describe your experience as positive, and why?'), 'Open Ended');
+});
+
 test('returns null for statements and unrecognized wording', async () => {
   const { guessQuestionType } = await guesser;
   for (const title of NO_GUESS) {
