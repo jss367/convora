@@ -108,9 +108,9 @@ test('the moderator moves or hides the display QR code and shows one question at
     const qrSetting = moderator.getByLabel('Display QR');
     const layoutSetting = moderator.getByLabel('Display shows');
 
-    // A small QR code in the header still lets people join.
+    // A small QR code at the bottom-left still lets people join.
     await qrSetting.selectOption('corner');
-    await expect(page.getByTestId('display-header').getByTestId('display-join')).toBeVisible();
+    await expect(page.getByTestId('display-footer').getByTestId('display-join')).toBeVisible();
     await expect(qr).toBeVisible();
     await expect(page.getByTestId('display-join-link')).toBeVisible();
 

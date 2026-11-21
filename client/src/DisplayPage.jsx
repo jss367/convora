@@ -403,9 +403,6 @@ const DisplayPage = () => {
                     {state.locked && <span>🔒 Voting is closed</span>}
                     {connectionLost && <span className="rounded-full bg-white px-4 py-1 text-red-700">Reconnecting…</span>}
                     <span role="status" className="tabular-nums">{plural(presence, 'person', 'people')} here now</span>
-                    {/* The small QR code sits in the header, in the page flow, so it
-                        never covers a question on a screen nobody scrolls. */}
-                    {qrMode === 'corner' && <JoinCard linkUrl={linkUrl} linkText={linkText} title={title} compact />}
                     <FullscreenButton hidden={idle} />
                         </div>
             </header>
@@ -417,6 +414,12 @@ const DisplayPage = () => {
                 )}
                 <section className="min-w-0 flex-1" aria-label="Questions">{body}</section>
             </div>
+            {qrMode === 'corner' && (
+                <footer className="flex shrink-0 px-8 pb-8 lg:px-12 lg:pb-12" data-testid="display-footer">
+                    {/* Keep the bottom-left QR code in the page flow so it cannot cover questions. */}
+                    <JoinCard linkUrl={linkUrl} linkText={linkText} title={title} compact />
+                </footer>
+            )}
         </main>
     );
 };
