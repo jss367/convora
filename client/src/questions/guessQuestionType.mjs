@@ -11,7 +11,8 @@ const WH_WORD = '(?:why|how|what|which|who|whose|where|when)';
 const POLITE_REQUEST = /^(can|could|would) you (?:(?:please|briefly|quickly|kindly|just) )*(describe|explain|elaborate on|tell (?:us|me))\b\s*(.*)$/;
 const FOLLOW_UP = /^(?:respond|reply|answer|write|explain|elaborate|expand on|describe|tell (?:us|me)|why|how|[\w-]+ (?:why|how|what|(?:your |the |some )?(?:details|reasons|examples)))\b/;
 const NOMINAL_LABEL = /^(?:a|an) (?:success|failure|strength|weakness|problem|priority)\b/;
-const MANNER = /^(?:clearly|accurately|completely|briefly|precisely|thoroughly|fully)\b/;
+const MANNER_PHRASE = /^([a-z][\w-]*ly)(?: as possible)?[?.!"')\]\s]*$/;
+const LY_ADJECTIVE = /^(?:[\w-]*friendly|costly|timely|lovely|unlikely|likely|lonely|ugly|silly|early|orderly|elderly|lively|deadly|daily|weekly|monthly|yearly|holy|jolly|surly|unruly|chilly|smelly)$/;
 const WH_CONTENT = new RegExp(`^(?:about|more|${WH_WORD})\\b`);
 const ANSWER_LIMIT = /\b(?:choose|pick|select|name) (?:(?:just|only) )?(?:one|\d+)(?: things?)?[?"')\]\s]*$/;
 const BINARY_OPENER = new RegExp(`^(?:${AUXILIARY}(?:n't)?|won't|can't)\\s`);
@@ -23,7 +24,9 @@ function descriptionType(content, laterClauses) {
     if ([...followUps, ...laterClauses].some(part => FOLLOW_UP.test(part))) return OPEN_ENDED;
     const label = predicate.replace(/^not /, '');
     if (NOMINAL_LABEL.test(label)) return YES_NO;
-    if (!/^[a-z]/.test(label) || /^(?:an?|the|i|we|you|he|she|it|they|if|though|part|soon|much)\b/.test(label) || MANNER.test(label)) return OPEN_ENDED;
+    const manner = MANNER_PHRASE.exec(label);
+    if (manner && !LY_ADJECTIVE.test(manner[1])) return OPEN_ENDED;
+    if (!/^[a-z]/.test(label) || /^(?:an?|the|i|we|you|he|she|it|they|if|though|part|soon|much)\b/.test(label)) return OPEN_ENDED;
     return YES_NO;
 }
 
