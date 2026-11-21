@@ -522,3 +522,28 @@ for (const layout of ['all', 'focus']) {
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   });
 }
+
+
+test('corner QR stays in view while long questions scroll above it', async ({ page, rooms }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
+  const room = await rooms.create('Long corner display', 'Open Ended');
+  await rooms.pool.query("UPDATE discussions SET display_qr = 'corner' WHERE id = $1", [room.id]);
+  await rooms.pool.query('UPDATE questions SET text = $1 WHERE discussion_id = $2',
+    ['Long question content '.repeat(500), room.id]);
+  await page.goto(`/discussion/${room.slug}/display`);
+  const footer = page.getByTestId('display-footer');
+  await expect(footer).toBeInViewport({ ratio: 1 });
+  const questions = page.getByRole('region', { name: 'Questions', exact: true });
+  const bounds = await questions.evaluate(element => {
+    const scroller = element.parentElement;
+    const box = scroller.getBoundingClientRect();
+    return { bottom: box.bottom, scrollable: scroller.scrollHeight > scroller.clientHeight };
+  });
+  expect(bounds.scrollable).toBe(true);
+  const footerBox = await footer.boundingBox();
+  expect(bounds.bottom).toBeLessThanOrEqual(footerBox.y);
+  const joinBox = await page.getByTestId('display-join').boundingBox();
+  expect(joinBox.x).toBeLessThan(100);
+  await questions.evaluate(element => { element.parentElement.scrollTop = element.parentElement.scrollHeight; });
+  await expect(footer).toBeInViewport({ ratio: 1 });
+});

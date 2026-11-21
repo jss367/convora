@@ -391,11 +391,11 @@ const DisplayPage = () => {
     }
 
     return (
-        <main className={`flex min-h-screen flex-col bg-gray-100 ${idle ? 'cursor-none' : ''}`} aria-label="Room display">
+        <main className={`flex flex-col bg-gray-100 ${qrMode === 'corner' ? 'h-dvh overflow-hidden' : 'min-h-screen'} ${idle ? 'cursor-none' : ''}`} aria-label="Room display">
             {/* The right-hand group holds the full-screen button; it wraps below
                 the title on narrow screens. */}
             <header
-                className="flex flex-wrap items-center justify-between gap-x-10 gap-y-3 bg-primary px-8 py-6 text-white shadow-md lg:px-12"
+                className="flex shrink-0 flex-wrap items-center justify-between gap-x-10 gap-y-3 bg-primary px-8 py-6 text-white shadow-md lg:px-12"
                 data-testid="display-header"
             >
                 <h1 className="min-w-0 text-4xl font-bold leading-tight lg:text-5xl">{title}</h1>
@@ -406,7 +406,7 @@ const DisplayPage = () => {
                     <FullscreenButton hidden={idle} />
                         </div>
             </header>
-            <div className="flex flex-1 flex-col gap-10 p-8 lg:flex-row lg:items-start lg:p-12">
+            <div className={`flex flex-1 flex-col gap-10 p-8 lg:flex-row lg:items-start lg:p-12 ${qrMode === 'corner' ? 'min-h-0 overflow-y-auto' : ''}`}>
                 {qrMode === 'full' && (
                     <aside className="shrink-0 lg:sticky lg:top-12 lg:w-[26rem]">
                         <JoinCard linkUrl={linkUrl} linkText={linkText} title={title} />
