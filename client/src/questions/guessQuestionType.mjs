@@ -13,6 +13,7 @@ const DESCRIPTIVE_ADJECTIVE = /(?:(?:very|quite|too|rather|more|less|mostly|high
 const NOMINAL_DESCRIPTION = /a (?:success|failure|strength|weakness|problem|priority)(?: (?:for|with|of|in|to) [\w'-]+(?: [\w'-]+)*)?/;
 const PROPOSED_DESCRIPTION = new RegExp(`${POLITE_REQUEST}describe .+? as (?:not )?(?:${DESCRIPTIVE_ADJECTIVE.source}|${NOMINAL_DESCRIPTION.source})\\s*[?.!"')\\]]*$`);
 const TELL_REQUEST = `tell (?:us|me) (?:about|more|a|an|the|your|${WH_WORD})`;
+const CONDITIONAL_DISCLOSURE = new RegExp(`(?=^would )${POLITE_REQUEST}tell (?:us|me) (?:a|an|the|your)\\b.+? if \\S`);
 const CHOICE_SET = 'of (?:these|those|the following)(?: (?:options|choices|alternatives))?';
 
 // First match wins, so the order is the precedence: "how likely" has to be
@@ -49,7 +50,9 @@ const RULES = [
     { type: OPEN_ENDED, pattern: new RegExp(`^${WH_WORD}(?:'s|'re| ${AUXILIARY}\\b)`) },
     { type: OPEN_ENDED, pattern: new RegExp(`^${WH_WORD}\\b`), questionOnly: true },
     { type: OPEN_ENDED, pattern: /^(?:describe|explain|elaborate on|tell (?:us|me))\b/ },
+    { type: OPEN_ENDED, pattern: new RegExp(`${POLITE_REQUEST}describe\\b.* and (?:explain|elaborate on|tell (?:us|me)|why)\\b`) },
     { type: YES_NO, pattern: PROPOSED_DESCRIPTION },
+    { type: YES_NO, pattern: CONDITIONAL_DISCLOSURE },
     { type: OPEN_ENDED, pattern: new RegExp(`${POLITE_REQUEST}(?:describe|explain|elaborate on|${TELL_REQUEST})\\b`) },
 
     // The trailing space keeps a half-typed word from matching: "Is" could
