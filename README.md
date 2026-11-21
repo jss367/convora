@@ -64,7 +64,10 @@ room. In the Add Question form, tick **Add to the queue**. The box stays ticked
 from one question to the next, so a whole agenda can be entered in a row.
 
 Queued questions are listed under **Queued questions** on the moderator's page,
-in the order they were written. Only moderators receive them: participants, the
+in the order they were written until a moderator uses **Move up** or **Move down**.
+The order is saved for all moderators, including in moderator-created copies.
+New questions go at the end, and any queued question can still be published next.
+Only moderators receive them: participants, the
 room display, the summary, exports and snapshots do not. Nobody can answer a
 queued question, and it can be edited or deleted like any question without
 responses.

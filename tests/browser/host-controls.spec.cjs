@@ -6,6 +6,32 @@ const { test, expect } = require('./lifecycle-fixtures.cjs');
 
 const asModerator = room => `/discussion/${room.slug}?admin=${room.adminToken}`;
 
+test('moderators share a saved queue order and can publish out of order', async ({ page, browser, rooms }) => {
+  const room = await rooms.create('Shared agenda', 'Agreement');
+  const titles = ['Introductions', 'Budget', 'Closing remarks'];
+  for (const title of titles) {
+    await rooms.pool.query("INSERT INTO questions (discussion_id, text, type, queued) VALUES ($1, $2, 'Agreement', true)", [room.id, title]);
+  }
+  const other = await browser.newPage();
+  const headings = moderator => moderator.getByTestId('queued-question').getByRole('heading');
+  try {
+    await Promise.all([page.goto(asModerator(room)), other.goto(asModerator(room))]);
+    await expect(headings(other)).toHaveText(titles);
+    await expect(page.getByRole('button', { name: 'Move up: Introductions' })).toBeDisabled();
+    await expect(page.getByRole('button', { name: 'Move down: Closing remarks' })).toBeDisabled();
+    await page.getByRole('button', { name: 'Move up: Closing remarks' }).click();
+    await expect(headings(other)).toHaveText(['Introductions', 'Closing remarks', 'Budget']);
+    await other.getByRole('button', { name: 'Move down: Introductions' }).click();
+    await expect(headings(page)).toHaveText(['Closing remarks', 'Introductions', 'Budget']);
+    await page.reload();
+    await expect(headings(page)).toHaveText(['Closing remarks', 'Introductions', 'Budget']);
+    await page.getByTestId('queued-question').filter({ hasText: 'Introductions' }).getByRole('button', { name: 'Publish' }).click();
+    await expect(headings(other)).toHaveText(['Closing remarks', 'Budget']);
+  } finally {
+    await other.close();
+  }
+});
+
 test('a participant can answer a numerical question with a decimal', async ({ page, rooms }) => {
   const room = await rooms.create('Decimal', 'Numerical');
   await page.goto(`/discussion/${room.slug}`);
