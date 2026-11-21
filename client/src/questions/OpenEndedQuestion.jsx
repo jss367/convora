@@ -3,6 +3,7 @@ import React, { useState, useRef } from 'react';
 import { AgreementMiniBar } from './OpinionResults';
 import { AGREEMENT_SCALE, AGREEMENT_SHORT, EPISTEMIC_REACTIONS } from './config';
 import { createRequestId } from '../request-id.mjs';
+import ResponseTextArea from './ResponseTextArea';
 
 // A single response, with optional two-axis rating (quality up/down +
 // agreement scale), epistemic reactions, and a comment thread — each shown only
@@ -274,11 +275,10 @@ const OpenEndedQuestion = ({
         <div>
             {!locked && !atLimit && (
                 <>
-                    <textarea
+                    <ResponseTextArea
                         value={idea}
                         onChange={(e) => setIdea(e.target.value)}
-                        className="w-full p-2 border rounded mb-2"
-                        rows="3"
+                        className="w-full p-2 border rounded mb-2 [@media(pointer:coarse)]:resize-none"
                         placeholder="Enter a response"
                     />
                     <button
