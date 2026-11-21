@@ -547,3 +547,18 @@ test('corner QR stays in view while long questions scroll above it', async ({ pa
   await questions.evaluate(element => { element.parentElement.scrollTop = element.parentElement.scrollHeight; });
   await expect(footer).toBeInViewport({ ratio: 1 });
 });
+
+
+test('corner QR and questions remain reachable below a tall header', async ({ page, rooms }) => {
+  await page.setViewportSize({ width: 480, height: 360 });
+  const room = await rooms.create('A long room title that wraps onto many lines on a small display '.repeat(2), 'Open Ended');
+  await rooms.pool.query("UPDATE discussions SET display_qr = 'corner' WHERE id = $1", [room.id]);
+  await page.goto(`/discussion/${room.slug}/display`);
+  const questions = page.getByRole('region', { name: 'Questions', exact: true });
+  await expect(questions).toBeVisible();
+  await questions.scrollIntoViewIfNeeded();
+  await expect(questions).toBeInViewport();
+  const qr = page.getByRole('img', { name: /^QR code to join/ });
+  await qr.scrollIntoViewIfNeeded();
+  await expect(qr).toBeInViewport({ ratio: 1 });
+});
