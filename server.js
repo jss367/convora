@@ -1862,6 +1862,35 @@ app.get('/api/discussions/resolve/:topic', async (req, res) => {
   }
 });
 
+app.delete('/api/discussions/:topic/responses', async (req, res) => {
+  const slug = slugifyTopic(req.params.topic);
+  const token = req.body?.adminToken;
+  const forbidden = () => res.status(403).json({ error: 'Only a moderator can clear votes and responses.' });
+  if (typeof token !== 'string' || !token) return forbidden();
+  try {
+    const cleared = await withTransaction(async client => {
+      const id = await verifyAdmin(slug, token, client);
+      if (!id) return false;
+      await client.query('SELECT id FROM discussions WHERE id = $1 FOR UPDATE', [id]);
+      await client.query('SELECT id FROM questions WHERE discussion_id = $1 ORDER BY id FOR UPDATE', [id]);
+      await client.query('DELETE FROM votes WHERE question_id IN (SELECT id FROM questions WHERE discussion_id = $1)', [id]);
+      await client.query('DELETE FROM question_interest WHERE question_id IN (SELECT id FROM questions WHERE discussion_id = $1)', [id]);
+      return true;
+    });
+    if (!cleared) return forbidden();
+  } catch (error) {
+    logError('Error clearing discussion responses:', error);
+    return res.status(500).json({ error: 'Could not clear votes and responses.' });
+  }
+  try {
+    await emitQuestions(slug);
+    res.sendStatus(204);
+  } catch (error) {
+    logError('Error broadcasting cleared responses:', error);
+    res.json({ refreshed: false });
+  }
+});
+
 // Only the creator credential can permanently delete a discussion. Lock the
 // parent and questions before removing children so concurrent inserts cannot
 // slip between the deletes. All other dependent tables cascade automatically.

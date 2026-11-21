@@ -79,6 +79,14 @@ When a moderator duplicates a discussion, the copy keeps its queued questions
 queued, so a prepared agenda can be reused. A copy made by anyone else leaves
 the queued questions out.
 
+## Clear a test run without changing the link
+
+As a moderator, open **More → Clear votes and responses** and confirm. This
+removes poll votes, written responses, question interest marks, and all votes,
+comments, ratings, and reactions attached to responses. Published and queued
+questions, room settings, saved opinion snapshots, and links stay unchanged.
+The reset cannot be undone. An unlocked room accepts fresh answers immediately.
+
 ## Discussions are unlisted unless you list them
 
 A new discussion is unlisted: it's reachable only through its link or short
