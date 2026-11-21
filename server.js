@@ -268,7 +268,8 @@ async function getDiscussionState(topic) {
 // displayAfterSnapshotId), for that one question when a moderator chose one.
 const DISPLAY_QR_MODES = ['full', 'corner', 'hidden'];
 const DISPLAY_LAYOUTS = ['all', 'focus', 'compare'];
-const DISPLAY_SORTS = ['oldest', 'newest', 'interesting', 'agreement', 'disagreement', 'controversial'];
+const DISPLAY_SORTS = ['oldest', 'newest', 'interesting', 'agreement', 'disagreement', 'controversial', 'moderator'];
+const MODERATOR_ORDER_SQL = 'q.published_position ASC NULLS LAST, q.created_at DESC NULLS LAST, q.id DESC';
 
 async function emitDiscussionState(topic) {
   audience(topic).emit('discussionState', await getDiscussionState(topic));
@@ -1285,6 +1286,34 @@ io.on('connection', (socket) => {
     }
   });
 
+  socket.on('swapPublishedQuestions', async (topic, earlierId, laterId, token) => {
+    const slug = slugifyTopic(topic);
+    try {
+      const discussionId = await verifyAdmin(slug, token);
+      if (!discussionId) return socket.emit('error', { message: 'Not authorized to moderate this discussion.' });
+      if (![earlierId, laterId].every(id => Number.isInteger(id) && id > 0 && id <= 2147483647)) return;
+      const moved = await withTransaction(async client => {
+        await client.query('SELECT id FROM discussions WHERE id = $1 FOR UPDATE', [discussionId]);
+        const { rows } = await client.query(`SELECT q.id, q.pinned FROM questions q
+          WHERE q.discussion_id = $1 AND NOT q.queued ORDER BY ${MODERATOR_ORDER_SQL} FOR UPDATE`, [discussionId]);
+        const earlier = rows.findIndex(row => row.id === earlierId);
+        if (earlier < 0) return false;
+        const later = rows.findIndex((row, index) => index > earlier && row.pinned === rows[earlier].pinned);
+        if (rows[later]?.id !== laterId) return false;
+        [rows[earlier], rows[later]] = [rows[later], rows[earlier]];
+        await client.query(`UPDATE questions q SET published_position = ordered.position::integer
+          FROM unnest($1::integer[]) WITH ORDINALITY AS ordered(id, position)
+          WHERE q.id = ordered.id AND q.published_position IS DISTINCT FROM ordered.position`, [rows.map(row => row.id)]);
+        return true;
+      });
+      if (!moved) socket.emit('error', { message: 'The question order has changed. Check the order and try again.' });
+      await emitQuestions(slug);
+    } catch (error) {
+      logError('Error reordering published questions:', error);
+      socket.emit('error', { message: 'Failed to update the question order.' });
+    }
+  });
+
   // Moderator-only: publish a queued question, showing it to everyone and
   // opening it for answers. Its creation time becomes now, so it arrives as the
   // newest question for participants and for the room display. There is no way
@@ -2071,6 +2100,7 @@ async function getQuestions(topic, { includeUserIds = false, respondents = null 
       q.created_at,
       q.pinned,
       q.queued,
+      (row_number() OVER (PARTITION BY q.queued ORDER BY ${MODERATOR_ORDER_SQL}))::integer AS "moderatorOrder",
       q.results_revealed,
       d.reactions_enabled,
       d.reactions_visible,
@@ -3728,8 +3758,8 @@ app.post('/api/duplicate-discussion', async (req, res) => {
     // Copy questions from original to new discussion. The interaction flags now
     // live on the discussion (copied above), not per question.
     await client.query(`
-      INSERT INTO questions (discussion_id, text, type, min_value, max_value, options, max_responses, show_attribution, queued)
-      SELECT $1, text, type, min_value, max_value, options, max_responses, show_attribution, queued
+      INSERT INTO questions (discussion_id, text, type, min_value, max_value, options, max_responses, show_attribution, queued, published_position)
+      SELECT $1, text, type, min_value, max_value, options, max_responses, show_attribution, queued, published_position
       FROM questions
       WHERE discussion_id = $2 AND ($3 OR NOT queued)
       ORDER BY CASE WHEN queued THEN COALESCE(queue_position, id) ELSE id END, id

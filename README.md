@@ -82,6 +82,14 @@ When a moderator duplicates a discussion, the copy keeps its queued questions
 queued, so a prepared agenda can be reused. A copy made by anyone else leaves
 the queued questions out.
 
+For already-submitted questions, **Moderator order** is the default discussion
+sort. With the unanswered filter off, moderators can use **Move up** and
+**Move down** on a question, even after it has answers. Pinned questions stay
+above unpinned ones. Before the first move, the list is newest first; after a
+move, new submissions appear below the arranged questions in their pin group.
+Participants see changes live unless they choose another sort. To use this
+order on the room display too, select **Moderator order** in its sort settings.
+
 ## Clear a test run without changing the link
 
 As a moderator, open **More → Clear votes and responses** and confirm. This

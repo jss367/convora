@@ -5420,6 +5420,40 @@ test('queue moves require moderator access and the same adjacent unpublished que
   }
 });
 
+test('published moves require a moderator and adjacent questions in the same room and pin group', async () => {
+  const { body: room } = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('published-order') });
+  const { body: other } = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('other-order') });
+  const mod = await joinAsModerator(room.slug, room.adminToken);
+  const insert = async (roomId, text, pinned = false, queued = false) => (await pool.query(
+    "INSERT INTO questions (discussion_id, text, type, pinned, queued) VALUES ($1, $2, 'Agreement', $3, $4) RETURNING id",
+    [roomId, text, pinned, queued])).rows[0].id;
+  try {
+    const oldest = await insert(room.id, 'Oldest'), middle = await insert(room.id, 'Middle'), newest = await insert(room.id, 'Newest');
+    const pinned = await insert(room.id, 'Pinned', true), queued = await insert(room.id, 'Queued', false, true);
+    const elsewhere = await insert(other.id, 'Elsewhere');
+    const swap = (earlier, later, token = room.adminToken) => mod.emit('swapPublishedQuestions', room.slug, earlier, later, token);
+    const refused = waitForEvent(mod, 'error', error => /not authorized/i.test(error.message));
+    swap(newest, middle, 'wrong');
+    await refused;
+    for (const pair of [[newest, oldest], [pinned, newest], [newest, queued], [newest, elsewhere]]) {
+      const rejected = waitForEvent(mod, 'error', error => /order has changed/i.test(error.message));
+      swap(...pair);
+      await rejected;
+    }
+    const moved = waitForQuestions(mod, questions => questions.find(question => question.id === middle)?.moderatorOrder === 2, 'stored moderator order');
+    swap(newest, middle);
+    await moved;
+    const stale = waitForEvent(mod, 'error', error => /order has changed/i.test(error.message));
+    swap(newest, middle);
+    await stale;
+    const added = await insert(room.id, 'New submission');
+    const { rows } = await pool.query('SELECT id FROM questions WHERE discussion_id = $1 AND NOT queued ORDER BY pinned DESC, published_position NULLS LAST', [room.id]);
+    assert.deepEqual(rows.map(row => row.id), [pinned, middle, newest, oldest, added]);
+  } finally {
+    mod.disconnect();
+  }
+});
+
 test('existing questions are published when the queue column is added', async () => {
   await stopServer();
   try {

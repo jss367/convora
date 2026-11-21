@@ -17,6 +17,7 @@ export function sortDisplayQuestions(questions, sort = 'oldest', pinnedFirst = t
     return [...questions].sort((a, b) => {
         if (pinnedFirst && Boolean(a.pinned) !== Boolean(b.pinned)) return a.pinned ? -1 : 1;
         const chronological = getQuestionSortTime(a) - getQuestionSortTime(b) || a.id - b.id;
+        if (sort === 'moderator') return a.moderatorOrder - b.moderatorOrder || -chronological;
         if (sort === 'oldest') return chronological;
         return score(b) - score(a) || -chronological;
     });

@@ -397,6 +397,10 @@ async function migrateQueueOrder(client) {
   await client.query('ALTER TABLE questions ADD COLUMN IF NOT EXISTS queue_position INTEGER');
 }
 
+async function migratePublishedOrder(client) {
+  await client.query('ALTER TABLE questions ADD COLUMN IF NOT EXISTS published_position INTEGER');
+}
+
 module.exports = [
   [1, initSchema],
   [2, migrateModerationAndDedup],
@@ -411,4 +415,5 @@ module.exports = [
   [11, migrateUnifiedResponses],
   [12, migrateQuestionDownvotes],
   [13, migrateQueueOrder],
+  [14, migratePublishedOrder],
 ];
