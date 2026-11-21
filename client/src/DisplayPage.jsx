@@ -32,6 +32,7 @@ const MAX_FOCUS_WRITTEN_RESPONSES = 10;
 const QR_MODES = ['full', 'corner', 'hidden'];
 // Nobody is at the screen to press a button, so a failed load retries itself.
 const RETRY_DELAY_MS = 5000;
+const DISPLAY_SYNC_INTERVAL_MS = 30_000;
 // The full-screen button and the cursor fade out after this long without the
 // mouse moving, so the shared screen shows only the discussion.
 const CONTROLS_IDLE_MS = 3000;
@@ -289,8 +290,12 @@ const DisplayPage = () => {
         const join = () => {
             clearTimeout(retry);
             retry = null;
-            socket.emit('joinDisplay', discussionSlug);
+            if (socket.connected) socket.emit('joinDisplay', discussionSlug);
         };
+        const syncVisibleDisplay = () => {
+            if (document.visibilityState === 'visible') join();
+        };
+        const restorePage = event => { if (event.persisted) syncVisibleDisplay(); };
         const handlers = {
             discussion: payload => { if (!payload || payload.slug === discussionSlug) setDiscussion(payload); },
             questions: payload => {
@@ -309,7 +314,13 @@ const DisplayPage = () => {
         for (const [event, handler] of Object.entries(handlers)) socket.on(event, handler);
         socket.on('connect', join);
         if (socket.connected) join();
+        const syncTimer = setInterval(syncVisibleDisplay, DISPLAY_SYNC_INTERVAL_MS);
+        document.addEventListener('visibilitychange', syncVisibleDisplay);
+        window.addEventListener('pageshow', restorePage);
         return () => {
+            clearInterval(syncTimer);
+            document.removeEventListener('visibilitychange', syncVisibleDisplay);
+            window.removeEventListener('pageshow', restorePage);
             clearTimeout(retry);
             if (socket.connected) socket.emit('leaveDisplay', discussionSlug);
             socket.off('connect', join);

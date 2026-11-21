@@ -635,3 +635,28 @@ test('display sorting updates live, persists and is available only in the all-qu
     await context.close();
   }
 });
+
+test('a fullscreen display follows live sorts and recovers a missed update without reloading', async ({ page, browser, rooms }) => {
+  const room = await rooms.create('Fullscreen sort', 'Agreement');
+  await rooms.pool.query("INSERT INTO questions (discussion_id, text, type) VALUES ($1, 'Newest', 'Yes/No')", [room.id]);
+  const moderator = await browser.newPage();
+  try {
+    await moderator.goto(`/discussion/${room.slug}?admin=${room.adminToken}`);
+    const sort = moderator.getByRole('group', { name: 'Display controls' }).getByLabel('Sort', { exact: true });
+    await page.clock.install();
+    await page.goto(`/discussion/${room.slug}/display`);
+    const first = page.getByTestId('display-question').first().getByRole('heading');
+    await expect(first).toHaveText('Fullscreen sort question');
+    await page.getByRole('button', { name: 'Full screen', exact: true }).click();
+    await sort.selectOption('newest');
+    await expect(first).toHaveText('Newest');
+    await sort.selectOption('oldest');
+    await expect(first).toHaveText('Fullscreen sort question');
+    await rooms.pool.query("UPDATE discussions SET display_sort = 'newest' WHERE id = $1", [room.id]);
+    await page.clock.fastForward(31_000);
+    await expect(first).toHaveText('Newest');
+    await expect.poll(() => page.evaluate(() => Boolean(document.fullscreenElement))).toBe(true);
+  } finally {
+    await moderator.close();
+  }
+});
