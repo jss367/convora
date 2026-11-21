@@ -33,6 +33,8 @@ const CASES = {
     '1. How many teams should we have?',
     'How   likely\tis it?',
     'What’s the probability of rain?',
+    'What share of the budget should go to training?',
+    'If we switch to weekly meetings, how many hours will that save?',
   ],
   'Yes/No': [
     'Will it rain tomorrow?',
@@ -50,6 +52,8 @@ const CASES = {
     'If we raise prices, will customers leave?',
     "Remote work is here to stay, isn't it?",
     'Does it matter how much we spend?',
+    'Did we share the training budget with the team?',
+    'If we switch to weekly meetings, will that save time?',
     'Is ',
   ],
   'Open Ended': [
@@ -82,12 +86,16 @@ const CASES = {
     'Explain why you joined',
     'Tell us about a recent win',
     'Should we do this, and why?',
+    'What should we share about the training budget?',
+    'If we switch to weekly meetings, what would we lose?',
+    'What could we do to agree on a budget?',
   ],
   Agreement: [
     'Do you agree that remote work is better?',
     'Would you agree that we move too slowly?',
     'Agree or disagree: pineapple belongs on pizza',
     'I think we should ship weekly, do you agree?',
+    'Weekly meetings would save us time — would you agree?',
   ],
 };
 
@@ -105,6 +113,7 @@ const NO_GUESS = [
   'How we work matters more than where',
   'It does not matter how much we spend',
   'Cats, dogs, and will power',
+  'On the agenda: how many hours weekly meetings would save',
   // Half-typed words must not flip the type early.
   'Is',
   'Issues with the roadmap',
@@ -121,6 +130,14 @@ test('guesses the question type from common wordings', async () => {
       assert.equal(guessQuestionType(title), type, title);
     }
   }
+});
+
+test('distinguishes polite requests for explanations from yes/no questions', async () => {
+  const { guessQuestionType } = await guesser;
+  assert.equal(guessQuestionType('Could you describe a time when onboarding went well?'), 'Open Ended');
+  assert.equal(guessQuestionType('Can you explain what made onboarding easier?'), 'Open Ended');
+  assert.equal(guessQuestionType('Would you please elaborate on that feedback?'), 'Open Ended');
+  assert.equal(guessQuestionType('Could you attend the next onboarding session?'), 'Yes/No');
 });
 
 test('returns null for statements and unrecognized wording', async () => {
