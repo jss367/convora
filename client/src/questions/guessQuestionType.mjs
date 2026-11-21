@@ -13,7 +13,7 @@ const FOLLOW_UP = /^(?:respond|reply|answer|write|explain|elaborate|expand on|de
 const NOMINAL_LABEL = /^(?:a|an) (?:success|failure|strength|weakness|problem|priority)\b/;
 const MANNER = /^(?:clearly|accurately|completely|briefly|precisely|thoroughly|fully)\b/;
 const WH_CONTENT = new RegExp(`^(?:about|more|${WH_WORD})\\b`);
-const SELECTING = /\b(?:choose|pick|select|name)\b/;
+const ANSWER_LIMIT = /\b(?:choose|pick|select|name) (?:(?:just|only) )?(?:one|\d+)(?: things?)?[?"')\]\s]*$/;
 const BINARY_OPENER = new RegExp(`^(?:${AUXILIARY}(?:n't)?|won't|can't)\\s`);
 
 function descriptionType(content, laterClauses) {
@@ -27,11 +27,11 @@ function descriptionType(content, laterClauses) {
     return YES_NO;
 }
 
-function tellType(modal, content) {
+function tellType(modal, content, nextClause = '') {
     if (!/^[a-z0-9]/.test(content) || /^(?:if|whether|apart|to)\b/.test(content)) return YES_NO;
     if (WH_CONTENT.test(content)) return OPEN_ENDED;
-    const condition = content.split(' if ')[1];
-    if (modal === 'would' && condition && !SELECTING.test(condition)) return YES_NO;
+    const condition = content.split(' if ')[1] ?? (/^if /.test(nextClause) ? nextClause : '');
+    if (modal === 'would' && condition && !ANSWER_LIMIT.test(condition)) return YES_NO;
     return OPEN_ENDED;
 }
 
@@ -40,7 +40,7 @@ function politeRequestType(clause, laterClauses) {
     if (!match) return null;
     const [, modal, verb, content] = match;
     if (verb === 'describe') return descriptionType(content, laterClauses);
-    if (verb.startsWith('tell ')) return tellType(modal, content);
+    if (verb.startsWith('tell ')) return tellType(modal, content, laterClauses[0]);
     return OPEN_ENDED;
 }
 const CHOICE_SET = 'of (?:these|those|the following)(?: (?:options|choices|alternatives))?';
