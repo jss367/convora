@@ -105,8 +105,8 @@ test('the moderator moves or hides the display QR code and shows one question at
 
     const moderator = await moderatorContext.newPage();
     await moderator.goto(`/discussion/${room.slug}?admin=${room.adminToken}`);
-    const qrSetting = moderator.getByLabel('Display QR');
-    const layoutSetting = moderator.getByLabel('Display shows');
+    const qrSetting = moderator.getByLabel('QR code', { exact: true });
+    const layoutSetting = moderator.getByLabel('Layout', { exact: true });
 
     // A small QR code at the bottom-left still lets people join.
     await qrSetting.selectOption('corner');
@@ -126,7 +126,7 @@ test('the moderator moves or hides the display QR code and shows one question at
     await expect(shown).toHaveCount(1);
     await expect(shown.getByRole('heading', { name: 'Newest display question' })).toBeVisible();
     await rooms.pool.query('UPDATE questions SET pinned = TRUE WHERE discussion_id = $1 AND type = $2', [room.id, 'Agreement']);
-    await moderator.getByLabel('Display QR').selectOption('full');
+    await moderator.getByLabel('QR code', { exact: true }).selectOption('full');
     await page.reload();
     await expect(shown).toHaveCount(1);
     await expect(shown.getByRole('heading', { name: /Display controls question/ })).toBeVisible();
@@ -561,4 +561,39 @@ test('corner QR and questions remain reachable below a tall header', async ({ pa
   const qr = page.getByRole('img', { name: /^QR code to join/ });
   await qr.scrollIntoViewIfNeeded();
   await expect(qr).toBeInViewport({ ratio: 1 });
+});
+
+test('display sorting updates live, persists and is available only in the all-questions layout', async ({ page, browser, rooms }) => {
+  const room = await rooms.create('Sort display', 'Agreement');
+  await rooms.pool.query('UPDATE questions SET pinned = TRUE WHERE discussion_id = $1', [room.id]);
+  await rooms.pool.query(
+    'INSERT INTO questions (discussion_id, text, type) VALUES ($1, $2, $3)',
+    [room.id, 'Newest question', 'Yes/No']
+  );
+  const context = await browser.newContext();
+  try {
+    await page.goto(`/discussion/${room.slug}/display`);
+    const headings = page.getByTestId('display-question').getByRole('heading');
+    await expect(headings).toHaveText(['📌Sort display question', 'Newest question']);
+    const moderator = await context.newPage();
+    await moderator.goto(`/discussion/${room.slug}?admin=${room.adminToken}`);
+    const controls = moderator.getByRole('group', { name: 'Display controls', exact: true });
+    await controls.getByLabel('Sort', { exact: true }).selectOption('newest');
+    await expect(headings).toHaveText(['📌Sort display question', 'Newest question']);
+    await controls.getByRole('switch', { name: 'Pinned questions first' }).click();
+    await expect(headings).toHaveText(['Newest question', '📌Sort display question']);
+    await page.reload();
+    await expect(headings).toHaveText(['Newest question', '📌Sort display question']);
+    await moderator.reload();
+    await expect(controls.getByLabel('Sort', { exact: true })).toHaveValue('newest');
+    await expect(controls.getByRole('switch', { name: 'Pinned questions first' })).toHaveAttribute('aria-checked', 'false');
+    await controls.getByLabel('Layout', { exact: true }).selectOption('focus');
+    await expect(controls.getByLabel('Sort', { exact: true })).toHaveCount(0);
+    await controls.getByLabel('Layout', { exact: true }).selectOption('all');
+    await expect(headings).toHaveText(['Newest question', '📌Sort display question']);
+    await controls.getByLabel('Sort', { exact: true }).selectOption('oldest');
+    await expect(headings).toHaveText(['📌Sort display question', 'Newest question']);
+  } finally {
+    await context.close();
+  }
 });

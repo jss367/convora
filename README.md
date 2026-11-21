@@ -145,14 +145,20 @@ moderator's browser. It follows the **Results** setting:
   for numerical questions. While results are hidden, a multiple choice question
   still lists its options under the response count.
 
-Two moderator settings change the display from wherever the moderator is
-sitting, so nobody has to touch the shared screen:
+The moderator’s **Display controls** box changes the shared screen live.
+Settings are saved for the discussion and do not change anyone’s personal sort:
 
-- **Display QR**: the join QR code and link **Large** in a sidebar (the
+- **QR code**: the join QR code and link **Large** in a sidebar (the
   default), **Small, in a corner** at the bottom-left, or **Hidden**.
-- **Display shows**: **All questions** (the default), **One question**
+- **Layout**: **All questions** (the default), **One question**
   filling the screen, or **Before and after**, which compares two opinion
   snapshots (see [Show the comparison on the room display](#show-the-comparison-on-the-room-display)).
+
+With **All questions**, **Sort** offers Oldest first (the default), Newest
+first, Most interesting, Most agreement, Most disagreement and Most controversial.
+**Pinned questions first** is on by default; turn it off to apply the sort across
+all questions. Ranking ties use newest first. Agreement-based sorts use only
+results visible on the display, so hidden answers never influence the order.
 
 Click **Show on display** on your moderator page to spotlight a question. Choose
 another question to move the spotlight; new participant questions won't move it.

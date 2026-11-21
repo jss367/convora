@@ -11,7 +11,7 @@ test('a moderator can set a question aside on the display while participants kee
     await moderator.goto(`${path}?admin=${room.adminToken}`);
     await participant.goto(path);
     await display.goto(`${path}/display`);
-    const layout = moderator.getByRole('combobox', { name: 'Display shows', exact: true });
+    const layout = moderator.getByRole('combobox', { name: 'Layout', exact: true });
     const question = display.getByRole('heading', { name: 'Set aside question', exact: true });
     await expect(question).toBeVisible();
     await moderator.getByRole('button', { name: 'Show on display', exact: true }).click();

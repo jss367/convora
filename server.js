@@ -180,7 +180,7 @@ async function getDiscussionState(topic) {
   const slug = slugifyTopic(topic);
   const result = await pool.query(
     `SELECT locked, moderator_only_questions, theme, reaction_keys, results_visibility, listed,
-            display_qr, display_layout, display_hidden_question_ids,
+            display_qr, display_layout, display_sort, display_pinned_first, display_hidden_question_ids,
             (SELECT q.id FROM questions q
               WHERE q.id = d.display_question_id AND q.discussion_id = d.id AND NOT q.queued) AS display_question_id,
             (SELECT s.id FROM opinion_snapshots s
@@ -202,6 +202,8 @@ async function getDiscussionState(topic) {
       displayQr: DISPLAY_QR_MODES[0],
       displayLayout: DISPLAY_LAYOUTS[0],
       displayBaseLayout: DISPLAY_LAYOUTS[0],
+      displaySort: DISPLAY_SORTS[0],
+      displayPinnedFirst: true,
       displayQuestionId: null,
       displayHiddenQuestionIds: [],
       displayBeforeSnapshotId: null,
@@ -224,6 +226,8 @@ async function getDiscussionState(topic) {
     displayQr: DISPLAY_QR_MODES.includes(row.display_qr) ? row.display_qr : DISPLAY_QR_MODES[0],
     displayBaseLayout: baseLayout,
     displayLayout: row.display_layout === 'spotlight' && row.display_question_id != null ? 'focus' : baseLayout,
+    displaySort: DISPLAY_SORTS.includes(row.display_sort) ? row.display_sort : DISPLAY_SORTS[0],
+    displayPinnedFirst: row.display_pinned_first !== false,
     // The question a moderator put on the display, or null when they chose
     // none or it has since been deleted.
     displayQuestionId: row.display_question_id ?? null,
@@ -245,6 +249,7 @@ async function getDiscussionState(topic) {
 // displayAfterSnapshotId), for that one question when a moderator chose one.
 const DISPLAY_QR_MODES = ['full', 'corner', 'hidden'];
 const DISPLAY_LAYOUTS = ['all', 'focus', 'compare'];
+const DISPLAY_SORTS = ['oldest', 'newest', 'interesting', 'agreement', 'disagreement', 'controversial'];
 
 async function emitDiscussionState(topic) {
   audience(topic).emit('discussionState', await getDiscussionState(topic));
@@ -1036,14 +1041,16 @@ io.on('connection', (socket) => {
         socket.emit('error', { message: 'Not authorized to moderate this discussion.' });
         return;
       }
-      const { qr, layout, questionId, beforeSnapshotId, afterSnapshotId } = settings && typeof settings === 'object' ? settings : {};
+      const { qr, layout, sort, pinnedFirst, questionId, beforeSnapshotId, afterSnapshotId } = settings && typeof settings === 'object' ? settings : {};
       // An id is left out to keep the stored one, null to clear it, or a
       // Postgres integer.
       const validId = id => id === undefined || id === null
         || (Number.isInteger(id) && id > 0 && id <= 2147483647);
-      const given = [qr, layout, questionId, beforeSnapshotId, afterSnapshotId].some(value => value !== undefined);
+      const given = [qr, layout, sort, pinnedFirst, questionId, beforeSnapshotId, afterSnapshotId].some(value => value !== undefined);
       if ((qr !== undefined && !DISPLAY_QR_MODES.includes(qr))
           || (layout !== undefined && !DISPLAY_LAYOUTS.includes(layout))
+          || (sort !== undefined && !DISPLAY_SORTS.includes(sort))
+          || (pinnedFirst !== undefined && typeof pinnedFirst !== 'boolean')
           || ![questionId, beforeSnapshotId, afterSnapshotId].every(validId)
           || (beforeSnapshotId != null && afterSnapshotId != null && afterSnapshotId <= beforeSnapshotId)
           || !given) {
@@ -1091,13 +1098,16 @@ io.on('connection', (socket) => {
                     ELSE display_layout END),
                   display_question_id = CASE WHEN $5 THEN $4::int ELSE display_question_id END,
                   display_before_snapshot_id = CASE WHEN $7 THEN $6::int ELSE display_before_snapshot_id END,
-                  display_after_snapshot_id = CASE WHEN $9 THEN $8::int ELSE display_after_snapshot_id END
+                  display_after_snapshot_id = CASE WHEN $9 THEN $8::int ELSE display_after_snapshot_id END,
+                  display_sort = COALESCE($10, display_sort),
+                  display_pinned_first = COALESCE($11, display_pinned_first)
             WHERE id = $3`,
           [
             qr ?? null, layout ?? null, discussionId,
             questionId ?? null, questionId !== undefined,
             beforeSnapshotId ?? null, beforeSnapshotId !== undefined,
             afterSnapshotId ?? null, afterSnapshotId !== undefined,
+            sort ?? null, pinnedFirst ?? null,
           ]
         );
         return true;
