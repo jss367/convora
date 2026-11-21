@@ -8,6 +8,44 @@ const { AGREEMENT, YES_NO, NUMERICAL, MULTIPLE_CHOICE, OPEN_ENDED } = QuestionTy
 
 const AUXILIARY = '(?:is|are|was|were|do|does|did|will|would|should|can|could|has|have)';
 const WH_WORD = '(?:why|how|what|which|who|whose|where|when)';
+const POLITE_REQUEST = /^(can|could|would) you (?:(?:please|briefly|quickly|kindly|just) )*(describe|explain|elaborate on|tell (?:us|me))\b\s*(.*)$/;
+const FOLLOW_UP = /^(?:respond|reply|answer|write|explain|elaborate|expand on|describe|tell (?:us|me)|why|how|[\w-]+ (?:why|how|what|(?:your |the |some )?(?:details|reasons|examples)))\b/;
+const NOMINAL_LABEL = /^(?:a|an) (?:success|failure|strength|weakness|problem|priority)\b/;
+const MANNER_PHRASE = /^([a-z][\w-]*ly)(?: as possible)?[?.!"')\]\s]*$/;
+const LY_ADJECTIVE = /^(?:[\w-]*friendly|costly|timely|lovely|unlikely|likely|lonely|ugly|silly|early|orderly|elderly|lively|deadly|daily|weekly|monthly|yearly|holy|jolly|surly|unruly|chilly|smelly)$/;
+const WH_CONTENT = new RegExp(`^(?:about|more|${WH_WORD})\\b`);
+const ANSWER_LIMIT = /\b(?:choose|pick|select|name) (?:(?:just|only) )?(?:one|\d+)(?: things?)?[?"')\]\s]*$/;
+const BINARY_OPENER = new RegExp(`^(?:${AUXILIARY}(?:n't)?|won't|can't)\\s`);
+
+function descriptionType(content, laterClauses) {
+    const asIndex = content.indexOf(' as ');
+    if (asIndex < 0) return OPEN_ENDED;
+    const [predicate, ...followUps] = content.slice(asIndex + 4).split(' and ');
+    if ([...followUps, ...laterClauses].some(part => FOLLOW_UP.test(part))) return OPEN_ENDED;
+    const label = predicate.replace(/^not /, '');
+    if (NOMINAL_LABEL.test(label)) return YES_NO;
+    const manner = MANNER_PHRASE.exec(label);
+    if (manner && !LY_ADJECTIVE.test(manner[1])) return OPEN_ENDED;
+    if (!/^[a-z]/.test(label) || /^(?:an?|the|i|we|you|he|she|it|they|if|though|part|soon|much)\b/.test(label)) return OPEN_ENDED;
+    return YES_NO;
+}
+
+function tellType(modal, content, nextClause = '') {
+    if (!/^[a-z0-9]/.test(content) || /^(?:if|whether|apart|to)\b/.test(content)) return YES_NO;
+    if (WH_CONTENT.test(content)) return OPEN_ENDED;
+    const condition = content.split(' if ')[1] ?? (/^if /.test(nextClause) ? nextClause : '');
+    if (modal === 'would' && condition && !ANSWER_LIMIT.test(condition)) return YES_NO;
+    return OPEN_ENDED;
+}
+
+function politeRequestType(clause, laterClauses) {
+    const match = POLITE_REQUEST.exec(clause);
+    if (!match) return null;
+    const [, modal, verb, content] = match;
+    if (verb === 'describe') return descriptionType(content, laterClauses);
+    if (verb.startsWith('tell ')) return tellType(modal, content, laterClauses[0]);
+    return OPEN_ENDED;
+}
 const CHOICE_SET = 'of (?:these|those|the following)(?: (?:options|choices|alternatives))?';
 
 // First match wins, so the order is the precedence: "how likely" has to be
@@ -44,10 +82,6 @@ const RULES = [
     { type: OPEN_ENDED, pattern: new RegExp(`^${WH_WORD}(?:'s|'re| ${AUXILIARY}\\b)`) },
     { type: OPEN_ENDED, pattern: new RegExp(`^${WH_WORD}\\b`), questionOnly: true },
     { type: OPEN_ENDED, pattern: /^(?:describe|explain|elaborate on|tell (?:us|me))\b/ },
-
-    // The trailing space keeps a half-typed word from matching: "Is" could
-    // still become "Issues".
-    { type: YES_NO, pattern: new RegExp(`^(?:${AUXILIARY}(?:n't)?|won't|can't)\\s`) },
 ];
 
 // Returns one of the question type names, or null when nothing matches.
@@ -79,5 +113,9 @@ export function guessQuestionType(text) {
             return type;
         }
     }
-    return null;
+    for (const [index, clause] of candidates.entries()) {
+        const requestedType = politeRequestType(clause, candidates.slice(index + 1));
+        if (requestedType) return requestedType;
+    }
+    return candidates.some(clause => BINARY_OPENER.test(clause)) ? YES_NO : null;
 }

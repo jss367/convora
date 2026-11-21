@@ -238,3 +238,12 @@ const socket = io(SOCKET_URL, {
 I deleted the PostgreSQL with this: `heroku addons:destroy heroku-postgresql --app convora`
 
 If you want to turn on the app, you'll have to add it back. Before deleting, I downloaded a backup and save it at `/Users/julius/git/convora/latest.dump`.
+## Composer wording contract
+
+The type picker suggests a response format; it does not need to parse every English sentence. A manual choice wins over the suggestion. The three polite-request tables in `tests/guess-question-type.test.js` are the acceptance set. Use contrasting examples when proposing a change to this contract:
+
+- Asking for content takes **Open Ended**: “Could you just describe your experience?” or “Can you tell us two lessons from the pilot?” Asking whether someone can perform an action takes **Yes/No**.
+- Asking someone to confirm a label takes **Yes/No**, including “really useful for beginners.” Asking for a description in a role or manner, or asking for reasons as well as confirmation, takes **Open Ended**.
+- For ambiguous “would you tell us” questions, distinguish willingness to disclose (“if I asked”) from a constraint on the answer (“if we could choose just one”). The former takes **Yes/No**, the latter **Open Ended**.
+
+Treat other phrasing as best effort. Add a new acceptance case when it establishes a meaningful distinction, not just another synonym. Keep the existing numerical, choice, agreement, and no-guess cases intact.
