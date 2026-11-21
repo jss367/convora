@@ -283,6 +283,7 @@ const DisplayPage = () => {
         const join = () => {
             clearTimeout(retry);
             retry = null;
+            setState({});
             socket.emit('joinDisplay', discussionSlug);
         };
         const handlers = {
@@ -349,7 +350,9 @@ const DisplayPage = () => {
     const qrMode = QR_MODES.includes(state.displayQr) ? state.displayQr : 'full';
     const focus = state.displayLayout === 'focus';
     const compare = state.displayLayout === 'compare';
-    const ready = discussion !== undefined && questions !== null;
+    const ready = discussion !== undefined && questions !== null && state.displayHiddenQuestionIds !== undefined;
+    const hiddenIds = new Set(state.displayHiddenQuestionIds);
+    const visibleQuestions = (questions || []).filter(question => !hiddenIds.has(question.id));
 
     let body;
     if (loadFailed && questions === null) {
@@ -370,18 +373,19 @@ const DisplayPage = () => {
                     before={before}
                     after={after}
                     questionId={state.displayQuestionId ?? undefined}
+                    hiddenIds={hiddenIds}
                     wide={qrMode !== 'full'}
                 />
             );
         }
-    } else if (questions.length === 0) {
-        body = <p className="text-4xl text-gray-500">No questions yet</p>;
+    } else if (visibleQuestions.length === 0) {
+        body = <p className="text-4xl text-gray-500">{questions.length ? 'No questions on display' : 'No questions yet'}</p>;
     } else if (focus) {
-        body = <QuestionCard question={focusQuestionOf(questions, state.displayQuestionId)} reactionKeys={reactionKeys} focus />;
+        body = <QuestionCard question={focusQuestionOf(visibleQuestions, state.displayQuestionId)} reactionKeys={reactionKeys} focus />;
     } else {
         body = (
             <ol className={`grid grid-cols-1 gap-8 ${qrMode === 'full' ? '2xl:grid-cols-2' : 'xl:grid-cols-2'}`}>
-                {questions.map(question => (
+                {visibleQuestions.map(question => (
                     <li key={question.id} className="contents">
                         <QuestionCard question={question} reactionKeys={reactionKeys} />
                     </li>
@@ -391,11 +395,11 @@ const DisplayPage = () => {
     }
 
     return (
-        <main className={`flex min-h-screen flex-col bg-gray-100 ${idle ? 'cursor-none' : ''}`} aria-label="Room display">
+        <main className={`flex flex-col bg-gray-100 ${qrMode === 'corner' ? 'h-dvh overflow-y-auto' : 'min-h-screen'} ${idle ? 'cursor-none' : ''}`} aria-label="Room display">
             {/* The right-hand group holds the full-screen button; it wraps below
                 the title on narrow screens. */}
             <header
-                className="flex flex-wrap items-center justify-between gap-x-10 gap-y-3 bg-primary px-8 py-6 text-white shadow-md lg:px-12"
+                className="flex shrink-0 flex-wrap items-center justify-between gap-x-10 gap-y-3 bg-primary px-8 py-6 text-white shadow-md lg:px-12"
                 data-testid="display-header"
             >
                 <h1 className="min-w-0 text-4xl font-bold leading-tight lg:text-5xl">{title}</h1>
@@ -403,13 +407,10 @@ const DisplayPage = () => {
                     {state.locked && <span>🔒 Voting is closed</span>}
                     {connectionLost && <span className="rounded-full bg-white px-4 py-1 text-red-700">Reconnecting…</span>}
                     <span role="status" className="tabular-nums">{plural(presence, 'person', 'people')} here now</span>
-                    {/* The small QR code sits in the header, in the page flow, so it
-                        never covers a question on a screen nobody scrolls. */}
-                    {qrMode === 'corner' && <JoinCard linkUrl={linkUrl} linkText={linkText} title={title} compact />}
                     <FullscreenButton hidden={idle} />
                         </div>
             </header>
-            <div className="flex flex-1 flex-col gap-10 p-8 lg:flex-row lg:items-start lg:p-12">
+            <div className={`flex flex-1 flex-col gap-10 p-8 lg:flex-row lg:items-start lg:p-12 ${qrMode === 'corner' ? 'min-h-48 overflow-y-auto' : ''}`}>
                 {qrMode === 'full' && (
                     <aside className="shrink-0 lg:sticky lg:top-12 lg:w-[26rem]">
                         <JoinCard linkUrl={linkUrl} linkText={linkText} title={title} />
@@ -417,6 +418,12 @@ const DisplayPage = () => {
                 )}
                 <section className="min-w-0 flex-1" aria-label="Questions">{body}</section>
             </div>
+            {qrMode === 'corner' && (
+                <footer className="flex shrink-0 px-8 pb-8 lg:px-12 lg:pb-12" data-testid="display-footer">
+                    {/* Keep the bottom-left QR code in the page flow so it cannot cover questions. */}
+                    <JoinCard linkUrl={linkUrl} linkText={linkText} title={title} compact />
+                </footer>
+            )}
         </main>
     );
 };

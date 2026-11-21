@@ -189,12 +189,13 @@ ComparisonCard.propTypes = {
 // `questionId` narrows the comparison to one question (the one the moderator
 // put on the display) when either snapshot holds it; otherwise every question
 // in the two snapshots is listed.
-const DisplayComparison = ({ before, after, questionId, wide }) => {
+const DisplayComparison = ({ before, after, questionId, hiddenIds, wide }) => {
     const beforeQuestions = before.data?.questions || [];
     const afterQuestions = after?.data?.questions || [];
     const ids = [...new Set([...beforeQuestions, ...afterQuestions].map(q => q.id))];
-    const focus = questionId != null && ids.includes(questionId);
-    const shownIds = focus ? [questionId] : ids;
+    const visibleIds = ids.filter(id => !hiddenIds.has(id));
+    const focus = questionId != null && visibleIds.includes(questionId);
+    const shownIds = focus ? [questionId] : visibleIds;
     const legend = sizes(focus).legend;
 
     return (
@@ -215,7 +216,7 @@ const DisplayComparison = ({ before, after, questionId, wide }) => {
                 <p className="mb-8 text-2xl text-gray-500">Save a second snapshot to see what changed.</p>
             )}
             {shownIds.length === 0 ? (
-                <p className="text-4xl text-gray-500">This snapshot has no questions</p>
+                <p className="text-4xl text-gray-500">{ids.length ? 'No questions on display' : 'This snapshot has no questions'}</p>
             ) : (
                 <div className={focus ? '' : `grid grid-cols-1 gap-8 ${wide ? 'xl:grid-cols-2' : '2xl:grid-cols-2'}`}>
                     {shownIds.map(id => (
@@ -237,6 +238,7 @@ DisplayComparison.propTypes = {
     before: PropTypes.shape({ name: PropTypes.string.isRequired, data: PropTypes.object }).isRequired,
     after: PropTypes.shape({ name: PropTypes.string.isRequired, data: PropTypes.object }),
     questionId: PropTypes.number,
+    hiddenIds: PropTypes.instanceOf(Set).isRequired,
     wide: PropTypes.bool,
 };
 

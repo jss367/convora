@@ -149,7 +149,7 @@ Two moderator settings change the display from wherever the moderator is
 sitting, so nobody has to touch the shared screen:
 
 - **Display QR**: the join QR code and link **Large** in a sidebar (the
-  default), **Small, in a corner** of the header, or **Hidden**.
+  default), **Small, in a corner** at the bottom-left, or **Hidden**.
 - **Display shows**: **All questions** (the default), **One question**
   filling the screen, or **Before and after**, which compares two opinion
   snapshots (see [Show the comparison on the room display](#show-the-comparison-on-the-room-display)).
@@ -162,6 +162,12 @@ selection** returns the one-question layout to the first pinned question (or
 the newest if none are pinned), and **Back to full comparison** shows every
 question in the comparison again. Deleting the spotlighted question also
 restores the underlying view.
+
+When you’re done discussing a question, click **Hide from display** on its
+moderator card. It disappears from all room display layouts, but participants
+can still see and answer it on their devices. Hiding the spotlighted question
+ends its spotlight. Click **Restore to display** to include it again without
+changing the current layout or spotlight.
 
 To put one question's results on the screen, click **Show results** on that
 question from your own moderator page, phone or laptop. The display updates at

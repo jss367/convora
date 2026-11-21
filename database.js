@@ -349,6 +349,7 @@ async function initializeDatabase(pool) {
     // key: the id is checked against the discussion's questions when it is read,
     // so deleting a question needs no lock on its discussion.
     await pool.query('ALTER TABLE discussions ADD COLUMN IF NOT EXISTS display_question_id INTEGER');
+    await pool.query("ALTER TABLE discussions ADD COLUMN IF NOT EXISTS display_hidden_question_ids INTEGER[] NOT NULL DEFAULT '{}'");
     // Set on a snapshot the server saved by itself, just before this question's
     // results were first shown to everyone (see saveSnapshotBeforeReveal in
     // server.js). The unique index keeps that to one snapshot per question.

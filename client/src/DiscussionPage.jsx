@@ -2100,6 +2100,7 @@ const DiscussionPage = () => {
                 const interestCount = question.interestCount || 0;
                 const isInterested = interestedQuestionIds.has(question.id);
                 const interestPending = questionInterest.pending.has(question.id);
+                const hiddenOnDisplay = discussionState.displayHiddenQuestionIds?.includes(question.id);
                 // Whether the room display is showing this question on its own: its
                 // live results, or its before-and-after comparison.
                 const onDisplay = ['focus', 'compare'].includes(discussionState.displayLayout)
@@ -2175,7 +2176,7 @@ const DiscussionPage = () => {
                                         {question.resultsRevealed ? 'Hide results' : 'Show results'}
                                     </button>
                                 )}
-                                <button
+                                {!hiddenOnDisplay && <button
                                     onClick={() => handleShowOnDisplay(onDisplay ? null : question.id)}
                                     title={onDisplay ? returnLabel : 'Show this question on its own on the room display'}
                                     className={`text-xs px-2 py-1 rounded border border-indigo-300 ${onDisplay
@@ -2183,6 +2184,13 @@ const DiscussionPage = () => {
                                         : 'text-indigo-700 hover:bg-indigo-50'}`}
                                 >
                                     {onDisplay ? returnLabel : 'Show on display'}
+                                </button>}
+                                <button
+                                    onClick={() => socket.emit('setQuestionHiddenOnDisplay', discussionSlug, question.id, !hiddenOnDisplay, adminToken)}
+                                    title={hiddenOnDisplay ? 'Include this question on the room display again' : 'Hide this question on the room display only. Participants can still answer it.'}
+                                    className="text-xs px-2 py-1 rounded border border-gray-300 text-gray-600 hover:bg-gray-100"
+                                >
+                                    {hiddenOnDisplay ? 'Restore to display' : 'Hide from display'}
                                 </button>
                                 <button
                                     onClick={() => handleTogglePin(question.id, question.pinned)}
