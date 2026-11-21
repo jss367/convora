@@ -47,9 +47,9 @@ const SortOptions = {
     MODERATOR: 'Moderator order',
     MOST_RECENT: 'Most Recent',
     MOST_INTERESTING: 'Most Interesting',
-    MOST_AGREEMENT: 'Most Agreement',
-    MOST_DISAGREEMENT: 'Most Disagreement',
-    MOST_CONTROVERSIAL: 'Most Controversial',
+    MOST_AGREEMENT: 'Most agreed with',
+    MOST_DISAGREEMENT: 'Most disagreed with',
+    MOST_CONTROVERSIAL: 'Most divisive',
 };
 
 const DiscussionPage = () => {

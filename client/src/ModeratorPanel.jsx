@@ -280,8 +280,8 @@ const ModeratorPanel = ({
                                     options={[
                                         ['oldest', 'Oldest first'], ['newest', 'Newest first'],
                                         ['moderator', 'Moderator order'],
-                                        ['interesting', 'Most interesting'], ['agreement', 'Most agreement'],
-                                        ['disagreement', 'Most disagreement'], ['controversial', 'Most controversial'],
+                                        ['interesting', 'Most interesting'], ['agreement', 'Most agreed with'],
+                                        ['disagreement', 'Most disagreed with'], ['controversial', 'Most divisive'],
                                     ]}
                                 />
                                 <Switch
