@@ -209,12 +209,24 @@ test('a Multiple Choice question is written with its own options, validated, vot
     await page.getByRole('textbox', { name: 'Answer option 2' }).fill('Lower');
     // Enter in the last filled option adds the next one and moves into it.
     const option3 = page.getByRole('textbox', { name: 'Answer option 3' });
-    await page.getByRole('textbox', { name: 'Answer option 2' }).press('Enter');
+    // Holding the key does not carry on into the new option and submit it.
+    const hold = async (key) => {
+      await page.keyboard.down(key);
+      await page.keyboard.down(key);
+      await page.keyboard.down(key);
+      await page.keyboard.up(key);
+    };
+    await page.getByRole('textbox', { name: 'Answer option 2' }).focus();
+    await hold('Enter');
     await expect(option3).toBeFocused();
-    // Backspace in the empty spare option removes it and steps back.
-    await option3.press('Backspace');
+    await expect(page.getByRole('textbox', { name: 'Answer option 4' })).toHaveCount(0);
+    await expect(page.getByRole('heading', { name: question, exact: true })).toHaveCount(0);
+    // Backspace in the empty spare option removes it and steps back, and
+    // holding it does not go on to delete the option before.
+    await hold('Backspace');
     await expect(option3).toHaveCount(0);
     await expect(page.getByRole('textbox', { name: 'Answer option 2' })).toBeFocused();
+    await expect(page.getByRole('textbox', { name: 'Answer option 2' })).toHaveValue('Lower');
     // The button also moves into the option it adds.
     await page.getByRole('button', { name: '+ Add option' }).click();
     await expect(option3).toBeFocused();

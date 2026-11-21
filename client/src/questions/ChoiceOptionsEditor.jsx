@@ -18,6 +18,9 @@ const ChoiceOptionsEditor = ({ options, onChange }) => {
     const inputRefs = useRef([]);
     // The box to focus once a change to the list has rendered.
     const pendingFocus = useRef(null);
+    // The key whose press just moved focus to another box. While it is still
+    // held, its repeats arrive in that box and must not act on it.
+    const heldKey = useRef(null);
 
     useEffect(() => {
         if (pendingFocus.current === null) return;
@@ -35,19 +38,28 @@ const ChoiceOptionsEditor = ({ options, onChange }) => {
     const handleKeyDown = (event, index) => {
         // Enter that confirms an IME composition is not a command.
         if (event.nativeEvent.isComposing) return;
+        if (!event.repeat) {
+            heldKey.current = null;
+        } else if (event.key === heldKey.current || event.key === 'Enter') {
+            // A held Enter never adds, moves or submits a second time, and a
+            // held Backspace that removed a row does not eat the row before it.
+            event.preventDefault();
+            return;
+        }
         const empty = options[index].trim() === '';
         if (event.key === 'Enter' && !empty) {
             const isLast = index === options.length - 1;
             // A full list has nowhere further to go; let Enter do its default.
             if (isLast && options.length >= MAX_OPTIONS) return;
             event.preventDefault();
-            if (event.repeat) return;
+            heldKey.current = event.key;
             if (isLast) addOption();
             else inputRefs.current[index + 1]?.focus();
         } else if (event.key === 'Backspace' && options[index] === '' && options.length > MIN_OPTIONS) {
-            event.preventDefault();
             // Holding Backspace to clear a box must not also eat the row.
             if (event.repeat) return;
+            event.preventDefault();
+            heldKey.current = event.key;
             pendingFocus.current = Math.max(index - 1, 0);
             removeOption(index);
         }
