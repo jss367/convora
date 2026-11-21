@@ -226,6 +226,11 @@ const ModeratorPanel = ({
                             Open room display
                             <span aria-hidden="true" className="ml-1.5">↗</span>
                         </a>
+                        <p className="text-xs text-gray-500">
+                            Mac → TV: In Control Center → Screen Mirroring, select your TV and choose Extended Display.
+                            Open the room display in its own window and drag it onto the TV; keep moderating on your laptop.
+                            To switch desktops independently, enable “Displays have separate Spaces” in System Settings → Desktop &amp; Dock → Mission Control (log out and back in if prompted).
+                        </p>
                         {/* How the room display presents itself. Set here, so
                             nobody has to walk up to the shared screen. */}
                         <SelectSetting
