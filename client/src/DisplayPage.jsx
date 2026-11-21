@@ -32,6 +32,7 @@ const MAX_FOCUS_WRITTEN_RESPONSES = 10;
 const QR_MODES = ['full', 'corner', 'hidden'];
 // Nobody is at the screen to press a button, so a failed load retries itself.
 const RETRY_DELAY_MS = 5000;
+const DISPLAY_SYNC_INTERVAL_MS = 30_000;
 // The full-screen button and the cursor fade out after this long without the
 // mouse moving, so the shared screen shows only the discussion.
 const CONTROLS_IDLE_MS = 3000;
@@ -167,8 +168,10 @@ const comparisonOf = (snapshots, beforeId, afterId) => {
 // The display asks as an anonymous viewer, so with results shown after voting
 // the server sends a snapshot's results only for questions the moderator has
 // shown to everyone. `reloadKey` changes when that set might have changed.
+// `syncCount` changes on each periodic display sync, which reloads the list
+// in place in case a snapshotsChanged event was missed.
 // Returns null while loading, or { snapshots } / { failed: true }.
-const useSnapshots = (socket, discussionSlug, enabled, reloadKey) => {
+const useSnapshots = (socket, discussionSlug, enabled, reloadKey, syncCount) => {
     const visibilityContext = JSON.stringify([discussionSlug, reloadKey]);
     const [result, setResult] = useState(null);
     const [version, setVersion] = useState(0);
@@ -205,7 +208,7 @@ const useSnapshots = (socket, discussionSlug, enabled, reloadKey) => {
             controller.abort();
             clearTimeout(retry);
         };
-    }, [discussionSlug, enabled, reloadKey, version]);
+    }, [discussionSlug, enabled, reloadKey, version, syncCount]);
     return enabled && result?.visibilityContext === visibilityContext ? result : null;
 };
 
@@ -270,6 +273,8 @@ const DisplayPage = () => {
     const [loadFailed, setLoadFailed] = useState(false);
     const [presence, setPresence] = useState(0);
     const [state, setState] = useState({});
+    // Counts periodic syncs, so the snapshots reload along with everything else.
+    const [syncCount, setSyncCount] = useState(0);
 
     useEffect(() => {
         setDiscussion(undefined);
@@ -282,8 +287,14 @@ const DisplayPage = () => {
         const join = () => {
             clearTimeout(retry);
             retry = null;
-            socket.emit('joinDisplay', discussionSlug);
+            if (socket.connected) socket.emit('joinDisplay', discussionSlug);
         };
+        const syncVisibleDisplay = () => {
+            if (document.visibilityState !== 'visible') return;
+            join();
+            setSyncCount(count => count + 1);
+        };
+        const restorePage = event => { if (event.persisted) syncVisibleDisplay(); };
         const handlers = {
             discussion: payload => { if (!payload || payload.slug === discussionSlug) setDiscussion(payload); },
             questions: payload => {
@@ -302,7 +313,13 @@ const DisplayPage = () => {
         for (const [event, handler] of Object.entries(handlers)) socket.on(event, handler);
         socket.on('connect', join);
         if (socket.connected) join();
+        const syncTimer = setInterval(syncVisibleDisplay, DISPLAY_SYNC_INTERVAL_MS);
+        document.addEventListener('visibilitychange', syncVisibleDisplay);
+        window.addEventListener('pageshow', restorePage);
         return () => {
+            clearInterval(syncTimer);
+            document.removeEventListener('visibilitychange', syncVisibleDisplay);
+            window.removeEventListener('pageshow', restorePage);
             clearTimeout(retry);
             if (socket.connected) socket.emit('leaveDisplay', discussionSlug);
             socket.off('connect', join);
@@ -335,7 +352,7 @@ const DisplayPage = () => {
     // Which questions' results this screen may see decides what the server
     // sends of each snapshot, so reload them when that changes.
     const snapshotReloadKey = `${state.resultsVisibility}|${(questions || []).map(q => `${q.id}${q.resultsHidden ? 'h' : ''}`).join(',')}`;
-    const snapshotResult = useSnapshots(socket, discussionSlug, state.displayLayout === 'compare' && discussion != null, snapshotReloadKey);
+    const snapshotResult = useSnapshots(socket, discussionSlug, state.displayLayout === 'compare' && discussion != null, snapshotReloadKey, syncCount);
 
     if (discussion === null) {
         return (
