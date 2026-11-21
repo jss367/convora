@@ -14,7 +14,14 @@ test('prompts recognize single- and double-star phrases with surrounding punctua
 
 test('ordinary stars, incomplete delimiters and unsupported markup stay literal', async () => {
   const { promptParts } = await emphasis;
-  for (const text of ['2 * 3 * 4', '2 ** 3', 'a*b*c', '*unfinished', '* padded *', '**mismatch*', '*mismatch**', '***both***', '_word_', '[source](url)']) {
+  for (const text of ['2 * 3 * 4', '2 ** 3', 'a*b*c', 'é*word*', '\\*escaped*', '*unfinished', '* padded *', '**trailing **', '**mismatch*', '*mismatch**', '***both***', '_word_', '[source](url)']) {
     assert.deepEqual(promptParts(text), [{ type: 'text', text }]);
   }
+});
+
+test('preserves separators between runs and around single-character emphasis', async () => {
+  const { promptParts } = await emphasis;
+  assert.deepEqual(promptParts('*a*🌟**b**'), [
+    { type: 'em', text: 'a' }, { type: 'text', text: '🌟' }, { type: 'strong', text: 'b' },
+  ]);
 });
