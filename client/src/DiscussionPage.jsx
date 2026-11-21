@@ -2089,7 +2089,7 @@ const DiscussionPage = () => {
                         onChange={(e) => setShowUnansweredOnly(e.target.checked)}
                         className="mr-2"
                     />
-                    Show unanswered only
+                    Show questions I haven’t answered
                 </label>
             </div>
 
