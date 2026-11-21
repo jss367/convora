@@ -12,7 +12,7 @@ const declaration = name => { const start = source.indexOf('async function ' + n
 const listener = name => { const start = source.indexOf("  socket.on('" + name + "'"); return source.slice(start, source.indexOf('\n  });', start) + 7); };
 function load(names, events, additions) {
   const handlers = {}, emitted = [], trace = [];
-  const context = vm.createContext({ normalizeQuestionPayload, buildOpinionSnapshot, OPINION_TYPES,
+  const context = vm.createContext({ normalizeQuestionPayload, buildOpinionSnapshot, OPINION_TYPES, ...require('../question-posting'),
     MAX_SNAPSHOT_NAME_LENGTH: 120, DISPLAY_QR_MODES: ['full', 'corner', 'hidden'], DISPLAY_LAYOUTS: ['all', 'focus', 'compare'],
     slugifyTopic: value => value, verifyAdmin: async () => 1, isDiscussionLocked: async () => false,
     parseOptions: value => value, logError() {}, emitQuestions: async () => {}, emitDiscussionState: async () => {},
@@ -33,8 +33,8 @@ test('a lock that wins before the insert transaction keeps a question uninserted
     return { rows: [] };
   } };
   const { context } = load(['addQuestion'], [], { pool: { connect: async () => client }, getOrCreateDiscussionForSlug: async () => ({ id: 1 }) });
-  const result = await context.addQuestion('synthetic-room', { text: 'Fictional question', type: 'Agreement' });
-  assert.equal(result.locked, true);
+  const result = await context.addQuestion('synthetic-room', { text: 'Fictional question', type: 'Agreement' }, { queueRequested: false });
+  assert.equal(result.reason, 'locked');
   assert.equal(statements.some(sql => /INSERT INTO questions/.test(sql)), false);
   assert.ok(statements.some(sql => /SELECT locked.*FOR SHARE/.test(sql)));
   assert.ok(statements.includes('ROLLBACK'));

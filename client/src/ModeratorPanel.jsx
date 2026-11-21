@@ -104,7 +104,7 @@ SelectSetting.propTypes = {
 
 const ModeratorPanel = ({
     discussionSlug, state, theme, themes, activeReactionKeys,
-    onSetLocked, onSetModeratorOnly, onSetListed, onSetResultsVisibility,
+    onSetLocked, onSetPostingMode, onSetListed, onSetResultsVisibility,
     onSetDisplaySettings, onSetTheme, onSetFlags, onSetReactionKeys,
     linkPrompt, linkCopied, onCopyLink,
     showJoinQr, onToggleJoinQr,
@@ -130,6 +130,7 @@ const ModeratorPanel = ({
         state.listed ? 'Listed' : 'Unlisted',
         resultsAlways ? 'Results always shown' : 'Results after voting',
         state.moderatorOnly ? 'Only moderators add questions' : null,
+        state.postingMode === 'approval' ? 'Questions need approval' : null,
     ].filter(Boolean).join(' · ');
 
     return (
@@ -191,11 +192,22 @@ const ModeratorPanel = ({
                             checked={!!state.locked}
                             onChange={onSetLocked}
                         />
+                        <SelectSetting
+                            label="Question posting"
+                            title="Who can add questions. Everyone can still vote when the room is unlocked."
+                            value={state.postingMode ?? (state.moderatorOnly ? 'moderator_only' : 'open')}
+                            onChange={onSetPostingMode}
+                            options={[
+                                ['open', 'Everyone can post'],
+                                ...(state.postingMode ? [['approval', 'Participants suggest for approval']] : []),
+                                ['moderator_only', 'Only moderators add questions'],
+                            ]}
+                        />
                         <Switch
-                            label="Only moderators add questions"
-                            hint="Everyone can still vote"
-                            checked={!!state.moderatorOnly}
-                            onChange={onSetModeratorOnly}
+                            label="Hand raising"
+                            hint="Let people join a private speaking queue for each question. Turning this off clears the queues."
+                            checked={!!state.handsEnabled}
+                            onChange={(on) => onSetFlags({ hands_enabled: on })}
                         />
                         <Switch
                             label="Allow question downvotes"
@@ -385,6 +397,7 @@ ModeratorPanel.propTypes = {
     state: PropTypes.shape({
         locked: PropTypes.bool,
         moderatorOnly: PropTypes.bool,
+        postingMode: PropTypes.string,
         listed: PropTypes.bool,
         resultsVisibility: PropTypes.string,
         displayQr: PropTypes.string,
@@ -396,6 +409,7 @@ ModeratorPanel.propTypes = {
         questionDownvotesEnabled: PropTypes.bool,
         reactionsVisible: PropTypes.bool,
         commentsEnabled: PropTypes.bool,
+        handsEnabled: PropTypes.bool,
     }).isRequired,
     theme: PropTypes.string.isRequired,
     themes: PropTypes.arrayOf(PropTypes.shape({
@@ -405,7 +419,7 @@ ModeratorPanel.propTypes = {
     })).isRequired,
     activeReactionKeys: PropTypes.arrayOf(PropTypes.string).isRequired,
     onSetLocked: PropTypes.func.isRequired,
-    onSetModeratorOnly: PropTypes.func.isRequired,
+    onSetPostingMode: PropTypes.func.isRequired,
     onSetListed: PropTypes.func.isRequired,
     onSetResultsVisibility: PropTypes.func.isRequired,
     onSetDisplaySettings: PropTypes.func.isRequired,

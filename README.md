@@ -79,13 +79,24 @@ When a moderator duplicates a discussion, the copy keeps its queued questions
 queued, so a prepared agenda can be reused. A copy made by anyone else leaves
 the queued questions out.
 
+## Optional ways to participate
+
+In the moderator panel, **Question posting** lets you choose who can publish. Choose **Participants suggest for approval** to put audience questions into a private review queue. Approve a suggestion to open it for answers, or delete it without showing it to the room. Use **Hand raising** when you're calling on people: participants can raise or lower their hand on a question, and only moderators see the ordered list. Mark a speaker as called on to remove them. Turning hand raising off empties the queues.
+
+When creating or editing a question as moderator, you can also enable:
+
+- **Clarification:** participants can privately ask about wording before answering. This is not an “unsure” vote.
+- **Vote explanations:** on a poll, participants can privately explain their own answer after voting. Changing or undoing the vote removes its old explanation.
+- **Missing answers:** on multiple-choice questions, participants can suggest an alternative privately. It doesn't change the options other people voted on.
+- **Independent answers:** on open-ended questions, each participant sees only their own responses until a moderator reveals everyone's answers together. The shared display does not show hidden responses.
+
 ## Clear a test run without changing the link
 
 As a moderator, open **More → Clear votes and responses** and confirm. This
-removes poll votes, written responses, question interest marks, and all votes,
+removes private question notes, speaking queues, poll votes, written responses, question interest marks, and all votes,
 comments, ratings, and reactions attached to responses. Published and queued
 questions, room settings, saved opinion snapshots, and links stay unchanged.
-The reset cannot be undone. An unlocked room accepts fresh answers immediately.
+The reset cannot be undone. An unlocked room accepts fresh answers immediately; independent-answer questions start collecting privately again.
 
 ## Discussions are unlisted unless you list them
 

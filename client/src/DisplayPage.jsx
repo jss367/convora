@@ -142,7 +142,8 @@ const QuestionCard = ({ question, reactionKeys, focus }) => (
         </header>
         {TALLIED_TYPES.includes(question.type)
             ? <TalliedResults question={question} focus={focus} />
-            : <WrittenResponses question={question} reactionKeys={reactionKeys} focus={focus} />}
+            : question.resultsHidden ? <p>Collecting independent answers. Waiting for the moderator to reveal responses.</p>
+                : <WrittenResponses question={question} reactionKeys={reactionKeys} focus={focus} />}
     </article>
 );
 QuestionCard.propTypes = {

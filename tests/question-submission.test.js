@@ -112,6 +112,19 @@ test('a similarity bounce permits dismissal or forced re-post of the server payl
   assert.equal(form.state.draft.text, '');
 });
 
+test('a suggestion requests private delivery and confirms review only on a successful ack', async () => {
+  const form = await composer();
+  form.session.approvalRequired = true;
+  form.submit();
+  assert.equal(form.sent[0].question.queued, true);
+  assert.ok(!form.state.suggestionSent);
+  form.ack(null, { added: true, queued: true, suggested: true });
+  assert.equal(form.state.suggestionSent, true);
+  assert.equal(form.state.draft.text, '');
+  form.text('Something else');
+  assert.equal(form.state.suggestionSent, false);
+});
+
 test('queue preference survives ack, but demotion cannot turn a private draft into a public one', async () => {
   const form = await composer({}, 'moderator');
   form.dispatch({ type: 'queue', queued: true });

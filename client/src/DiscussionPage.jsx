@@ -14,9 +14,11 @@ import ModeratorLinkPanel, { moderatorLinkPromptState, useModeratorLinkPrompt } 
 import ModeratorPanel from './ModeratorPanel';
 import { downloadForViewer } from './viewer';
 import QuestionEditor from './questions/QuestionEditor';
+import QuestionTools from './questions/QuestionTools';
 import { AgreementResults, YesNoResults, MultipleChoiceResults } from './questions/OpinionResults';
 import OpenEndedQuestion from './questions/OpenEndedQuestion';
 import NumericalResults from './questions/NumericalResults';
+import SpeakingQueue, { useSpeakingQueue } from './questions/SpeakingQueue';
 import { clampNumericalValue, getNumericalRange, sortQuestionsMostRecent, sortQuestionsMostInteresting } from './questions/questionHelpers.mjs';
 import QuestionComposer, { useQuestionComposer } from './questions/QuestionComposer.jsx';
 import {
@@ -179,7 +181,8 @@ const DiscussionPage = () => {
     const isAdmin = !!adminToken;
     const showClearModal = isAdmin && clearTarget === discussionSlug;
     const clearDialogRef = useModalDialog(showClearModal, () => { if (!clearing) setClearTarget(null); }, actionsMenuButtonRef);
-    const composer = useQuestionComposer({ socket, discussionSlug, adminToken, setError });
+    const approvalRequired = discussionState.postingMode === 'approval' && !isAdmin;
+    const composer = useQuestionComposer({ socket, discussionSlug, adminToken, setError, approvalRequired });
     const { onQuestionsLoaded, onSimilarQuestion } = composer;
     const { locked, moderatorOnly } = discussionState;
     const theme = THEME_KEYS.includes(discussionState.theme) ? discussionState.theme : DEFAULT_THEME;
@@ -745,6 +748,8 @@ const DiscussionPage = () => {
         // as the discussion was locked. Nothing else would tell the participant.
         onError: payload => { if (typeof payload?.message === 'string') setError(payload.message); },
     });
+
+    const speakingQueue = useSpeakingQueue(socket, discussionSlug, discussion?.slug === discussionSlug && discussionState.handsEnabled, userId, adminToken, displayName);
 
     // Mirror the discussion's chosen theme onto <html data-theme="..."> so the
     // CSS-variable palette (index.css) recolors every primary/secondary class,
@@ -1430,7 +1435,7 @@ const DiscussionPage = () => {
                 <div className="fixed inset-0 z-50 bg-gray-600 bg-opacity-50 flex items-center justify-center p-4">
                     <div ref={clearDialogRef} role="dialog" aria-modal="true" aria-labelledby="clear-title" aria-describedby="clear-description" tabIndex={-1} className="bg-white rounded-lg shadow-xl p-6 w-full max-w-md">
                         <h2 id="clear-title" className="text-xl font-bold mb-4">Clear votes and responses?</h2>
-                        <p id="clear-description" className="text-gray-700 mb-4">This permanently removes all answers, interest marks, and response comments, ratings, and reactions from “{discussionTitle}”. Your questions, settings, saved snapshots, and link stay the same. This cannot be undone.</p>
+                        <p id="clear-description" className="text-gray-700 mb-4">This permanently removes all answers, interest marks, private question notes, raised hands, and response comments, ratings, and reactions from “{discussionTitle}”. Independent-answer questions start collecting privately again. Your questions, settings, saved snapshots, and link stay the same. This cannot be undone.</p>
                         {clearError && <p role="alert" className="text-red-700 mb-4">{clearError}</p>}
                         <div className="flex justify-end gap-2">
                             <button type="button" data-autofocus disabled={clearing} onClick={() => setClearTarget(null)} className="px-4 py-2 rounded bg-gray-200 disabled:opacity-50">Cancel</button>
@@ -1629,7 +1634,9 @@ const DiscussionPage = () => {
                         themes={THEMES}
                         activeReactionKeys={activeReactionKeys}
                         onSetLocked={(on) => socket.emit('setLocked', discussionSlug, on, adminToken)}
-                        onSetModeratorOnly={(on) => socket.emit('setModeratorOnly', discussionSlug, on, adminToken)}
+                        onSetPostingMode={(mode) => discussionState.postingMode
+                            ? socket.emit('setPostingMode', discussionSlug, mode, adminToken)
+                            : socket.emit('setModeratorOnly', discussionSlug, mode === 'moderator_only', adminToken)}
                         onSetListed={(on) => socket.emit('setListed', discussionSlug, on, adminToken)}
                         onSetResultsVisibility={(value) => socket.emit('setResultsVisibility', discussionSlug, value, adminToken)}
                         onSetDisplaySettings={(settings) => socket.emit('setDisplaySettings', discussionSlug, settings, adminToken)}
@@ -1762,7 +1769,7 @@ const DiscussionPage = () => {
 
             {/* Near-duplicate prompt */}
             <QuestionComposer composer={composer} questionCount={questions.length}
-                locked={locked} moderatorOnly={moderatorOnly} isAdmin={isAdmin} />
+                locked={locked} moderatorOnly={moderatorOnly} isAdmin={isAdmin} approvalRequired={approvalRequired} />
             {error && <div className="text-red-500 mb-4">{error}</div>}
             {connectionLost && (
                 <div
@@ -1783,11 +1790,12 @@ const DiscussionPage = () => {
                         Queued questions ({queuedQuestions.length})
                     </h2>
                     <p className="mb-3 text-sm text-indigo-800">
-                        Only moderators see these. Publish one to show it to everyone and open it for answers.
+                        Only moderators see these drafts and suggestions. Publish one to open it for answers, or delete it to discard it.
                     </p>
                     <ol className="space-y-3">
                         {queuedQuestions.map((question) => (
                             <li key={question.id} className="rounded-md border border-indigo-100 bg-white p-4" data-testid="queued-question">
+                                {question.suggested && <p className="text-xs font-medium text-indigo-700">Participant suggestion</p>}
                                 {editingQuestionId === question.id ? (
                                     <QuestionEditor
                                         question={question}
@@ -1813,7 +1821,7 @@ const DiscussionPage = () => {
                                                 title={locked ? 'Unlock the discussion to publish questions' : 'Show this question to everyone and open it for answers'}
                                                 className="text-xs px-2 py-1 rounded bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
                                             >
-                                                Publish
+                                                {question.suggested ? 'Approve and publish' : 'Publish'}
                                             </button>
                                             <button
                                                 onClick={() => setEditingQuestionId(question.id)}
@@ -1877,7 +1885,7 @@ const DiscussionPage = () => {
                     compare: 'Back to full comparison',
                 }[discussionState.displayBaseLayout || discussionState.displayLayout];
                 return (
-                <div key={question.id} className="bg-white shadow-lg rounded-lg p-6 mb-6">
+                <div key={question.id} data-question-id={question.id} className="bg-white shadow-lg rounded-lg p-6 mb-6">
                     {isEditing ? (
                         <QuestionEditor
                             question={question}
@@ -1925,6 +1933,12 @@ const DiscussionPage = () => {
                                         className="text-xs px-2 py-1 rounded border border-gray-300 text-gray-600 hover:bg-gray-100"
                                     >
                                         Edit
+                                    </button>
+                                )}
+                                {question.independentAnswers && !question.queued && !question.resultsRevealed && (
+                                    <button onClick={() => handleToggleResultsRevealed(question.id, false)}
+                                        className="text-xs px-2 py-1 rounded border border-indigo-300 text-indigo-700 hover:bg-indigo-50">
+                                        Reveal answers
                                     </button>
                                 )}
                                 {discussionState.resultsVisibility !== 'always'
@@ -1976,6 +1990,11 @@ const DiscussionPage = () => {
                     </div>
                     <p className="mb-4 text-sm text-gray-500">Type: {question.type}</p>
                     {renderVotingMechanism(question)}
+                    <QuestionTools question={question} socket={socket} slug={discussionSlug} token={adminToken}
+                        vote={question.votes?.find(vote => isMyVote(question, vote))} locked={locked}
+                        disabled={!interestReady || !userId || connectionLost || pendingVotes[question.id] !== undefined} />
+                    {discussionState.handsEnabled && <SpeakingQueue queue={speakingQueue} questionId={question.id} moderator={isAdmin}
+                        locked={!!locked || connectionLost} name={displayName} />}
                     </>
                     )}
                 </div>

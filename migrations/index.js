@@ -393,6 +393,43 @@ async function migrateQuestionDownvotes(client) {
   await client.query('ALTER TABLE question_interest ADD COLUMN IF NOT EXISTS downvote BOOLEAN NOT NULL DEFAULT FALSE');
 }
 
+async function migrateIndependentAnswers(client) {
+  await client.query('ALTER TABLE questions ADD COLUMN IF NOT EXISTS independent_answers BOOLEAN NOT NULL DEFAULT FALSE');
+}
+
+async function migrateSpeakingQueue(client) {
+  await client.query(`ALTER TABLE discussions ADD COLUMN IF NOT EXISTS hands_enabled BOOLEAN NOT NULL DEFAULT FALSE;
+    CREATE TABLE IF NOT EXISTS speaking_queue (
+      id SERIAL PRIMARY KEY,
+      question_id INTEGER NOT NULL REFERENCES questions(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL,
+      display_name TEXT NOT NULL,
+      UNIQUE (question_id, user_id)
+    )`);
+}
+
+async function migrateQuestionTools(client) {
+  await client.query(`
+    ALTER TABLE questions ADD COLUMN IF NOT EXISTS tools text[] NOT NULL DEFAULT '{}';
+    CREATE TABLE IF NOT EXISTS question_tool_notes (
+      id serial PRIMARY KEY,
+      question_id integer NOT NULL REFERENCES questions(id) ON DELETE CASCADE,
+      user_id text NOT NULL,
+      kind text NOT NULL CHECK (kind IN ('clarification', 'explanation', 'suggestion')),
+      body text NOT NULL,
+      vote_id integer REFERENCES votes(id) ON DELETE CASCADE,
+      CHECK ((kind = 'explanation') = (vote_id IS NOT NULL)),
+      UNIQUE (question_id, user_id, kind)
+    );
+    CREATE INDEX IF NOT EXISTS question_tool_notes_vote ON question_tool_notes(vote_id) WHERE vote_id IS NOT NULL;
+  `);
+}
+
+async function migrateQuestionApproval(client) {
+  await client.query('ALTER TABLE discussions ADD COLUMN IF NOT EXISTS question_approval_required BOOLEAN NOT NULL DEFAULT FALSE');
+  await client.query('ALTER TABLE questions ADD COLUMN IF NOT EXISTS participant_suggested BOOLEAN NOT NULL DEFAULT FALSE');
+}
+
 module.exports = [
   [1, initSchema],
   [2, migrateModerationAndDedup],
@@ -406,4 +443,8 @@ module.exports = [
   [10, migrateBrainstormInteractions],
   [11, migrateUnifiedResponses],
   [12, migrateQuestionDownvotes],
+  [13, migrateQuestionApproval],
+  [14, migrateQuestionTools],
+  [15, migrateIndependentAnswers],
+  [16, migrateSpeakingQueue],
 ];

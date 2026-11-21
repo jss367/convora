@@ -3,6 +3,10 @@ const { isValidVote } = require('./question-data');
 // Vote persistence is separate from transport handlers so every caller uses the
 // same transaction and concurrency rules. Pseudonyms are sanitized by callers.
 
+function lockPollVote(client, questionId, userId) {
+  return client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`poll_vote:${questionId}:${userId}`]);
+}
+
 function createVoteStore(pool) {
   async function inTransaction(work) {
     const client = await pool.connect();
@@ -22,15 +26,6 @@ function createVoteStore(pool) {
     } finally {
       client.release(releaseError);
     }
-  }
-
-  // A transaction alone does not protect the absent-row case. Serialize one
-  // participant's writes to a poll across sockets/processes before reading the
-  // current vote. Read Committed gives the waiter a fresh view after the lock.
-  function lockPollVote(client, questionId, userId) {
-    return client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
-      `poll_vote:${questionId}:${userId}`,
-    ]);
   }
 
   // "Set my answer to this value." Repeating a poll submission leaves that
@@ -105,6 +100,7 @@ function createVoteStore(pool) {
             [questionId, userId, value, pseudonym]
           );
         } else {
+          if (current.value !== String(value)) await client.query('DELETE FROM question_tool_notes WHERE vote_id = $1', [current.id]);
           await client.query('UPDATE votes SET value = $1, pseudonym = $2 WHERE id = $3', [
             value, pseudonym, current.id,
           ]);
@@ -131,4 +127,4 @@ function createVoteStore(pool) {
   return { addVote, clearVote };
 }
 
-module.exports = { createVoteStore };
+module.exports = { createVoteStore, lockPollVote };

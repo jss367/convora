@@ -230,8 +230,8 @@ const SummaryPage = () => {
 
             {summary.counts.hiddenResults > 0 && (
                 <p className="text-sm text-gray-600 mb-6" data-testid="results-hidden">
-                    {RESULTS_HIDDEN_HINT}: {summary.counts.hiddenResults}{' '}
-                    {summary.counts.hiddenResults === 1 ? 'question you have not answered is' : 'questions you have not answered are'} left out of the numbers below.
+                    Results for {summary.counts.hiddenResults}{' '}
+                    {summary.counts.hiddenResults === 1 ? 'question are' : 'questions are'} hidden and left out of the numbers below.
                 </p>
             )}
 
@@ -635,7 +635,7 @@ const QuestionSummary = ({ question }) => (
                 <h3 className="text-lg font-semibold text-gray-900">{question.text}</h3>
                 <p className="text-sm text-gray-500">
                     {question.resultsHidden
-                        ? `${question.type} - ${RESULTS_HIDDEN_HINT}`
+                        ? `${question.type} - ${question.independentAnswers ? 'Answers hidden until moderator reveal' : RESULTS_HIDDEN_HINT}`
                         : `${question.type} - ${question.responseCount} ${question.responseCount === 1 ? 'response' : 'responses'}`}
                 </p>
             </div>
@@ -687,6 +687,7 @@ QuestionSummary.propTypes = {
         type: PropTypes.string.isRequired,
         responseCount: PropTypes.number,
         resultsHidden: PropTypes.bool,
+        independentAnswers: PropTypes.bool,
         label: PropTypes.string,
         optionCounts: PropTypes.objectOf(PropTypes.number),
         options: PropTypes.arrayOf(PropTypes.string),

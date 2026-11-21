@@ -9,7 +9,7 @@ const read = name => process.env.HOST_CONTROL_BASE
 
 test('decimal ties use the same exponent-shift rounding on the client and server', async () => {
   const server = { exports: {} };
-  vm.runInNewContext(read('question-data.js'), { module: server, console });
+  vm.runInNewContext(read('question-data.js'), { module: server, console, require: require('node:module').createRequire(require.resolve('../question-data')) });
   const client = await import('data:text/javascript,' + encodeURIComponent(read('client/src/questions/questionHelpers.mjs')));
   for (const [input, expected] of [[1.005, 1.01], [-1.005, -1], [1.015, 1.02], [-1.015, -1.01], [.005, .01], [-.005, 0], [2.675, 2.68], [-2.675, -2.67]]) {
     assert.equal(server.exports.normalizeNumericalVote(input), expected);

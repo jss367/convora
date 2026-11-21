@@ -1,8 +1,10 @@
 import ResponseSettings from './ResponseSettings';
+import IndependentAnswerSetting from './IndependentAnswerSetting';
 import PropTypes from 'prop-types';
 import React, { useState } from 'react';
 import { MULTIPLE_CHOICE_LIMITS, QuestionTypes, QuestionTypeDescriptions } from './config';
 import ChoiceOptionsEditor from './ChoiceOptionsEditor';
+import { QuestionToolSettings } from './QuestionTools';
 import { validateChoiceOptions, validateNumericalRange } from './questionHelpers.mjs';
 import QuestionTextBox from '../QuestionTextBox';
 
@@ -17,6 +19,7 @@ const QuestionEditor = ({ question, onSave, onCancel, draft, onDraftChange }) =>
             ? question.options : ['', ''],
     }));
     const currentDraft = draft || localDraft;
+    const independentAnswers = currentDraft.independentAnswers ?? question.independentAnswers ?? false;
     const { text, type, minValue, maxValue, settings, options } = currentDraft;
     const update = (key, value) => {
         const next = { ...currentDraft, [key]: typeof value === 'function' ? value(currentDraft[key]) : value };
@@ -37,7 +40,8 @@ const QuestionEditor = ({ question, onSave, onCancel, draft, onDraftChange }) =>
             setError('Question text cannot be empty.');
             return;
         }
-        const updates = { text: trimmed, type, ...settings };
+        const updates = { text: trimmed, type, ...settings, tools: currentDraft.tools ?? question.tools ?? [] };
+        if (type === QuestionTypes.OPEN_ENDED) updates.independentAnswers = independentAnswers;
         if (type === QuestionTypes.NUMERICAL) {
             const range = validateNumericalRange(minValue, maxValue);
             if (range.error) {
@@ -93,6 +97,8 @@ const QuestionEditor = ({ question, onSave, onCancel, draft, onDraftChange }) =>
                 )}
             </div>
             {type === QuestionTypes.OPEN_ENDED && <ResponseSettings {...settings} onChange={(key, value) => setSettings(prev => ({ ...prev, [key]: value }))} />}
+            <QuestionToolSettings type={type} tools={currentDraft.tools ?? question.tools} onChange={tools => update('tools', tools)} />
+            {type === QuestionTypes.OPEN_ENDED && <IndependentAnswerSetting checked={independentAnswers} onChange={value => update('independentAnswers', value)} />}
             {type === QuestionTypes.MULTIPLE_CHOICE && (
                 <ChoiceOptionsEditor options={options} onChange={setOptions} />
             )}

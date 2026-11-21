@@ -93,6 +93,47 @@ test('Google verification issues an expiring session and only a creator can link
   }
 });
 
+test('speaking queues enforce room scope, ownership, lock and moderator access', async () => {
+  const room = (await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('hands') })).body;
+  const { rows: [question, queued] } = await pool.query(`INSERT INTO questions (discussion_id,text,type,queued)
+    VALUES ($1,'Live','Agreement',false), ($1,'Later','Agreement',true) RETURNING id`, [room.id]);
+  const guests = await Promise.all([connectSocket(), connectSocket()]);
+  const participants = [crypto.randomUUID(), crypto.randomUUID()];
+  const change = (index, extra) => emitWithAck(guests[index], 'changeSpeakingQueue', room.slug, {
+    questionId: question.id, userId: participants[index], name: `Speaker ${index}`, action: 'raise', ...extra,
+  });
+  const read = (index, token) => emitWithAck(guests[index], 'readSpeakingQueue', room.slug, participants[index], token);
+  try {
+    await Promise.all(guests.map((guest, index) => {
+      const joined = waitForEvent(guest, 'discussionState');
+      guest.emit('joinDiscussion', room.slug);
+      guest.emit('identify', room.slug, participants[index]);
+      return joined;
+    }));
+    assert.equal((await change(0)).ok, false);
+    await pool.query('UPDATE discussions SET hands_enabled = true WHERE id = $1', [room.id]);
+    assert.equal((await change(0, { questionId: queued.id })).ok, false);
+    assert.equal((await change(0)).ok, true);
+    assert.equal((await change(0)).ok, true);
+    const { entries } = await read(0);
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0].mine, true);
+    assert.deepEqual((await read(1, 'invalid')).entries, []);
+    assert.equal((await change(1, { action: 'done', entryId: entries[0].id })).ok, false);
+    assert.equal((await change(1, { action: 'lower', userId: participants[0] })).ok, true);
+    const host = await read(1, room.adminToken);
+    assert.equal(host.entries[0].name, 'Speaker 0');
+    assert.ok(!JSON.stringify(host.entries).includes(participants[0]));
+    await pool.query('UPDATE discussions SET locked = true WHERE id = $1', [room.id]);
+    assert.equal((await change(1)).ok, false);
+    await pool.query('UPDATE discussions SET locked = false WHERE id = $1', [room.id]);
+    assert.equal((await change(1, { action: 'done', entryId: entries[0].id, token: room.adminToken })).ok, true);
+    assert.deepEqual((await read(0)).entries, []);
+  } finally {
+    guests.forEach(guest => guest.disconnect());
+  }
+});
+
 test('server startup creates schema and applies the pseudonym migration', async () => {
   const tables = await pool.query(`
     SELECT table_name
@@ -1519,6 +1560,75 @@ async function joinAs(slug, userId) {
   if (userId) socket.emit('identify', slug, userId);
   socket.emit('joinDiscussion', slug);
   return { socket, questions: await joined };
+}
+
+for (const mode of ['always', 'after_vote']) {
+  test(`independent answers stay private across viewers until moderator reveal (${mode})`, async t => {
+    const { id, slug, adminToken } = (await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('independent') })).body;
+    const base = `/api/discussions/${slug}`;
+    await pool.query('UPDATE discussions SET results_visibility=$2, reactions_enabled=true, comments_enabled=true WHERE id=$1', [id, mode]);
+    const user = crypto.randomUUID();
+    const { socket: author } = await joinAs(slug, user);
+    const moderator = await joinAsModerator(slug, adminToken);
+    t.after(() => { author.disconnect(); moderator.disconnect(); });
+    const prompt = { text: 'Write an idea', type: 'Brainstorm', independentAnswers: true };
+    assert.equal((await emitWithAck(author, 'addQuestion', slug, prompt, true)).reason, 'not_authorized');
+    assert.equal((await emitWithAck(moderator, 'addQuestion', slug, prompt, true, adminToken)).added, true);
+    const { rows: [question] } = await pool.query('SELECT id, independent_answers FROM questions WHERE discussion_id=$1', [id]);
+    assert.equal(question.independent_answers, true);
+    for (const independentAnswers of [false, true]) {
+      assert.equal((await emitWithAck(moderator, 'editQuestion', slug, question.id, { ...prompt, independentAnswers }, adminToken)).updated, true);
+      assert.equal((await pool.query('SELECT independent_answers FROM questions WHERE id=$1', [question.id])).rows[0].independent_answers, independentAnswers);
+    }
+    const secret = 'private-written-response-fixture';
+    const own = waitForQuestions(author, list => byId(list, question.id)?.votes.length === 1, 'own independent answer');
+    assert.equal((await emitWithAck(author, 'vote', slug, question.id, secret, user, 'Author', 'custom')).ok, true);
+    const vote = byId(await own, question.id).votes[0];
+    assert.equal(vote.value, secret);
+    const { socket: peer, questions } = await joinAs(slug, 'another-author');
+    const display = await connectSocket();
+    t.after(() => { peer.disconnect(); display.disconnect(); });
+    assert.deepEqual(byId(questions, question.id).votes, []);
+    const projected = nextQuestions(display, 'private display');
+    display.emit('joinDisplay', slug);
+    assert.deepEqual(byId(await projected, question.id).votes, []);
+    const ownPeer = waitForQuestions(peer, list => byId(list, question.id)?.votes.some(row => row.value === 'peer-only'), 'second independent answer');
+    const modView = waitForQuestions(moderator, list => byId(list, question.id)?.votes.length === 2, 'moderator view');
+    await emitWithAck(peer, 'vote', slug, question.id, 'peer-only', 'another-author', 'Other', 'custom');
+    assert.deepEqual(byId(await ownPeer, question.id).votes.map(row => row.value), ['peer-only']);
+    await modView;
+    const denied = waitForEvent(peer, 'error');
+    peer.emit('setResultsRevealed', slug, question.id, true, 'wrong');
+    await denied;
+    assert.equal((await emitWithAck(peer, 'setResponseRating', slug, vote.id, 'quality', 1, 'another-author')).updated, false);
+    assert.equal((await emitWithAck(peer, 'addResponseComment', slug, vote.id, 'early comment', 'another-author', 'Other')).added, false);
+    const legacy = nextQuestions(peer, 'legacy feedback check');
+    peer.emit('toggleResponseVote', slug, vote.id, 'another-author');
+    await legacy;
+    peer.emit('toggleResponseReaction', slug, vote.id, 'crux', 'another-author');
+    await pool.query("INSERT INTO questions (discussion_id,text,type) VALUES ($1,'Public poll','Agreement')", [id]);
+    const saved = await jsonRequest('POST', `${base}/snapshots`, { adminToken, name: 'During collection' });
+    assert.equal(saved.status, 201);
+    assert.deepEqual(saved.body.data.questions.map(row => row.text), ['Public poll']);
+    for (const route of ['summary', 'export.json', 'export.csv', 'report.html', 'snapshots', 'clusters']) {
+      const result = await fetch(`${baseUrl}${base}/${route}`, { headers: asUser(user) });
+      assert.equal(result.status, 200, route);
+      assert.doesNotMatch(await result.text(), /private-written-response-fixture|peer-only/, route);
+    }
+    assert.equal((await jsonRequest('GET', `${base}/summary`, undefined, asModerator(adminToken))).body.counts.responses, 2);
+    const feedback = await pool.query(`SELECT (SELECT count(*) FROM response_votes WHERE response_id=$1) +
+      (SELECT count(*) FROM response_ratings WHERE response_id=$1) + (SELECT count(*) FROM response_reactions WHERE response_id=$1) AS total`, [vote.id]);
+    assert.equal(Number(feedback.rows[0].total), 0);
+    const shared = [author, peer, display].map(socket => waitForQuestions(socket, list => byId(list, question.id)?.resultsRevealed, 'moderator reveal'));
+    moderator.emit('setResultsRevealed', slug, question.id, true, adminToken);
+    for (const list of await Promise.all(shared)) assert.deepEqual(byId(list, question.id).votes.map(row => row.value), [secret, 'peer-only']);
+    assert.equal((await emitWithAck(peer, 'setResponseRating', slug, vote.id, 'quality', 1, 'another-author')).updated, true);
+    assert.equal((await jsonRequest('GET', `${base}/summary`)).body.counts.responses, 2);
+    const reset = await fetch(`${baseUrl}${base}/responses`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ adminToken }) });
+    assert.equal(reset.status, 204);
+    assert.deepEqual((await pool.query('SELECT independent_answers, results_revealed FROM questions WHERE id=$1', [question.id])).rows[0],
+      { independent_answers: true, results_revealed: false });
+  });
 }
 
 test('new and existing discussions default to showing results after voting', async () => {
@@ -5235,6 +5345,72 @@ async function joinAsModerator(slug, adminToken) {
   assert.equal((await emitWithAck(socket, 'checkModerator', slug, adminToken)).isModerator, true);
   return socket;
 }
+
+test('posting approval migration preserves old rooms and moderator drafts', async () => {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('CREATE TEMP TABLE discussions (moderator_only_questions boolean); CREATE TEMP TABLE questions (queued boolean)');
+    await client.query('INSERT INTO discussions VALUES (true), (false); INSERT INTO questions VALUES (true), (false)');
+    const migrate = require('../migrations').find(([, migration]) => migration.name === 'migrateQuestionApproval')[1];
+    await migrate(client);
+    const rooms = (await client.query('SELECT * FROM discussions ORDER BY moderator_only_questions')).rows;
+    assert.deepEqual(rooms.map(require('../question-posting').postingMode), ['open', 'moderator_only']);
+    assert.deepEqual((await client.query('SELECT queued, participant_suggested FROM questions ORDER BY queued')).rows,
+      [{ queued: false, participant_suggested: false }, { queued: true, participant_suggested: false }]);
+    await client.query('UPDATE discussions SET question_approval_required = TRUE WHERE NOT moderator_only_questions');
+    await migrate(client);
+    assert.equal((await client.query('SELECT question_approval_required FROM discussions WHERE NOT moderator_only_questions')).rows[0].question_approval_required, true);
+  } finally {
+    await client.query('ROLLBACK');
+    client.release();
+  }
+});
+
+test('posting approval routes legacy and forced submissions to the private queue until published', async () => {
+  const { slug, adminToken } = (await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('posting-approval') })).body;
+  const mod = await joinAsModerator(slug, adminToken);
+  const { socket: participant } = await joinAs(slug, 'suggester');
+  const { socket: display } = await joinDisplay(slug);
+  try {
+    const forbidden = waitForEvent(participant, 'error');
+    participant.emit('setPostingMode', slug, 'approval', 'invalid');
+    assert.match((await forbidden).message, /not authorized/i);
+    const invalid = waitForEvent(mod, 'error');
+    mod.emit('setPostingMode', slug, 'unknown', adminToken);
+    assert.match((await invalid).message, /invalid/i);
+
+    const switched = waitForEvent(participant, 'discussionState', state => state.postingMode === 'approval');
+    mod.emit('setPostingMode', slug, 'approval', adminToken);
+    assert.equal((await switched).moderatorOnly, false);
+    const modList = waitForQuestions(mod, list => list.some(question => question.suggested), 'suggestion in moderator queue');
+    const participantList = nextQuestions(participant, 'participant view');
+    const displayList = nextQuestions(display, 'display view');
+    const payload = { text: 'Where should we meet?', type: 'Agreement', queued: false };
+    assert.deepEqual(await emitWithAck(participant, 'addQuestion', slug, payload, true), { added: true, queued: true, suggested: true });
+    const [suggestion] = await modList;
+    assert.equal(suggestion.queued, true);
+    assert.deepEqual(await participantList, []);
+    assert.deepEqual(await displayList, []);
+    assert.equal((await emitWithAck(participant, 'publishQuestion', slug, suggestion.id, 'invalid')).published, false);
+
+    const publicPayload = { text: 'Transport costs will rise', type: 'Agreement' };
+    assert.deepEqual(await emitWithAck(mod, 'addQuestion', slug, publicPayload, true, adminToken), { added: true });
+    const duplicate = waitForEvent(participant, 'similarQuestion');
+    assert.equal((await emitWithAck(participant, 'addQuestion', slug, publicPayload, false)).reason, 'similar');
+    const retry = (await duplicate).question;
+    assert.equal(retry.queued, true);
+    const opened = waitForEvent(participant, 'discussionState', state => state.postingMode === 'open');
+    mod.emit('setModeratorOnly', slug, false, adminToken);
+    await opened;
+    assert.equal((await emitWithAck(participant, 'addQuestion', slug, retry, true)).reason, 'not_authorized');
+    const published = waitForQuestions(participant, list => list.some(question => question.id === suggestion.id), 'approved suggestion');
+    assert.equal((await emitWithAck(mod, 'publishQuestion', slug, suggestion.id, adminToken)).published, true);
+    assert.equal((await published).find(question => question.id === suggestion.id).queued, false);
+  } finally {
+    mod.disconnect(); participant.disconnect(); display.disconnect();
+  }
+});
 
 test('a queued question reaches moderators only, and nobody can answer it, until it is published', async () => {
   const created = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('queue') });
