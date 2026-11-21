@@ -222,6 +222,7 @@ function buildSummary(discussion, questions) {
         // its results, so they stay; only the counts are withheld.
         ...(question.type === 'Multiple Choice' ? { options: choiceOptionsFor(question) } : {}),
         resultsHidden: true,
+        ...(question.independentAnswers ? { independentAnswers: true } : {}),
       };
     }
     const votes = question.votes || [];
@@ -398,7 +399,12 @@ function buildSummary(discussion, questions) {
   };
 }
 
-function renderReportHtml(summary) {
+async function renderReportHtml(summary) {
+  const { promptParts } = await import('./client/src/questions/promptEmphasis.mjs');
+  const promptHtml = text => promptParts(text).map(part => {
+    const escaped = escapeHtml(part.text);
+    return part.type === 'text' ? escaped : `<${part.type}>${escaped}</${part.type}>`;
+  }).join('');
   const dashboard = summary.facilitatorDashboard || {};
   const generatedAt = new Date().toLocaleString();
 
@@ -413,12 +419,12 @@ function renderReportHtml(summary) {
     if (question.resultsHidden) {
       return `
       <tr>
-        <td>${escapeHtml(question.text)}</td>
+        <td>${promptHtml(question.text)}</td>
         <td>${escapeHtml(question.type)}</td>
         <td>-</td>
         <td class="muted">${Array.isArray(question.options) && question.options.length
           ? `Options: ${escapeHtml(question.options.join(' / '))}. Results hidden until you vote`
-          : 'Hidden until you vote'}</td>
+          : question.independentAnswers ? 'Answers hidden until moderator reveal' : 'Hidden until you vote'}</td>
       </tr>`;
     }
     const label = question.label ? `<span class="pill">${escapeHtml(question.label)}</span>` : '';
@@ -433,7 +439,7 @@ function renderReportHtml(summary) {
           : `${question.responseCount} written ${question.responseCount === 1 ? 'response' : 'responses'}`;
     return `
       <tr>
-        <td>${escapeHtml(question.text)} ${label}</td>
+        <td>${promptHtml(question.text)} ${label}</td>
         <td>${escapeHtml(question.type)}</td>
         <td>${question.responseCount}</td>
         <td>${escapeHtml(metric)}</td>
@@ -481,7 +487,7 @@ function renderReportHtml(summary) {
 
     <section>
       <h2>Snapshot</h2>
-      ${summary.counts.hiddenResults ? `<p class="muted">Results for ${summary.counts.hiddenResults} ${summary.counts.hiddenResults === 1 ? 'question is' : 'questions are'} hidden until you vote and are left out of this report.</p>` : ''}
+      ${summary.counts.hiddenResults ? `<p class="muted">Results for ${summary.counts.hiddenResults} ${summary.counts.hiddenResults === 1 ? 'question is' : 'questions are'} hidden${summary.questions.some(question => question.independentAnswers) ? '' : ' until you vote'} and are left out of this report.</p>` : ''}
       <div class="grid">
         <div class="metric">Questions<strong>${summary.counts.questions}</strong></div>
         <div class="metric">Responses<strong>${summary.counts.responses}</strong></div>
@@ -492,13 +498,13 @@ function renderReportHtml(summary) {
 
     <section>
       <h2>Facilitator Brief</h2>
-      ${renderList(dashboard.recommendedNextActions, 'No recommended actions.', item => `<li>${escapeHtml(item)}</li>`)}
+      ${renderList(dashboard.recommendedNextActions, 'No recommended actions.', item => `<li>${promptHtml(item)}</li>`)}
     </section>
 
     <section class="split">
       <div>
         <h2>Unresolved Tensions</h2>
-        ${renderList(dashboard.unresolvedTensions, 'No major unresolved tensions detected.', item => `<li><strong>${escapeHtml(item.text)}</strong><br><span class="muted">${escapeHtml(item.type)} | ${escapeHtml(item.detail)}</span></li>`)}
+        ${renderList(dashboard.unresolvedTensions, 'No major unresolved tensions detected.', item => `<li><strong>${promptHtml(item.text)}</strong><br><span class="muted">${escapeHtml(item.type)} | ${escapeHtml(item.detail)}</span></li>`)}
       </div>
       <div>
         <h2>Participation Gaps</h2>
@@ -509,11 +515,11 @@ function renderReportHtml(summary) {
     <section class="split">
       <div>
         <h2>Most Divisive Statements</h2>
-        ${renderList(dashboard.mostDivisiveStatements, 'No divisive agreement statements yet.', item => `<li><strong>${escapeHtml(formatReportPercent(item.divisiveScore))}</strong> split | ${escapeHtml(item.text)}<br><span class="muted">${escapeHtml(item.detail)}</span></li>`)}
+        ${renderList(dashboard.mostDivisiveStatements, 'No divisive agreement statements yet.', item => `<li><strong>${escapeHtml(formatReportPercent(item.divisiveScore))}</strong> split | ${promptHtml(item.text)}<br><span class="muted">${escapeHtml(item.detail)}</span></li>`)}
       </div>
       <div>
         <h2>Unanswered Prompts</h2>
-        ${renderList(dashboard.unansweredPrompts, 'Every prompt has at least one response.', item => `<li>${escapeHtml(item.text)} <span class="muted">(${escapeHtml(item.type)})</span></li>`)}
+        ${renderList(dashboard.unansweredPrompts, 'Every prompt has at least one response.', item => `<li>${promptHtml(item.text)} <span class="muted">(${escapeHtml(item.type)})</span></li>`)}
       </div>
     </section>
 

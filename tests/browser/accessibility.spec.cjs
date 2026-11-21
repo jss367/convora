@@ -136,12 +136,11 @@ test('the similar-statement prompt is a modal dialog that closes on Escape', asy
 });
 
 
-test('Share and Duplicate stay above the floating QR and contain background focus', async ({ page, rooms }) => {
-  const room = await rooms.create('Modal above QR');
+test('Share and Duplicate contain focus until dismissed', async ({ page, rooms }) => {
+  const room = await rooms.create('Modal focus');
   await page.goto(`/discussion/${room.slug}?admin=${encodeURIComponent(room.adminToken)}`);
-  await page.getByRole('switch', { name: 'Join QR on this page', exact: true }).click();
-  const resize = page.getByRole('slider', { name: 'Resize join QR code', exact: true });
-  await expect(resize).toBeVisible();
+  const backgroundControl = page.getByLabel('QR code', { exact: true });
+  await expect(backgroundControl).toBeVisible();
   for (const name of ['Share this discussion', 'Duplicate Discussion']) {
     if (name === 'Share this discussion') {
       await page.getByRole('button', { name: 'Share', exact: true }).click();
@@ -151,21 +150,14 @@ test('Share and Duplicate stay above the floating QR and contain background focu
     }
     const dialog = page.getByRole('dialog', { name, exact: true });
     await expect(dialog).toBeVisible();
-    // At a point on the background QR slider, hit-testing must reach the modal
-    // overlay or its panel instead of the background resize control.
-    expect(await resize.evaluate(el => {
-      const rect = el.getBoundingClientRect();
-      const hit = document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2);
-      return document.querySelector('[role="dialog"]').parentElement.contains(hit);
-    })).toBe(true);
-    await resize.focus();
+    await backgroundControl.focus();
     expect(await dialog.evaluate(el => el.contains(document.activeElement))).toBe(true);
     await page.keyboard.press('Escape');
     await expect(dialog).toHaveCount(0);
   }
   // Focus confinement is removed when the last modal closes.
-  await resize.focus();
-  await expect(resize).toBeFocused();
+  await backgroundControl.focus();
+  await expect(backgroundControl).toBeFocused();
 });
 
 

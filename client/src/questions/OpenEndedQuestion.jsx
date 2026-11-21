@@ -244,6 +244,7 @@ const OpenEndedQuestion = ({
     const creation = useRef(null);
 
     const votes = question.votes || [];
+    const collecting = question.independentAnswers && !question.resultsRevealed;
     const ownCount = votes.filter(v => ownedVoteIds.has(v.id)).length;
     const atLimit = question.maxResponses != null && ownCount >= question.maxResponses;
     // Whether reactions/comments are available is set discussion-wide by the
@@ -251,8 +252,8 @@ const OpenEndedQuestion = ({
     // the resolved flags via getQuestions.
     const reactionsEnabled = question.reactionsEnabled;
     const reactionsVisible = question.reactionsVisible;
-    const commentsEnabled = question.commentsEnabled;
-    const reactionsActive = reactionsEnabled && reactionsVisible;
+    const commentsEnabled = !collecting && question.commentsEnabled;
+    const reactionsActive = !collecting && reactionsEnabled && reactionsVisible;
 
     const submitIdea = () => {
         if (idea.trim() === '' || pending) {
@@ -273,6 +274,9 @@ const OpenEndedQuestion = ({
 
     return (
         <div>
+            {collecting && <p className="mb-3 text-sm text-gray-600">{isAdmin
+                ? 'Collecting independent answers. Only moderators can see everyone’s responses.'
+                : 'Only you and the moderators can see your answers until a moderator reveals responses.'}</p>}
             {!locked && !atLimit && (
                 <>
                     <ResponseTextArea
@@ -293,7 +297,7 @@ const OpenEndedQuestion = ({
             )}
 
             {atLimit && <p className="text-sm text-gray-500 mb-3">You have reached the limit of {question.maxResponses} responses. You can edit or delete your existing responses.</p>}
-            {reactionsEnabled && !reactionsVisible && (
+            {!collecting && reactionsEnabled && !reactionsVisible && (
                 <p className="text-sm text-gray-500 mb-2">
                     Reactions are hidden for now — the moderator will open them up for the discussion.
                 </p>
@@ -301,7 +305,7 @@ const OpenEndedQuestion = ({
 
             {votes.length > 0 && (
                 <div className="mt-4">
-                    <h3 className="font-semibold mb-2">All Responses ({votes.length}):</h3>
+                    <h3 className="font-semibold mb-2">{collecting && !isAdmin ? 'Your Responses' : 'All Responses'} ({votes.length}):</h3>
                     <ul className="space-y-2">
                         {votes.map((vote) => (
                             <WrittenResponse
@@ -314,7 +318,7 @@ const OpenEndedQuestion = ({
                                 showAttribution={question.showAttribution !== false}
                                 // Legacy upvotes were always visible. Preserve
                                 // those totals without revealing other feedback.
-                                showLegacyUpvotes={!reactionsEnabled}
+                                showLegacyUpvotes={!collecting && !reactionsEnabled}
                                 pending={pending}
                                 onEdit={(text, callback) => handleVote(question.id, { text, responseId: vote.id }, callback)}
                                 isAdmin={isAdmin}
@@ -346,6 +350,8 @@ OpenEndedQuestion.propTypes = {
         id: PropTypes.oneOfType([PropTypes.string, PropTypes.number]).isRequired,
         maxResponses: PropTypes.number,
         showAttribution: PropTypes.bool,
+        independentAnswers: PropTypes.bool,
+        resultsRevealed: PropTypes.bool,
         reactionsEnabled: PropTypes.bool,
         reactionsVisible: PropTypes.bool,
         commentsEnabled: PropTypes.bool,

@@ -1,3 +1,4 @@
+import { formatPrompt } from './questions/formatPrompt';
 import PropTypes from 'prop-types';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
@@ -230,8 +231,8 @@ const SummaryPage = () => {
 
             {summary.counts.hiddenResults > 0 && (
                 <p className="text-sm text-gray-600 mb-6" data-testid="results-hidden">
-                    {RESULTS_HIDDEN_HINT}: {summary.counts.hiddenResults}{' '}
-                    {summary.counts.hiddenResults === 1 ? 'question you have not answered is' : 'questions you have not answered are'} left out of the numbers below.
+                    Results for {summary.counts.hiddenResults}{' '}
+                    {summary.counts.hiddenResults === 1 ? 'question are' : 'questions are'} hidden and left out of the numbers below.
                 </p>
             )}
 
@@ -311,7 +312,7 @@ const FacilitatorDashboard = ({ dashboard }) => {
                     <h3 className="font-semibold text-gray-800 mb-2">Recommended Next Actions</h3>
                     <ul className="list-disc pl-5 text-gray-700 space-y-1">
                         {dashboard.recommendedNextActions.map(action => (
-                            <li key={action}>{action}</li>
+                            <li key={action}>{formatPrompt(action)}</li>
                         ))}
                     </ul>
                 </div>
@@ -405,7 +406,7 @@ const FacilitatorSignalList = ({ title, emptyText, items = [], renderMeta, rende
                     <li key={`${title}-${item.id || item.text}`} className="border border-gray-100 rounded-md p-3">
                         <div className="flex items-start justify-between gap-3">
                             <div>
-                                <div className="font-medium text-gray-900">{item.text}</div>
+                                <div className="font-medium text-gray-900">{formatPrompt(item.text)}</div>
                                 {renderMeta && <div className="text-xs text-gray-500 mt-1">{renderMeta(item)}</div>}
                             </div>
                             {renderScore && (
@@ -471,7 +472,7 @@ const RankedAgreementList = ({ title, items, metricLabel, metricKey }) => (
                     <li key={item.id} className="border-b border-gray-100 last:border-0 pb-4 last:pb-0">
                         <div className="flex items-start justify-between gap-4">
                             <div>
-                                <h3 className="font-semibold text-gray-900">{item.text}</h3>
+                                <h3 className="font-semibold text-gray-900">{formatPrompt(item.text)}</h3>
                                 <p className="text-sm text-gray-500 mt-1">
                                     {item.responseCount} {item.responseCount === 1 ? 'response' : 'responses'} - {item.leadingPosition}
                                 </p>
@@ -632,10 +633,10 @@ const QuestionSummary = ({ question }) => (
     <article className="bg-white shadow rounded-lg p-5">
         <div className="flex flex-wrap items-start justify-between gap-3 mb-3">
             <div>
-                <h3 className="text-lg font-semibold text-gray-900">{question.text}</h3>
+                <h3 className="text-lg font-semibold text-gray-900">{formatPrompt(question.text)}</h3>
                 <p className="text-sm text-gray-500">
                     {question.resultsHidden
-                        ? `${question.type} - ${RESULTS_HIDDEN_HINT}`
+                        ? `${question.type} - ${question.independentAnswers ? 'Answers hidden until moderator reveal' : RESULTS_HIDDEN_HINT}`
                         : `${question.type} - ${question.responseCount} ${question.responseCount === 1 ? 'response' : 'responses'}`}
                 </p>
             </div>
@@ -687,6 +688,7 @@ QuestionSummary.propTypes = {
         type: PropTypes.string.isRequired,
         responseCount: PropTypes.number,
         resultsHidden: PropTypes.bool,
+        independentAnswers: PropTypes.bool,
         label: PropTypes.string,
         optionCounts: PropTypes.objectOf(PropTypes.number),
         options: PropTypes.arrayOf(PropTypes.string),

@@ -1,3 +1,4 @@
+import { formatPrompt } from './questions/formatPrompt';
 import { sortDisplayQuestions } from './display/sortDisplayQuestions.mjs';
 import { getNumericalRange } from './questions/questionHelpers.mjs';
 import PropTypes from 'prop-types';
@@ -131,7 +132,7 @@ const QuestionCard = ({ question, reactionKeys, focus }) => (
         <header className={`flex items-start justify-between gap-6 ${focus ? 'mb-8' : 'mb-5'}`}>
             <h2 className={`font-bold leading-tight text-gray-900 ${focus ? 'text-6xl' : 'text-3xl'}`}>
                 {question.pinned && <span aria-label="Pinned" className="mr-3">📌</span>}
-                {question.text}
+                {formatPrompt(question.text)}
             </h2>
             {/* With results withheld, the count is the whole chart below. */}
             {!question.resultsHidden && (
@@ -142,7 +143,8 @@ const QuestionCard = ({ question, reactionKeys, focus }) => (
         </header>
         {TALLIED_TYPES.includes(question.type)
             ? <TalliedResults question={question} focus={focus} />
-            : <WrittenResponses question={question} reactionKeys={reactionKeys} focus={focus} />}
+            : question.resultsHidden ? <p>Collecting independent answers. Waiting for the moderator to reveal responses.</p>
+                : <WrittenResponses question={question} reactionKeys={reactionKeys} focus={focus} />}
     </article>
 );
 QuestionCard.propTypes = {

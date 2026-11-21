@@ -1,8 +1,10 @@
 import ResponseSettings from './ResponseSettings';
+import IndependentAnswerSetting from './IndependentAnswerSetting';
 import PropTypes from 'prop-types';
 import React, { useState } from 'react';
 import { MULTIPLE_CHOICE_LIMITS, QuestionTypes, QuestionTypeDescriptions } from './config';
 import ChoiceOptionsEditor from './ChoiceOptionsEditor';
+import { QuestionToolSettings } from './QuestionTools';
 import { validateChoiceOptions, validateNumericalRange } from './questionHelpers.mjs';
 import QuestionTextBox from '../QuestionTextBox';
 
@@ -17,6 +19,7 @@ const QuestionEditor = ({ question, onSave, onCancel, draft, onDraftChange }) =>
             ? question.options : ['', ''],
     }));
     const currentDraft = draft || localDraft;
+    const independentAnswers = currentDraft.independentAnswers ?? question.independentAnswers ?? false;
     const { text, type, minValue, maxValue, settings, options } = currentDraft;
     const update = (key, value) => {
         const next = { ...currentDraft, [key]: typeof value === 'function' ? value(currentDraft[key]) : value };
@@ -37,7 +40,8 @@ const QuestionEditor = ({ question, onSave, onCancel, draft, onDraftChange }) =>
             setError('Question text cannot be empty.');
             return;
         }
-        const updates = { text: trimmed, type, ...settings };
+        const updates = { text: trimmed, type, ...settings, tools: currentDraft.tools ?? question.tools ?? [] };
+        if (type === QuestionTypes.OPEN_ENDED) updates.independentAnswers = independentAnswers;
         if (type === QuestionTypes.NUMERICAL) {
             const range = validateNumericalRange(minValue, maxValue);
             if (range.error) {
@@ -62,7 +66,8 @@ const QuestionEditor = ({ question, onSave, onCancel, draft, onDraftChange }) =>
                 setError(
                     resp && resp.reason === 'has_responses'
                         ? 'This question already has responses and can no longer be edited.'
-                        : 'Failed to save changes. Please try again.'
+                        : resp?.reason === 'has_notes' ? 'This question has private participant notes and can no longer be edited.'
+                            : 'Failed to save changes. Please try again.'
                 );
             }
             // On success the parent unmounts this editor; nothing more to do here.
@@ -75,8 +80,9 @@ const QuestionEditor = ({ question, onSave, onCancel, draft, onDraftChange }) =>
                 value={text}
                 onChange={(e) => setText(e.target.value)}
                 placeholder="Enter a new question or statement"
-                className="w-full p-3 border border-gray-300 rounded-md mb-4 focus:outline-none focus:ring-2 focus:ring-primary"
+                className="w-full p-3 border border-gray-300 rounded-md mb-1 focus:outline-none focus:ring-2 focus:ring-primary"
             />
+            <p className="mb-4 text-xs text-gray-500">Use *italics* or **bold**.</p>
             <div className="mb-4">
                 <label className="block mb-2">Question Type:</label>
                 <select
@@ -93,6 +99,8 @@ const QuestionEditor = ({ question, onSave, onCancel, draft, onDraftChange }) =>
                 )}
             </div>
             {type === QuestionTypes.OPEN_ENDED && <ResponseSettings {...settings} onChange={(key, value) => setSettings(prev => ({ ...prev, [key]: value }))} />}
+            <QuestionToolSettings type={type} tools={currentDraft.tools ?? question.tools} onChange={tools => update('tools', tools)} />
+            {type === QuestionTypes.OPEN_ENDED && <IndependentAnswerSetting checked={independentAnswers} onChange={value => update('independentAnswers', value)} />}
             {type === QuestionTypes.MULTIPLE_CHOICE && (
                 <ChoiceOptionsEditor options={options} onChange={setOptions} />
             )}
