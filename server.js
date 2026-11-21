@@ -22,7 +22,7 @@ const { initializeDatabase } = require('./database');
 const { slugifyTopic, slugFromTitle, formatTopicTitle, titleFromSlug, suffixSlug, MAX_TOPIC_LENGTH } = require('./discussion-names');
 const { buildSummary, renderReportHtml } = require('./reports');
 const {
-  AGREEMENT_OPTIONS, parseOptions, parseStoredVoteValue,
+  AGREEMENT_OPTIONS, VALID_QUESTION_TYPES, parseOptions, parseStoredVoteValue,
   normalizeQuestionPayload, normalizeNumericalVote, choiceOptionsFor, isValidVote,
 } = require('./question-data');
 
@@ -205,7 +205,7 @@ async function getDiscussionState(topic) {
   const slug = slugifyTopic(topic);
   const result = await pool.query(
     `SELECT d.id, locked, moderator_only_questions, question_approval_required, theme, reaction_keys, results_visibility, listed,
-            display_qr, display_layout, display_sort, display_pinned_first, display_hidden_question_ids,
+            display_qr, display_layout, display_sort, display_question_type, display_pinned_first, display_hidden_question_ids,
             (SELECT q.id FROM questions q
               WHERE q.id = d.display_question_id AND q.discussion_id = d.id AND NOT q.queued) AS display_question_id,
             (SELECT s.id FROM opinion_snapshots s
@@ -228,6 +228,7 @@ async function getDiscussionState(topic) {
       displayLayout: DISPLAY_LAYOUTS[0],
       displayBaseLayout: DISPLAY_LAYOUTS[0],
       displaySort: DISPLAY_SORTS[0],
+      displayQuestionType: 'all',
       displayPinnedFirst: true,
       displayQuestionId: null,
       displayHiddenQuestionIds: [],
@@ -257,6 +258,7 @@ async function getDiscussionState(topic) {
     displayBaseLayout: baseLayout,
     displayLayout: row.display_layout === 'spotlight' && row.display_question_id != null ? 'focus' : baseLayout,
     displaySort: DISPLAY_SORTS.includes(row.display_sort) ? row.display_sort : DISPLAY_SORTS[0],
+    displayQuestionType: VALID_QUESTION_TYPES.has(row.display_question_type) ? row.display_question_type : 'all',
     displayPinnedFirst: row.display_pinned_first !== false,
     // The question a moderator put on the display, or null when they chose
     // none or it has since been deleted.
@@ -966,15 +968,16 @@ io.on('connection', (socket) => {
     try {
       const discussionId = await verifyAdmin(discussionSlug, token);
       if (!discussionId) return refuse('Not authorized to moderate this discussion.');
-      const { qr, layout, sort, pinnedFirst, questionId, beforeSnapshotId, afterSnapshotId } = settings && typeof settings === 'object' ? settings : {};
+      const { qr, layout, sort, questionType, pinnedFirst, questionId, beforeSnapshotId, afterSnapshotId } = settings && typeof settings === 'object' ? settings : {};
       // An id is left out to keep the stored one, null to clear it, or a
       // Postgres integer.
       const validId = id => id === undefined || id === null
         || (Number.isInteger(id) && id > 0 && id <= 2147483647);
-      const given = [qr, layout, sort, pinnedFirst, questionId, beforeSnapshotId, afterSnapshotId].some(value => value !== undefined);
+      const given = [qr, layout, sort, questionType, pinnedFirst, questionId, beforeSnapshotId, afterSnapshotId].some(value => value !== undefined);
       if ((qr !== undefined && !DISPLAY_QR_MODES.includes(qr))
           || (layout !== undefined && !DISPLAY_LAYOUTS.includes(layout))
           || (sort !== undefined && !DISPLAY_SORTS.includes(sort))
+          || (questionType !== undefined && questionType !== 'all' && !VALID_QUESTION_TYPES.has(questionType))
           || (pinnedFirst !== undefined && typeof pinnedFirst !== 'boolean')
           || ![questionId, beforeSnapshotId, afterSnapshotId].every(validId)
           || (beforeSnapshotId != null && afterSnapshotId != null && afterSnapshotId <= beforeSnapshotId)
@@ -1035,14 +1038,15 @@ io.on('connection', (socket) => {
                   display_before_snapshot_id = CASE WHEN $7 THEN $6::int ELSE display_before_snapshot_id END,
                   display_after_snapshot_id = CASE WHEN $9 THEN $8::int ELSE display_after_snapshot_id END,
                   display_sort = COALESCE($10, display_sort),
-                  display_pinned_first = COALESCE($11, display_pinned_first)
+                  display_pinned_first = COALESCE($11, display_pinned_first),
+                  display_question_type = COALESCE($12, display_question_type)
             WHERE id = $3`,
           [
             qr ?? null, layout ?? null, discussionId,
             requestedQuestion ?? null, requestedQuestion !== undefined,
             beforeSnapshotId ?? null, beforeSnapshotId !== undefined,
             afterSnapshotId ?? null, afterSnapshotId !== undefined,
-            sort ?? null, pinnedFirst ?? null,
+            sort ?? null, pinnedFirst ?? null, questionType ?? null,
           ]
         );
         return true;

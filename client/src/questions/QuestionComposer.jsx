@@ -122,8 +122,9 @@ export default function QuestionComposer({ composer, questionCount, isAdmin, mod
                     />
                     <p className="mb-4 text-xs text-gray-500">Use *italics* or **bold**.</p>
                     <div className="mb-4">
-                        <label className="block mb-2">Question Type:</label>
+                        <label htmlFor="new-question-type" className="block mb-2">New question type</label>
                         <select
+                            id="new-question-type"
                             value={questionType}
                             onPointerDown={() => chooseQuestionSetting('typeChosen', true)}
                             onKeyDown={(event) => {

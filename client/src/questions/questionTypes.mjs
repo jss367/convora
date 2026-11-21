@@ -6,6 +6,8 @@ export const QuestionTypes = {
     OPEN_ENDED: 'Open Ended'
 };
 
+export const questionTypeFilterOptions = [['all', 'All types'], ...Object.values(QuestionTypes).map(type => [type, type])];
+
 // Bounds on a Multiple Choice question's options. Mirror the
 // MULTIPLE_CHOICE_* constants in question-data.js, which enforces them.
 export const MULTIPLE_CHOICE_LIMITS = {

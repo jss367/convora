@@ -101,7 +101,9 @@ When creating or editing a question as moderator, you can also enable:
 - **Independent answers:** on open-ended questions, each participant sees only their own responses until a moderator reveals everyone's answers together. The shared display does not show hidden responses.
 
 For already-submitted questions, **Moderator order** is the default discussion
-sort. With the unanswered filter off, moderators can use **Move up** and
+sort. Select **Question type → Open Ended** (or another type) to filter your own
+list. Combine it with **Show questions I haven’t answered**, or select **All types**
+to remove the type filter. With both filters off, moderators can use **Move up** and
 **Move down** on a question, even after it has answers. Pinned questions stay
 above unpinned ones. Before the first move, the list is newest first; after a
 move, new submissions appear below the arranged questions in their pin group.
@@ -198,7 +200,10 @@ Settings are saved for the discussion and do not change anyone’s personal sort
   filling the screen, or **Before and after**, which compares two opinion
   snapshots (see [Show the comparison on the room display](#show-the-comparison-on-the-room-display)).
 
-With **All questions**, **Sort** offers Oldest first (the default), Newest
+With **All questions**, use **Display question type** to show only one type on
+the projector without changing anyone’s personal list. Spotlighting a question
+temporarily overrides the list filter; returning to the list restores it.
+**Sort** offers Oldest first (the default), Newest
 first, Most interesting, Most agreement, Most disagreement and Most controversial.
 **Pinned questions first** is on by default; turn it off to apply the sort across
 all questions. Ranking ties use newest first. Agreement-based sorts use only

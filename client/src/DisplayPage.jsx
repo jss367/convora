@@ -358,6 +358,9 @@ const DisplayPage = () => {
     const ready = discussion !== undefined && questions !== null && state.displayHiddenQuestionIds !== undefined;
     const hiddenIds = new Set(state.displayHiddenQuestionIds);
     const visibleQuestions = (questions || []).filter(question => !hiddenIds.has(question.id));
+    const listQuestions = state.displayQuestionType && state.displayQuestionType !== 'all'
+        ? visibleQuestions.filter(question => question.type === state.displayQuestionType)
+        : visibleQuestions;
 
     let body;
     if (loadFailed && questions === null) {
@@ -387,10 +390,12 @@ const DisplayPage = () => {
         body = <p className="text-4xl text-gray-500">{questions.length ? 'No questions on display' : 'No questions yet'}</p>;
     } else if (focus) {
         body = <QuestionCard question={focusQuestionOf(visibleQuestions, state.displayQuestionId)} reactionKeys={reactionKeys} focus />;
+    } else if (!listQuestions.length) {
+        body = <p className="text-4xl text-gray-500">No {state.displayQuestionType} questions on display</p>;
     } else {
         body = (
             <ol className={`grid grid-cols-1 gap-8 ${qrMode === 'full' ? '2xl:grid-cols-2' : 'xl:grid-cols-2'}`}>
-                {sortDisplayQuestions(visibleQuestions, state.displaySort, state.displayPinnedFirst).map(question => (
+                {sortDisplayQuestions(listQuestions, state.displaySort, state.displayPinnedFirst).map(question => (
                     <li key={question.id} className="contents">
                         <QuestionCard question={question} reactionKeys={reactionKeys} />
                     </li>

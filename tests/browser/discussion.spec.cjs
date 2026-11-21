@@ -135,7 +135,7 @@ test('a response limit blocks additions but still permits editing and deleting',
 test('creators configure response limits and attribution on the unified question type', async ({ page, rooms }) => {
   const room = await rooms.create('Creation settings', 'Yes/No');
   await page.goto(`/discussion/${room.slug}?admin=${room.adminToken}`);
-  const picker = page.getByRole('combobox').filter({ has: page.locator('option[value="Open Ended"]') });
+  const picker = page.getByLabel('New question type', { exact: true });
   await expect(picker.locator('option[value="Brainstorm"]')).toHaveCount(0);
   await picker.selectOption('Open Ended');
   const limit = page.getByLabel('Maximum responses per person (blank for unlimited)');

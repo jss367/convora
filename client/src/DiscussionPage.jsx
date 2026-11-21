@@ -1,5 +1,6 @@
 import { formatPrompt } from './questions/formatPrompt';
 import { plainPrompt } from './questions/promptEmphasis.mjs';
+import { questionTypeFilterOptions } from './questions/questionTypes.mjs';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { QRCodeSVG } from 'qrcode.react';
@@ -63,6 +64,8 @@ const DiscussionPage = () => {
     const [sliderValues, setSliderValues] = useState({});
     const [sortOption, setSortOption] = useState(SortOptions.MODERATOR);
     const [showUnansweredOnly, setShowUnansweredOnly] = useState(false);
+    const [questionTypeFilter, setQuestionTypeFilter] = useState('all');
+    const [filtersOpen, setFiltersOpen] = useState(false);
     const [editingIdentity, setEditingIdentity] = useState(false);
     const [error, setError] = useState(null);
     const [spotlightError, setSpotlightError] = useState(null);
@@ -780,14 +783,11 @@ const DiscussionPage = () => {
         return Math.min(agreementCount, disagreementCount);
     };
 
-    const filterQuestions = (questions) => {
-        if (!showUnansweredOnly) {
-            return questions;
-        }
-        return questions.filter(question =>
-            !question.votes || !question.votes.some(vote => isMyVote(question, vote))
-        );
-    };
+    const filtersActive = questionTypeFilter !== 'all' || showUnansweredOnly;
+    const filterQuestions = questions => questions.filter(question =>
+        (questionTypeFilter === 'all' || question.type === questionTypeFilter)
+        && (!showUnansweredOnly || !question.votes?.some(vote => isMyVote(question, vote)))
+    );
 
     const renderVotingMechanism = (question) => {
         const userVote = question.votes ? question.votes.find(v => isMyVote(question, v)) : null;
@@ -991,7 +991,7 @@ const DiscussionPage = () => {
     // Queued questions reach moderators only (the server sends them to nobody
     // else). Keep the saved agenda order supplied by the server.
     const queuedQuestions = questions.filter(question => question.queued);
-    const canArrangePublished = sortOption === SortOptions.MODERATOR && !showUnansweredOnly;
+    const canArrangePublished = sortOption === SortOptions.MODERATOR && !filtersActive;
     const swapPublishedQuestions = (earlier, later) => {
         socket.emit('swapPublishedQuestions', discussionSlug, earlier.id, later.id, adminToken);
     };
@@ -1691,7 +1691,11 @@ const DiscussionPage = () => {
                 </section>
             )}
             {/* Sorting and filtering controls */}
-            <div className="mb-6 flex justify-between items-center">
+            <button type="button" aria-expanded={filtersOpen} aria-controls="question-filters"
+                onClick={() => setFiltersOpen(open => !open)} className="mb-2 rounded-md border px-3 py-2 sm:hidden">
+                Sort and filter{filtersActive ? ' (filtered)' : ''}
+            </button>
+            <div id="question-filters" className={`mb-6 flex-wrap items-center justify-between gap-3 sm:flex ${filtersOpen ? 'flex' : 'hidden'}`}>
                 <select
                     value={sortOption}
                     aria-label="Sort submitted questions"
@@ -1702,6 +1706,12 @@ const DiscussionPage = () => {
                         <option key={option} value={option}>{option}</option>
                     ))}
                 </select>
+                <label className="flex items-center gap-2">
+                    Question type
+                    <select value={questionTypeFilter} onChange={event => setQuestionTypeFilter(event.target.value)} className="p-2 border border-gray-300 rounded-md">
+                        {questionTypeFilterOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                    </select>
+                </label>
                 <label className="flex items-center">
                     <input
                         type="checkbox"
@@ -1714,10 +1724,13 @@ const DiscussionPage = () => {
             </div>
 
             {/* Questions list */}
+            {filtersActive && orderedQuestions.length === 0 && (
+                <p role="status" className="mb-3 text-gray-600">No questions match your filters.</p>
+            )}
             {isAdmin && orderedQuestions.length > 1 && (
                 <p className="mb-3 text-sm text-gray-600">{canArrangePublished
                     ? 'Use Move up or Move down to change the order participants see. Pinned questions stay first.'
-                    : 'To rearrange questions, choose Moderator order and turn off the unanswered filter.'}</p>
+                    : 'To rearrange questions, choose Moderator order, select All types, and turn off the unanswered filter.'}</p>
             )}
             {orderedQuestions.map((question, index) => {
                 const previous = orderedQuestions[index - 1];
