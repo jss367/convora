@@ -210,6 +210,9 @@ test('distinguishes a proposed characterization from a request for a description
   assert.equal(guessQuestionType('Would you describe the drug as safe and effective?'), 'Yes/No');
   assert.equal(guessQuestionType('Would you describe the guide as clear and useful?'), 'Yes/No');
   assert.equal(guessQuestionType('Would you describe the guide as clear and explain why?'), 'Open Ended');
+  assert.equal(guessQuestionType('Could you describe the incident as clearly and completely?'), 'Open Ended');
+  assert.equal(guessQuestionType('Would you describe the staff as friendly and helpful?'), 'Yes/No');
+  assert.equal(guessQuestionType('Would you describe the course as really useful and engaging?'), 'Yes/No');
   assert.equal(guessQuestionType('Could you describe the pilot as a success for the team and provide details?'), 'Open Ended');
   assert.equal(guessQuestionType('Could you describe the pilot as a success for the team and give your reasons?'), 'Open Ended');
 });

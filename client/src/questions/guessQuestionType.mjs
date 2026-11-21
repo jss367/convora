@@ -9,9 +9,16 @@ const { AGREEMENT, YES_NO, NUMERICAL, MULTIPLE_CHOICE, OPEN_ENDED } = QuestionTy
 const AUXILIARY = '(?:is|are|was|were|do|does|did|will|would|should|can|could|has|have)';
 const WH_WORD = '(?:why|how|what|which|who|whose|where|when)';
 const POLITE_REQUEST = '^(?:can|could|would) you (?:(?:please|briefly|quickly|kindly|just) )*';
-const DESCRIPTIVE_ADJECTIVE = /(?:(?:very|quite|too|rather|more|less|mostly|highly|really|extremely|somewhat|fairly|pretty) )?[a-z][\w-]*(?: (?:to|than|for|in|with|at|on) [\w'-]+(?: [\w'-]+)*)?/;
+const INTENSIFIER = '(?:(?:very|quite|too|rather|more|less|mostly|highly|really|extremely|somewhat|fairly|pretty) )?';
+const ADJECTIVE_COMPLEMENT = "(?: (?:to|than|for|in|with|at|on) [\\w'-]+(?: [\\w'-]+)*)?";
+const DESCRIPTIVE_ADJECTIVE = new RegExp(`${INTENSIFIER}[a-z][\\w-]*${ADJECTIVE_COMPLEMENT}`);
+// Common adjectives that end in -ly, so they are not taken for manner adverbs.
+const LY_ADJECTIVE = '(?:[\\w-]*friendly|costly|timely|lovely|likely|unlikely|lonely|ugly|silly|early|orderly|elderly|lively|deadly|daily|weekly|monthly|yearly|holy|jolly|surly|unruly|chilly|smelly)';
+// In a coordinated characterization, manner adverbs ("as clearly and
+// completely") describe how to write the description, not what it says.
+const COORDINATED_ADJECTIVE = `${INTENSIFIER}(?!(?!${LY_ADJECTIVE}\\b)[a-z][\\w-]*ly\\b)[a-z][\\w-]*${ADJECTIVE_COMPLEMENT}`;
 const NOMINAL_DESCRIPTION = /a (?:success|failure|strength|weakness|problem|priority)(?: (?:for|with|of|in|to) [\w'-]+(?: [\w'-]+)*)?/;
-const PROPOSED_DESCRIPTION = new RegExp(`${POLITE_REQUEST}describe .+? as (?:not )?(?:${DESCRIPTIVE_ADJECTIVE.source}(?: (?:and|or) (?:not )?${DESCRIPTIVE_ADJECTIVE.source})*|${NOMINAL_DESCRIPTION.source})\\s*[?.!"')\\]]*$`);
+const PROPOSED_DESCRIPTION = new RegExp(`${POLITE_REQUEST}describe .+? as (?:not )?(?:${DESCRIPTIVE_ADJECTIVE.source}|${COORDINATED_ADJECTIVE}(?: (?:and|or) (?:not )?${COORDINATED_ADJECTIVE})+|${NOMINAL_DESCRIPTION.source})\\s*[?.!"')\\]]*$`);
 // Explicit follow-up requests that keep a proposed description open-ended.
 const FOLLOW_UP_REQUEST = '(?:explain|elaborate on|tell (?:us|me)|why|provide|give|share|say|list|add|include)';
 const TELL_OBJECT = '(?:a|an|the|your|some|any|something|anything|one)';
