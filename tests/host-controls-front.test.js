@@ -26,6 +26,7 @@ test('the editor draft survives being remounted from the queue into the publishe
   const question = { id: 7, text: 'Fictional saved text', type: 'Agreement', queued: true };
   function mount(currentQuestion) {
     const context = vm.createContext({ MULTIPLE_CHOICE_LIMITS: { MIN_OPTIONS: 2 },
+      useRef: current => ({ current }),
       useState: initial => { let value = typeof initial === 'function' ? initial() : initial;
         return [value, update => { value = typeof update === 'function' ? update(value) : update; }]; },
     });
