@@ -284,6 +284,7 @@ const DISPLAY_SORTS = ['oldest', 'newest', 'interesting', 'agreement', 'disagree
 const MODERATOR_ORDER_SQL = 'q.published_position ASC NULLS LAST, q.created_at DESC NULLS LAST, q.id DESC';
 
 const emitDiscussionState = createDiscussionStateSender(getDiscussionState, audience);
+const emitDiscussion = createDiscussionStateSender(getDiscussionBySlug, audience, 'discussion');
 
 // When participants may see the results of Agreement, Yes/No, Multiple Choice
 // and Numerical questions (the tallied types, OPINION_TYPES). 'after_vote' is the default:
@@ -498,9 +499,8 @@ io.on('connection', (socket) => {
     socket.join(displayRoom(discussionSlug));
     socket.data.display = discussionSlug;
     try {
-      const discussion = await getDiscussionBySlug(discussionSlug);
+      await emitDiscussion(discussionSlug, socket, current);
       if (!current()) return;
-      socket.emit('discussion', discussion);
       await emitQuestions(discussionSlug, socket, current);
       await emitDiscussionState(discussionSlug, socket, current);
       if (!current()) return;
@@ -551,9 +551,8 @@ io.on('connection', (socket) => {
         socket.emit('discussionDeleted', { slug: discussionSlug });
         return;
       }
-      const discussion = await getDiscussionBySlug(discussionSlug);
+      await emitDiscussion(discussionSlug, socket, current);
       if (!current()) return;
-      socket.emit('discussion', discussion);
       await emitQuestions(discussionSlug, socket, current);
       await emitDiscussionState(discussionSlug, socket, current);
     } catch (error) {
@@ -638,7 +637,7 @@ io.on('connection', (socket) => {
         reply({ added: false, reason: added.reason });
         return;
       }
-      audience(discussionSlug).emit('discussion', await getDiscussionBySlug(discussionSlug));
+      await emitDiscussion(discussionSlug);
       await emitQuestions(discussionSlug);
       reply(added.participant_suggested ? { added: true, suggested: true, queued: true } : { added: true });
     } catch (error) {
@@ -765,7 +764,7 @@ io.on('connection', (socket) => {
       const token = await claimModerator(discussionSlug);
       if (token) {
         if (typeof cb === 'function') cb({ success: true, token });
-        audience(discussionSlug).emit('discussion', await getDiscussionBySlug(discussionSlug));
+        await emitDiscussion(discussionSlug);
         await emitDiscussionState(discussionSlug);
         // This socket now holds the moderator token, so it gets the moderator's
         // view of the questions (see checkModerator).
@@ -1210,7 +1209,7 @@ io.on('connection', (socket) => {
         reply({ updated: false, reason: outcome });
         return;
       }
-      audience(discussionSlug).emit('discussion', await getDiscussionBySlug(discussionSlug));
+      await emitDiscussion(discussionSlug);
       reply({ updated: true });
     } catch (error) {
       // discussions.topic is unique (discussions_topic_unique); renaming to an
@@ -2011,7 +2010,7 @@ app.delete('/api/discussions/:topic', async (req, res) => {
     await client.query('DELETE FROM discussions WHERE id = $1', [id]);
     await client.query('COMMIT');
     audience(slug).emit('discussionDeleted', { slug });
-    audience(slug).emit('discussion', null);
+    emitDiscussion.broadcastValue(slug, null);
     audience(slug).emit('questions', []);
     res.json({ deleted: true });
   } catch (error) {

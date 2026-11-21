@@ -2,6 +2,27 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { createDiscussionStateSender } = require('../discussion-state-sender');
 
+for (const change of ['rename', 'delete']) {
+  test(`a late discussion read cannot undo a ${change} on the display`, async () => {
+    const reads = [];
+    const events = [];
+    const screen = { emit: (event, value) => events.push([event, value]) };
+    const send = createDiscussionStateSender(() => new Promise(resolve => reads.push(resolve)), () => screen, 'discussion');
+    const joining = send('room', screen);
+    const value = change === 'rename' ? { topic: 'New title' } : null;
+    if (change === 'rename') {
+      const renamed = send('room');
+      reads[1](value);
+      await renamed;
+    } else {
+      send.broadcastValue('room', null);
+    }
+    reads[0]({ topic: 'Old title' });
+    await joining;
+    assert.deepEqual(events, [['discussion', value]]);
+  });
+}
+
 test('a slow broadcast uses the newer targeted state for every viewer', async () => {
   const pending = [];
   const displayStates = [];
