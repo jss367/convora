@@ -134,7 +134,7 @@ test('a moderator grant and revocation update controls and stored access live', 
     await participant.getByPlaceholder('Enter a response').fill('Participant present');
     await participant.getByRole('button', { name: 'Add Response', exact: true }).click();
     await expect(page.getByRole('listitem').getByText('Participant present', { exact: true })).toBeVisible();
-    await page.getByRole('switch', { name: 'Only moderators add questions', exact: true }).click();
+    await page.getByRole('combobox', { name: 'Question posting' }).selectOption('moderator_only');
     await expect(participant.getByRole('button', { name: 'Add Question', exact: true })).toHaveCount(0);
     await page.getByRole('button', { name: 'Manage participants', exact: true }).click();
     await expect(page.getByRole('button', { name: 'Make moderator', exact: true })).toHaveCount(1);

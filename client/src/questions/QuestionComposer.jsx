@@ -4,12 +4,14 @@ import PropTypes from 'prop-types';
 import { useModalDialog } from '../hooks/useModalDialog';
 import QuestionTextBox from '../QuestionTextBox';
 import ChoiceOptionsEditor from './ChoiceOptionsEditor';
+import { QuestionToolSettings } from './QuestionTools';
 import ResponseSettings from './ResponseSettings';
+import IndependentAnswerSetting from './IndependentAnswerSetting';
 import { QuestionTypes, QuestionTypeDescriptions } from './config';
 import { guessQuestionType } from './guessQuestionType.mjs';
 import { composerReducer, createQuestionSubmission, initialComposerState, isComposerCollapsed } from './composerLifecycle.mjs';
 
-export function useQuestionComposer({ socket, discussionSlug, adminToken, setError }) {
+export function useQuestionComposer({ socket, discussionSlug, adminToken, setError, approvalRequired }) {
     const [state, dispatch] = useReducer(composerReducer, undefined, initialComposerState);
     const [send] = useState(() => createQuestionSubmission(dispatch, setError));
     const onQuestionsLoaded = useCallback(() => dispatch({ type: 'questionsLoaded' }), []);
@@ -19,11 +21,11 @@ export function useQuestionComposer({ socket, discussionSlug, adminToken, setErr
     useEffect(() => { dispatch({ type: 'roomChanged' }); }, [discussionSlug]);
     return {
         state, dispatch, onQuestionsLoaded, onSimilarQuestion, similarDialogRef, dismissSimilarPrompt,
-        submit: (force = false) => send(state, { socket, discussionSlug, adminToken }, force),
+        submit: (force = false) => send(state, { socket, discussionSlug, adminToken, approvalRequired }, force),
     };
 }
 
-export default function QuestionComposer({ composer, questionCount, isAdmin, moderatorOnly, locked }) {
+export default function QuestionComposer({ composer, questionCount, isAdmin, moderatorOnly, locked, approvalRequired }) {
     const { state, dispatch, submit, similarDialogRef, dismissSimilarPrompt } = composer;
     const { draft: questionDraft, queueNewQuestions, similarPrompt } = state;
     const { text: newQuestion, type: questionType, minValue, maxValue, options: choiceOptions } = questionDraft;
@@ -68,7 +70,7 @@ export default function QuestionComposer({ composer, questionCount, isAdmin, mod
                                 onClick={() => submit(true)}
                                 className="px-4 py-2 bg-gray-200 rounded hover:bg-gray-300"
                             >
-                                Post anyway
+                                {approvalRequired ? 'Suggest anyway' : 'Post anyway'}
                             </button>
                         </div>
                     </div>
@@ -84,6 +86,7 @@ export default function QuestionComposer({ composer, questionCount, isAdmin, mod
                 </div>
             )}
 
+            {state.suggestionSent && <p role="status" className="mb-3 text-indigo-800">Suggestion sent to the moderators for review.</p>}
             {canAdd && composerCollapsed && (
                 <button
                     type="button"
@@ -95,7 +98,7 @@ export default function QuestionComposer({ composer, questionCount, isAdmin, mod
                     }}
                     className="sm:hidden w-full mb-4 py-2 rounded-md border border-primary text-primary font-medium hover:bg-gray-50"
                 >
-                    + Add a statement
+                    {approvalRequired ? '+ Suggest a question' : '+ Add a statement'}
                 </button>
             )}
             {canAdd && (
@@ -106,6 +109,7 @@ export default function QuestionComposer({ composer, questionCount, isAdmin, mod
                     onFocus={() => dispatch({ type: 'open' })}
                     className={`${composerCollapsed ? 'hidden sm:block ' : ''}bg-white shadow-lg rounded-lg p-6 mb-8`}
                 >
+                    {approvalRequired && <p className="mb-3 text-sm text-indigo-800">Only moderators see your suggestion until they approve and publish it.</p>}
                     <QuestionTextBox
                         ref={questionInputRef}
                         value={newQuestion}
@@ -148,6 +152,8 @@ export default function QuestionComposer({ composer, questionCount, isAdmin, mod
                         )}
                     </div>
                     {questionType === QuestionTypes.OPEN_ENDED && <ResponseSettings maxResponses={questionDraft.maxResponses} showAttribution={questionDraft.showAttribution} onChange={chooseQuestionSetting} />}
+                    {isAdmin && <QuestionToolSettings type={questionType} tools={questionDraft.tools} onChange={tools => chooseQuestionSetting('tools', tools)} />}
+                    {isAdmin && questionType === QuestionTypes.OPEN_ENDED && <IndependentAnswerSetting checked={questionDraft.independentAnswers} onChange={value => chooseQuestionSetting('independentAnswers', value)} />}
                     {questionType === QuestionTypes.MULTIPLE_CHOICE && (
                         <ChoiceOptionsEditor
                             options={choiceOptions}
@@ -194,7 +200,7 @@ export default function QuestionComposer({ composer, questionCount, isAdmin, mod
                         type="submit"
                         className="w-full bg-primary text-white py-3 rounded-md hover:bg-opacity-90 transition duration-300"
                     >
-                        {isAdmin && queueNewQuestions ? 'Add to Queue' : 'Add Question'}
+                        {approvalRequired ? 'Suggest Question' : isAdmin && queueNewQuestions ? 'Add to Queue' : 'Add Question'}
                     </button>
                 </form>
             )}
@@ -206,5 +212,6 @@ QuestionComposer.propTypes = {
     questionCount: PropTypes.number.isRequired,
     isAdmin: PropTypes.bool.isRequired,
     moderatorOnly: PropTypes.bool.isRequired,
+    approvalRequired: PropTypes.bool,
     locked: PropTypes.bool.isRequired,
 };

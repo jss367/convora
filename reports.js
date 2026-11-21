@@ -222,6 +222,7 @@ function buildSummary(discussion, questions) {
         // its results, so they stay; only the counts are withheld.
         ...(question.type === 'Multiple Choice' ? { options: choiceOptionsFor(question) } : {}),
         resultsHidden: true,
+        ...(question.independentAnswers ? { independentAnswers: true } : {}),
       };
     }
     const votes = question.votes || [];
@@ -423,7 +424,7 @@ async function renderReportHtml(summary) {
         <td>-</td>
         <td class="muted">${Array.isArray(question.options) && question.options.length
           ? `Options: ${escapeHtml(question.options.join(' / '))}. Results hidden until you vote`
-          : 'Hidden until you vote'}</td>
+          : question.independentAnswers ? 'Answers hidden until moderator reveal' : 'Hidden until you vote'}</td>
       </tr>`;
     }
     const label = question.label ? `<span class="pill">${escapeHtml(question.label)}</span>` : '';
@@ -486,7 +487,7 @@ async function renderReportHtml(summary) {
 
     <section>
       <h2>Snapshot</h2>
-      ${summary.counts.hiddenResults ? `<p class="muted">Results for ${summary.counts.hiddenResults} ${summary.counts.hiddenResults === 1 ? 'question is' : 'questions are'} hidden until you vote and are left out of this report.</p>` : ''}
+      ${summary.counts.hiddenResults ? `<p class="muted">Results for ${summary.counts.hiddenResults} ${summary.counts.hiddenResults === 1 ? 'question is' : 'questions are'} hidden${summary.questions.some(question => question.independentAnswers) ? '' : ' until you vote'} and are left out of this report.</p>` : ''}
       <div class="grid">
         <div class="metric">Questions<strong>${summary.counts.questions}</strong></div>
         <div class="metric">Responses<strong>${summary.counts.responses}</strong></div>
