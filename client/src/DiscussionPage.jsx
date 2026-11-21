@@ -453,9 +453,7 @@ const DiscussionPage = () => {
         socket.emit('setPinned', discussionSlug, questionId, !pinned, adminToken);
     };
 
-    // Put one question on the room display, in its one-question view, or stop
-    // showing it there (the display then falls back to the first pinned or the
-    // newest question).
+    // Spotlight one question, or clear the spotlight to resume the room's layout.
     const handleShowOnDisplay = (questionId) => {
         socket.emit('setDisplaySettings', discussionSlug, { questionId }, adminToken);
     };
@@ -2107,6 +2105,11 @@ const DiscussionPage = () => {
                 // live results, or its before-and-after comparison.
                 const onDisplay = ['focus', 'compare'].includes(discussionState.displayLayout)
                     && discussionState.displayQuestionId === question.id;
+                const returnLabel = {
+                    all: 'Back to all questions',
+                    focus: 'Resume automatic selection',
+                    compare: 'Back to full comparison',
+                }[discussionState.displayBaseLayout || discussionState.displayLayout];
                 return (
                 <div key={question.id} className="bg-white shadow-lg rounded-lg p-6 mb-6">
                     {isEditing ? (
@@ -2175,15 +2178,12 @@ const DiscussionPage = () => {
                                 )}
                                 {!hiddenOnDisplay && <button
                                     onClick={() => handleShowOnDisplay(onDisplay ? null : question.id)}
-                                    aria-pressed={onDisplay}
-                                    title={onDisplay
-                                        ? 'Stop showing this question on its own on the room display'
-                                        : 'Show this question on its own on the room display'}
+                                    title={onDisplay ? returnLabel : 'Show this question on its own on the room display'}
                                     className={`text-xs px-2 py-1 rounded border border-indigo-300 ${onDisplay
                                         ? 'bg-indigo-600 text-white hover:bg-indigo-700'
                                         : 'text-indigo-700 hover:bg-indigo-50'}`}
                                 >
-                                    {onDisplay ? 'On display' : 'Show on display'}
+                                    {onDisplay ? returnLabel : 'Show on display'}
                                 </button>}
                                 <button
                                     onClick={() => socket.emit('setQuestionHiddenOnDisplay', discussionSlug, question.id, !hiddenOnDisplay, adminToken)}

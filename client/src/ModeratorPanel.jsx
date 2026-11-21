@@ -85,7 +85,7 @@ function SelectSetting({ label, title, value, onChange, options }) {
     return (
         <label className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
             <span className="font-medium text-gray-800">{label}</span>
-            <select value={value} onChange={(e) => onChange(e.target.value)} title={title} className={SELECT_CLASS}>
+            <select aria-label={label} value={value} onChange={(e) => onChange(e.target.value)} title={title} className={SELECT_CLASS}>
                 {options.map(([optionValue, optionLabel]) => (
                     <option key={optionValue} value={optionValue}>{optionLabel}</option>
                 ))}

@@ -34,7 +34,7 @@ test('a participant can answer a numerical question with a decimal', async ({ pa
   await expect(page.getByText(/1 response · average/)).toContainText('33.3');
 });
 
-test('a moderator queues a question, publishes it, and chooses what the room display shows', async ({ page, browser, rooms }) => {
+test('a moderator queues a question, publishes it, and chooses what the room display shows', async ({ page, browser, rooms, request }) => {
   const room = await rooms.create('Agenda', 'Agreement');
   const moderatorContext = await browser.newContext();
   const displayContext = await browser.newContext();
@@ -70,7 +70,8 @@ test('a moderator queues a question, publishes it, and chooses what the room dis
 
     // One click puts a question on the screen, on its own.
     await moderator.getByRole('button', { name: 'Show on display', exact: true }).click();
-    await expect(moderator.getByRole('button', { name: 'On display', exact: true, pressed: true })).toBeVisible();
+    const backToList = moderator.getByRole('button', { name: 'Back to all questions', exact: true });
+    await expect(backToList).toBeVisible();
     await expect(moderator.getByLabel('Layout', { exact: true })).toHaveValue('focus');
     await expect(shown).toHaveCount(1);
     await expect(shown.getByRole('heading', { name: 'Agenda question' })).toBeVisible();
@@ -88,13 +89,32 @@ test('a moderator queues a question, publishes it, and chooses what the room dis
     // Move the screen on to it.
     await moderator.getByRole('button', { name: 'Show on display', exact: true }).click();
     await expect(shown.getByRole('heading', { name: 'Queued agenda item' })).toBeVisible();
-    await expect(moderator.getByRole('button', { name: 'On display', exact: true, pressed: true })).toHaveCount(1);
+    await expect(backToList).toHaveCount(1);
     await expect(moderator.getByRole('button', { name: 'Show on display', exact: true })).toHaveCount(1);
 
-    // Stop showing it: no question is marked, and the display stays on one question.
-    await moderator.getByRole('button', { name: 'On display', exact: true }).click();
+    await moderator.reload();
+    await backToList.click();
     await expect(moderator.getByRole('button', { name: 'Show on display', exact: true })).toHaveCount(2);
+    await expect(shown).toHaveCount(2);
+
+    const layout = moderator.getByLabel('Layout', { exact: true });
+    await expect(layout).toHaveValue('all');
+    await layout.selectOption('focus');
     await expect(shown).toHaveCount(1);
+    const spotlightOlder = moderator.getByRole('button', { name: 'Show on display', exact: true }).last();
+    await spotlightOlder.click();
+    await expect(shown.getByRole('heading', { name: 'Agenda question' })).toBeVisible();
+    await moderator.getByRole('button', { name: 'Resume automatic selection' }).click();
+    await expect(shown.getByRole('heading', { name: 'Queued agenda item' })).toBeVisible();
+
+    expect((await request.post(`/api/discussions/${room.slug}/snapshots`, { data: { name: 'Baseline', adminToken: room.adminToken } })).ok()).toBeTruthy();
+    await layout.selectOption('compare');
+    const compared = display.getByTestId('display-comparison');
+    await expect(compared).toHaveCount(2);
+    await spotlightOlder.click();
+    await expect(compared).toHaveCount(1);
+    await moderator.getByRole('button', { name: 'Back to full comparison' }).click();
+    await expect(compared).toHaveCount(2);
   } finally {
     await moderatorContext.close();
     await displayContext.close();
