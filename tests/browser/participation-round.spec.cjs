@@ -15,8 +15,8 @@ test('revealing and resetting a round protects the next group’s answers and cl
     const answer = async text => {
       await guest.getByPlaceholder('Enter a response').fill(text);
       await guest.getByRole('button', { name: 'Add Response', exact: true }).click();
-      await expect(guest.getByText(text, { exact: true })).toBeVisible();
-      await expect(host.getByText(text, { exact: true })).toBeVisible();
+      await expect(guest.getByRole('listitem').getByText(text, { exact: true })).toBeVisible();
+      await expect(host.getByRole('listitem').getByText(text, { exact: true })).toBeVisible();
     };
     await answer('First group idea');
     await guest.getByRole('button', { name: 'Raise hand to speak' }).click();

@@ -1,5 +1,5 @@
 import PropTypes from 'prop-types';
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useId, useRef } from 'react';
 import { MULTIPLE_CHOICE_LIMITS } from './config';
 
 // The answer options of a Multiple Choice question being written or edited: one
@@ -10,12 +10,14 @@ import { MULTIPLE_CHOICE_LIMITS } from './config';
 // be cleaned up.
 //
 // Keyboard: Enter in a filled box moves to the next one, adding it if needed,
-// so a list can be typed without the mouse. Enter in an empty box is left
-// alone (in the Add Question form it submits). Backspace in an empty spare box
+// so a list can be typed without the mouse. Finishing the list focuses the
+// primary action on key release. Backspace in an empty spare box
 // removes it and returns to the one before.
-const ChoiceOptionsEditor = ({ options, onChange }) => {
+const ChoiceOptionsEditor = ({ options, onChange, onFinish }) => {
     const { MIN_OPTIONS, MAX_OPTIONS, MAX_OPTION_LENGTH } = MULTIPLE_CHOICE_LIMITS;
     const inputRefs = useRef([]);
+    const hintId = useId();
+    const finishOnRelease = useRef(false);
     // The box to focus once a change to the list has rendered.
     const pendingFocus = useRef(null);
     // The key whose press just moved focus to another box. While it is still
@@ -47,13 +49,12 @@ const ChoiceOptionsEditor = ({ options, onChange }) => {
             return;
         }
         const empty = options[index].trim() === '';
-        if (event.key === 'Enter' && !empty) {
+        if (event.key === 'Enter') {
             const isLast = index === options.length - 1;
-            // A full list has nowhere further to go; let Enter do its default.
-            if (isLast && options.length >= MAX_OPTIONS) return;
             event.preventDefault();
             heldKey.current = event.key;
-            if (isLast) addOption();
+            if (empty || (isLast && options.length >= MAX_OPTIONS)) finishOnRelease.current = true;
+            else if (isLast) addOption();
             else inputRefs.current[index + 1]?.focus();
         } else if (event.key === 'Backspace' && options[index] === '' && options.length > MIN_OPTIONS) {
             // Holding Backspace to clear a box must not also eat the row.
@@ -66,8 +67,9 @@ const ChoiceOptionsEditor = ({ options, onChange }) => {
     };
 
     return (
-        <fieldset className="mb-4">
-            <legend className="block mb-2">Answer options:</legend>
+        <fieldset className="mb-4" aria-describedby={hintId}>
+            <legend className="block mb-1">Answer options ({MIN_OPTIONS}–{MAX_OPTIONS})</legend>
+            <p id={hintId} className="mb-2 text-sm text-gray-500">Press Enter for the next option. Blank options are ignored.</p>
             <div className="space-y-2">
                 {options.map((option, index) => (
                     <div key={index} className="flex gap-2">
@@ -78,6 +80,13 @@ const ChoiceOptionsEditor = ({ options, onChange }) => {
                             maxLength={MAX_OPTION_LENGTH}
                             onChange={(e) => setOption(index, e.target.value)}
                             onKeyDown={(e) => handleKeyDown(e, index)}
+                            onKeyUp={(event) => {
+                                if (event.key === 'Enter' && finishOnRelease.current) {
+                                    finishOnRelease.current = false;
+                                    onFinish();
+                                }
+                            }}
+                            onBlur={() => { finishOnRelease.current = false; }}
                             placeholder={`Option ${index + 1}`}
                             aria-label={`Answer option ${index + 1}`}
                             className="flex-1 min-w-0 p-3 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary"
@@ -113,6 +122,7 @@ const ChoiceOptionsEditor = ({ options, onChange }) => {
 ChoiceOptionsEditor.propTypes = {
     options: PropTypes.arrayOf(PropTypes.string).isRequired,
     onChange: PropTypes.func.isRequired,
+    onFinish: PropTypes.func.isRequired,
 };
 
 export default ChoiceOptionsEditor;

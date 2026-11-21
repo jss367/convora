@@ -231,9 +231,24 @@ test('a Multiple Choice question is written with its own options, validated, vot
     await page.getByRole('button', { name: '+ Add option' }).click();
     await expect(option3).toBeFocused();
     await option3.fill('About the same');
-    // A spare option left empty is dropped; Enter in it submits the question.
     await option3.press('Enter');
-    await page.getByRole('textbox', { name: 'Answer option 4' }).press('Enter');
+    const option4 = page.getByRole('textbox', { name: 'Answer option 4' });
+    await option4.press('Enter');
+    await expect(addQuestion).toBeFocused();
+    await expect(option3).toHaveValue('About the same');
+
+    for (const index of [4, 5, 6]) {
+      const option = page.getByRole('textbox', { name: `Answer option ${index}` });
+      await option.fill(`Choice ${index}`);
+      if (index < 6) await option.press('Enter');
+    }
+    await hold('Enter');
+    await expect(addQuestion).toBeFocused();
+    await expect(option4).toHaveValue('Choice 4');
+    await option4.fill('');
+    await option4.press('Enter');
+    await expect(addQuestion).toBeFocused();
+    await page.keyboard.press('Enter');
     await expect(page.getByRole('heading', { name: question, exact: true })).toBeVisible();
     // The composer resets to a blank form with two empty options.
     await expect(page.getByPlaceholder('Enter a new question or statement').first()).toHaveValue('');
