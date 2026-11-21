@@ -2,6 +2,26 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { createDiscussionStateSender } = require('../discussion-state-sender');
 
+test('a slow broadcast uses the newer targeted state for every viewer', async () => {
+  const pending = [];
+  const displayStates = [];
+  const participantStates = [];
+  const display = { emit: (_, state) => displayStates.push(state) };
+  const audience = { emit: (event, state) => {
+    display.emit(event, state);
+    participantStates.push(state);
+  } };
+  const send = createDiscussionStateSender(() => new Promise(resolve => pending.push(resolve)), () => audience);
+  const broadcast = send('room');
+  const refresh = send('room', display);
+  pending[1]('moderator');
+  await refresh;
+  pending[0]('oldest');
+  await broadcast;
+  assert.deepEqual(displayStates, ['moderator', 'moderator']);
+  assert.deepEqual(participantStates, ['moderator']);
+});
+
 test('a delivered live settings change supersedes an older display refresh and broadcast', async () => {
   const pending = [];
   const delivered = [];
