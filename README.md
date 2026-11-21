@@ -154,13 +154,14 @@ sitting, so nobody has to touch the shared screen:
   filling the screen, or **Before and after**, which compares two opinion
   snapshots (see [Show the comparison on the room display](#show-the-comparison-on-the-room-display)).
 
-To choose the one question, click **Show on display** on it from your own
-moderator page. The display switches to the one-question view if it was listing
-every question, and the button reads **On display** on the question the room is
-looking at. The question stays on the screen until you choose another one, so a
-new question from a participant does not replace it. Click **On display** to
-stop showing it; the display then shows the first pinned question, or the
-newest one when nothing is pinned. It does the same if you delete the question.
+Click **Show on display** on your moderator page to spotlight a question. Choose
+another question to move the spotlight; new participant questions won't move it.
+To end the spotlight, click the same button again. Its label tells you what
+the room will see: **Back to all questions** restores the list, **Resume automatic
+selection** returns the one-question layout to the first pinned question (or
+the newest if none are pinned), and **Back to full comparison** shows every
+question in the comparison again. Deleting the spotlighted question also
+restores the underlying view.
 
 When you’re done discussing a question, click **Hide from display** on its
 moderator card. It disappears from all room display layouts, but participants

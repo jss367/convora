@@ -201,6 +201,7 @@ async function getDiscussionState(topic) {
       listed: false,
       displayQr: DISPLAY_QR_MODES[0],
       displayLayout: DISPLAY_LAYOUTS[0],
+      displayBaseLayout: DISPLAY_LAYOUTS[0],
       displayQuestionId: null,
       displayHiddenQuestionIds: [],
       displayBeforeSnapshotId: null,
@@ -208,6 +209,7 @@ async function getDiscussionState(topic) {
     };
   }
   const row = result.rows[0];
+  const baseLayout = DISPLAY_LAYOUTS.includes(row.display_layout) ? row.display_layout : 'all';
   return {
     locked: row.locked === true,
     moderatorOnly: row.moderator_only_questions === true,
@@ -220,7 +222,8 @@ async function getDiscussionState(topic) {
     resultsVisibility: resolveResultsVisibility(row.results_visibility),
     listed: row.listed === true,
     displayQr: DISPLAY_QR_MODES.includes(row.display_qr) ? row.display_qr : DISPLAY_QR_MODES[0],
-    displayLayout: DISPLAY_LAYOUTS.includes(row.display_layout) ? row.display_layout : DISPLAY_LAYOUTS[0],
+    displayBaseLayout: baseLayout,
+    displayLayout: row.display_layout === 'spotlight' && row.display_question_id != null ? 'focus' : baseLayout,
     // The question a moderator put on the display, or null when they chose
     // none or it has since been deleted.
     displayQuestionId: row.display_question_id ?? null,
@@ -1003,10 +1006,11 @@ io.on('connection', (socket) => {
       );
       await pool.query('DELETE FROM questions WHERE id = $1 AND discussion_id = $2', [questionId, discussionId]);
       await emitQuestions(discussionSlug);
-      // If this was the question chosen for the room display, the display goes
-      // back to the first pinned or newest question.
+      // Removing the spotlighted question also restores the underlying layout.
       const cleared = await pool.query(
-        'UPDATE discussions SET display_question_id = NULL WHERE id = $1 AND display_question_id = $2',
+        `UPDATE discussions SET display_question_id = NULL,
+            display_layout = CASE WHEN display_layout = 'spotlight' THEN 'all' ELSE display_layout END
+          WHERE id = $1 AND display_question_id = $2`,
         [discussionId, questionId]
       );
       if (cleared.rowCount > 0) await emitDiscussionState(discussionSlug);
@@ -1018,9 +1022,8 @@ io.on('connection', (socket) => {
 
   // Moderator-only: change how the room display presents itself. Any field may
   // be left out to keep its current value. `questionId` is the question to show
-  // in the one-question view, or null to go back to the first pinned or newest
-  // question; choosing a question while the display lists every question also
-  // switches it to the one-question view, unless `layout` says otherwise.
+  // on its own, or null to resume the layout. Internally 'spotlight' is an
+  // all-questions layout temporarily showing one question, not a layout option.
   // `beforeSnapshotId` and `afterSnapshotId` are the opinion snapshots the
   // before-and-after view compares, or null to let the display pick the first
   // and the latest. The settings ride discussionState, which the display's room
@@ -1082,7 +1085,10 @@ io.on('connection', (socket) => {
         await client.query(
           `UPDATE discussions
               SET display_qr = COALESCE($1, display_qr),
-                  display_layout = COALESCE($2, CASE WHEN $4::int IS NOT NULL AND display_layout = 'all' THEN 'focus' ELSE display_layout END),
+                  display_layout = COALESCE($2, CASE
+                    WHEN $4::int IS NOT NULL AND display_layout = 'all' THEN 'spotlight'
+                    WHEN $5 AND $4::int IS NULL AND display_layout = 'spotlight' THEN 'all'
+                    ELSE display_layout END),
                   display_question_id = CASE WHEN $5 THEN $4::int ELSE display_question_id END,
                   display_before_snapshot_id = CASE WHEN $7 THEN $6::int ELSE display_before_snapshot_id END,
                   display_after_snapshot_id = CASE WHEN $9 THEN $8::int ELSE display_after_snapshot_id END
@@ -1116,6 +1122,7 @@ io.on('connection', (socket) => {
             WHEN NOT $3 THEN array_remove(display_hidden_question_ids, $2)
             WHEN $2 = ANY(display_hidden_question_ids) THEN display_hidden_question_ids
             ELSE array_append(display_hidden_question_ids, $2) END,
+          display_layout = CASE WHEN $3 AND display_question_id = $2 AND display_layout = 'spotlight' THEN 'all' ELSE display_layout END,
           display_question_id = CASE WHEN $3 AND display_question_id = $2 THEN NULL ELSE display_question_id END
          WHERE id = $1 AND EXISTS (SELECT 1 FROM questions WHERE discussion_id = $1 AND id = $2 AND NOT queued)`,
         [discussionId, questionId, hidden]
