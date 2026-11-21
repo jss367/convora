@@ -42,6 +42,8 @@ const CASES = {
     'Which option would reassure you most?',
     'Which **option** would reassure you *most*?',
     'Which of these would reassure you most?',
+    'Which one of these would reassure you most?',
+    'Which one of the following choices could reassure you the most?',
     'Which of these options would reassure you most?',
     'Which option, if any, would reassure you most?',
     'Which would you prefer?',
