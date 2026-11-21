@@ -43,7 +43,7 @@ for (const [name, draft, message] of [
   ['blank text', { text: '   ' }, /cannot be empty/],
   ['invalid bounds', { type: 'Numerical', minValue: '' }, /whole numbers/],
   ['reversed bounds', { type: 'Numerical', minValue: 10, maxValue: 1 }, /less than maximum/],
-  ['empty choices', { type: 'Multiple Choice' }, /Fill in every/],
+  ['empty choices', { type: 'Multiple Choice' }, /Fill in at least 2/],
   ['duplicate choices', { type: 'Multiple Choice', options: [' A ', 'a'] }, /must be different/],
 ]) {
   test(`validation keeps ${name} on the form without emitting`, async () => {

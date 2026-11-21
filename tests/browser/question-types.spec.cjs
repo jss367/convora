@@ -198,18 +198,42 @@ test('a Multiple Choice question is written with its own options, validated, vot
     await page.getByRole('combobox').filter({ has: page.locator('option[value="Multiple Choice"]') })
       .selectOption('Multiple Choice');
 
-    // Two empty options to start; blanks and repeats are caught before sending.
+    // Two empty options to start; too few and repeats are caught before sending.
     const addQuestion = page.getByRole('button', { name: 'Add Question', exact: true });
     await addQuestion.click();
-    await expect(page.getByText('Fill in every answer option, or remove the empty ones.', { exact: true })).toBeVisible();
+    await expect(page.getByText('Fill in at least 2 answer options.', { exact: true })).toBeVisible();
     await page.getByRole('textbox', { name: 'Answer option 1' }).fill('Higher');
     await page.getByRole('textbox', { name: 'Answer option 2' }).fill(' higher ');
     await addQuestion.click();
     await expect(page.getByText('Each answer option must be different.', { exact: true })).toBeVisible();
     await page.getByRole('textbox', { name: 'Answer option 2' }).fill('Lower');
+    // Enter in the last filled option adds the next one and moves into it.
+    const option3 = page.getByRole('textbox', { name: 'Answer option 3' });
+    // Holding the key does not carry on into the new option and submit it.
+    const hold = async (key) => {
+      await page.keyboard.down(key);
+      await page.keyboard.down(key);
+      await page.keyboard.down(key);
+      await page.keyboard.up(key);
+    };
+    await page.getByRole('textbox', { name: 'Answer option 2' }).focus();
+    await hold('Enter');
+    await expect(option3).toBeFocused();
+    await expect(page.getByRole('textbox', { name: 'Answer option 4' })).toHaveCount(0);
+    await expect(page.getByRole('heading', { name: question, exact: true })).toHaveCount(0);
+    // Backspace in the empty spare option removes it and steps back, and
+    // holding it does not go on to delete the option before.
+    await hold('Backspace');
+    await expect(option3).toHaveCount(0);
+    await expect(page.getByRole('textbox', { name: 'Answer option 2' })).toBeFocused();
+    await expect(page.getByRole('textbox', { name: 'Answer option 2' })).toHaveValue('Lower');
+    // The button also moves into the option it adds.
     await page.getByRole('button', { name: '+ Add option' }).click();
-    await page.getByRole('textbox', { name: 'Answer option 3' }).fill('About the same');
-    await addQuestion.click();
+    await expect(option3).toBeFocused();
+    await option3.fill('About the same');
+    // A spare option left empty is dropped; Enter in it submits the question.
+    await option3.press('Enter');
+    await page.getByRole('textbox', { name: 'Answer option 4' }).press('Enter');
     await expect(page.getByRole('heading', { name: question, exact: true })).toBeVisible();
     // The composer resets to a blank form with two empty options.
     await expect(page.getByPlaceholder('Enter a new question or statement').first()).toHaveValue('');

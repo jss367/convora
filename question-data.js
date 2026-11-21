@@ -63,14 +63,16 @@ const MULTIPLE_CHOICE_MIN_OPTIONS = 2;
 const MULTIPLE_CHOICE_MAX_OPTIONS = 6;
 const MULTIPLE_CHOICE_MAX_OPTION_LENGTH = 100;
 
-// Trimmed options, or null when the list is not a valid set of choices: too few
-// or too many, an empty or overlong option, or two options that differ only in
-// case or spacing (participants could not tell them apart).
+// Trimmed options with the empty ones dropped, or null when what is left is
+// not a valid set of choices: too few or too many, an overlong option, or two
+// options that differ only in case or spacing (participants could not tell
+// them apart).
 function normalizeChoiceOptions(options) {
   if (!Array.isArray(options)) return null;
-  const normalized = options.map(option => (typeof option === 'string' ? option.trim().replace(/\s+/g, ' ') : ''));
+  if (options.some(option => typeof option !== 'string')) return null;
+  const normalized = options.map(option => option.trim().replace(/\s+/g, ' ')).filter(option => option !== '');
   if (normalized.length < MULTIPLE_CHOICE_MIN_OPTIONS || normalized.length > MULTIPLE_CHOICE_MAX_OPTIONS) return null;
-  if (normalized.some(option => !option || option.length > MULTIPLE_CHOICE_MAX_OPTION_LENGTH)) return null;
+  if (normalized.some(option => option.length > MULTIPLE_CHOICE_MAX_OPTION_LENGTH)) return null;
   if (new Set(normalized.map(option => option.toLowerCase())).size !== normalized.length) return null;
   return normalized;
 }

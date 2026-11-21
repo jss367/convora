@@ -1289,7 +1289,7 @@ test('Multiple Choice questions validate their options and accept only those opt
     const ack = await emitWithAck(author, 'addQuestion', topic, {
       text: 'In the last year, did your p(doom) get higher or lower?',
       type: 'Multiple Choice',
-      options: ['  Higher ', 'Lower', 'About   the same'],
+      options: ['  Higher ', 'Lower', '  ', 'About   the same'],
     }, true);
     assert.deepEqual(ack, { added: true });
     const question = (await added)[0];
