@@ -78,9 +78,9 @@ Recent**. Publishing cannot be undone, because hiding a question again would
 hide the answers people gave to it; delete the question instead. A locked
 discussion publishes nothing until it is unlocked.
 
-When a moderator duplicates a discussion, the copy keeps its queued questions
-queued, so a prepared agenda can be reused. A copy made by anyone else leaves
-the queued questions out.
+When a moderator duplicates a discussion, the copy keeps moderator drafts in
+agenda order. Pending participant suggestions stay in the original room. Anyone
+else duplicating the discussion gets only published questions.
 
 ## Optional ways to participate
 

@@ -5346,6 +5346,26 @@ async function joinAsModerator(slug, adminToken) {
   return socket;
 }
 
+test('duplicating a room leaves pending suggestions behind but keeps published suggestions and authorized moderator drafts', async () => {
+  const { id, slug, adminToken } = (await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('suggestion-source') })).body;
+  await pool.query(`INSERT INTO questions (discussion_id, text, type, queued, participant_suggested) VALUES
+    ($1, 'Moderator draft', 'Agreement', true, false),
+    ($1, 'Pending suggestion', 'Agreement', true, true),
+    ($1, 'Published suggestion', 'Agreement', false, true)`, [id]);
+  const questions = async roomSlug => (await pool.query(`SELECT text, queued FROM questions
+    JOIN discussions ON discussions.id = questions.discussion_id WHERE slug = $1 ORDER BY text`, [roomSlug])).rows;
+  const published = { text: 'Published suggestion', queued: false };
+  const draft = { text: 'Moderator draft', queued: true };
+  for (const [credentials, expected] of [[{ adminToken }, [draft, published]], [{}, [published]]]) {
+    const copy = await jsonRequest('POST', '/api/duplicate-discussion', {
+      originalTopic: slug, newTopic: uniqueTopic('suggestion-copy'), ...credentials,
+    });
+    assert.equal(copy.status, 200);
+    assert.deepEqual(await questions(copy.body.newSlug), expected);
+  }
+  assert.deepEqual(await questions(slug), [draft, { text: 'Pending suggestion', queued: true }, published]);
+});
+
 test('posting approval migration preserves old rooms and moderator drafts', async () => {
   const client = await pool.connect();
   try {

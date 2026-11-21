@@ -3714,7 +3714,7 @@ app.post('/api/duplicate-discussion', async (req, res) => {
     // moderator, so the copy gets the original's queued questions only when the
     // caller proves they already moderate the original. Otherwise duplicating
     // would be a way to read a queue that only moderators are sent.
-    const copyQueued = !!(await verifyAdmin(originalTopic, req.body.adminToken, client));
+    const copyModeratorDrafts = !!(await verifyAdmin(originalTopic, req.body.adminToken, client));
 
     // Create new discussion. Duplicating into an existing topic would merge
     // questions into that discussion, so treat the unique conflict as a user
@@ -3774,9 +3774,9 @@ app.post('/api/duplicate-discussion', async (req, res) => {
       INSERT INTO questions (discussion_id, text, type, min_value, max_value, options, max_responses, show_attribution, queued, participant_suggested, tools, independent_answers)
       SELECT $1, text, type, min_value, max_value, options, max_responses, show_attribution, queued, participant_suggested, tools, independent_answers
       FROM questions
-      WHERE discussion_id = $2 AND ($3 OR NOT queued)
+      WHERE discussion_id = $2 AND (NOT queued OR ($3 AND NOT participant_suggested))
       ORDER BY CASE WHEN queued THEN COALESCE(queue_position, id) ELSE id END, id
-    `, [newDiscussionId, originalDiscussionId, copyQueued]);
+    `, [newDiscussionId, originalDiscussionId, copyModeratorDrafts]);
 
     // Carry the session-level reaction set (see reaction_keys) for the same
     // reason as the per-question flags above: a duplicate should preserve the
