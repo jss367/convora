@@ -173,6 +173,11 @@ test('distinguishes polite requests for explanations from yes/no questions', asy
   assert.equal(guessQuestionType('Could you briefly describe your experience?'), 'Open Ended');
   assert.equal(guessQuestionType('Could you please briefly explain what happened?'), 'Open Ended');
   assert.equal(guessQuestionType('Would you usually describe the process to new hires?'), 'Yes/No');
+  assert.equal(guessQuestionType('Could you just describe your experience?'), 'Open Ended');
+  assert.equal(guessQuestionType('Can you tell us something about your role?'), 'Open Ended');
+  assert.equal(guessQuestionType('Could you tell me one thing you would change?'), 'Open Ended');
+  assert.equal(guessQuestionType('Would you tell us your biggest concern if we could choose just one?'), 'Open Ended');
+  assert.equal(guessQuestionType('Would you tell us something if you knew it?'), 'Yes/No');
 });
 
 test('distinguishes a proposed characterization from a request for a description', async () => {
@@ -197,6 +202,10 @@ test('distinguishes a proposed characterization from a request for a description
   assert.equal(guessQuestionType('Could you describe how meetings changed as the team grew?'), 'Open Ended');
   assert.equal(guessQuestionType('Would you describe your experience?'), 'Open Ended');
   assert.equal(guessQuestionType('Would you describe your experience as positive, and why?'), 'Open Ended');
+  assert.equal(guessQuestionType('Would you describe the course as really useful?'), 'Yes/No');
+  assert.equal(guessQuestionType('Would you describe the course as somewhat useful?'), 'Yes/No');
+  assert.equal(guessQuestionType('Could you describe the pilot as a success for the team and provide details?'), 'Open Ended');
+  assert.equal(guessQuestionType('Could you describe the pilot as a success for the team and give your reasons?'), 'Open Ended');
 });
 
 test('returns null for statements and unrecognized wording', async () => {

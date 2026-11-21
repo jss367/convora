@@ -8,13 +8,16 @@ const { AGREEMENT, YES_NO, NUMERICAL, MULTIPLE_CHOICE, OPEN_ENDED } = QuestionTy
 
 const AUXILIARY = '(?:is|are|was|were|do|does|did|will|would|should|can|could|has|have)';
 const WH_WORD = '(?:why|how|what|which|who|whose|where|when)';
-const POLITE_REQUEST = '^(?:can|could|would) you (?:(?:please|briefly|quickly|kindly) )*';
-const DESCRIPTIVE_ADJECTIVE = /(?:(?:very|quite|too|rather|more|less|mostly|highly) )?[a-z][\w-]*(?: (?:to|than|for|in|with|at|on) [\w'-]+(?: [\w'-]+)*)?/;
+const POLITE_REQUEST = '^(?:can|could|would) you (?:(?:please|briefly|quickly|kindly|just) )*';
+const DESCRIPTIVE_ADJECTIVE = /(?:(?:very|quite|too|rather|more|less|mostly|highly|really|extremely|somewhat|fairly|pretty) )?[a-z][\w-]*(?: (?:to|than|for|in|with|at|on) [\w'-]+(?: [\w'-]+)*)?/;
 const NOMINAL_DESCRIPTION = /a (?:success|failure|strength|weakness|problem|priority)(?: (?:for|with|of|in|to) [\w'-]+(?: [\w'-]+)*)?/;
 const PROPOSED_DESCRIPTION = new RegExp(`${POLITE_REQUEST}describe .+? as (?:not )?(?:${DESCRIPTIVE_ADJECTIVE.source}|${NOMINAL_DESCRIPTION.source})\\s*[?.!"')\\]]*$`);
-const TELL_REQUEST = `tell (?:us|me) (?:about|more|a|an|the|your|${WH_WORD})`;
-const SELECTION_CONDITION = /you (?:could |had to |were to )?(?:choose|pick|select|name)\b/;
-const CONDITIONAL_DISCLOSURE = new RegExp(`(?=^would )${POLITE_REQUEST}tell (?:us|me) (?:a|an|the|your)\\b.+? if (?!${SELECTION_CONDITION.source})\\S`);
+// Explicit follow-up requests that keep a proposed description open-ended.
+const FOLLOW_UP_REQUEST = '(?:explain|elaborate on|tell (?:us|me)|why|provide|give|share|say|list|add|include)';
+const TELL_OBJECT = '(?:a|an|the|your|some|any|something|anything|one)';
+const TELL_REQUEST = `tell (?:us|me) (?:about|more|${TELL_OBJECT}|${WH_WORD})`;
+const SELECTION_CONDITION = /(?:you|we|i|they|someone|one) (?:could |can |had to |have to |were to |must |only )?(?:choose|pick|select|name)\b/;
+const CONDITIONAL_DISCLOSURE = new RegExp(`(?=^would )${POLITE_REQUEST}tell (?:us|me) ${TELL_OBJECT}\\b.+? if (?!${SELECTION_CONDITION.source})\\S`);
 const CHOICE_SET = 'of (?:these|those|the following)(?: (?:options|choices|alternatives))?';
 
 // First match wins, so the order is the precedence: "how likely" has to be
@@ -51,7 +54,7 @@ const RULES = [
     { type: OPEN_ENDED, pattern: new RegExp(`^${WH_WORD}(?:'s|'re| ${AUXILIARY}\\b)`) },
     { type: OPEN_ENDED, pattern: new RegExp(`^${WH_WORD}\\b`), questionOnly: true },
     { type: OPEN_ENDED, pattern: /^(?:describe|explain|elaborate on|tell (?:us|me))\b/ },
-    { type: OPEN_ENDED, pattern: new RegExp(`${POLITE_REQUEST}describe\\b.* and (?:explain|elaborate on|tell (?:us|me)|why)\\b`) },
+    { type: OPEN_ENDED, pattern: new RegExp(`${POLITE_REQUEST}describe\\b.* and ${FOLLOW_UP_REQUEST}\\b`) },
     { type: YES_NO, pattern: PROPOSED_DESCRIPTION },
     { type: YES_NO, pattern: CONDITIONAL_DISCLOSURE },
     { type: OPEN_ENDED, pattern: new RegExp(`${POLITE_REQUEST}(?:describe|explain|elaborate on|${TELL_REQUEST})\\b`) },
