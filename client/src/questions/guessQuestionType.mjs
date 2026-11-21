@@ -8,7 +8,9 @@ const { AGREEMENT, YES_NO, NUMERICAL, MULTIPLE_CHOICE, OPEN_ENDED } = QuestionTy
 
 const AUXILIARY = '(?:is|are|was|were|do|does|did|will|would|should|can|could|has|have)';
 const WH_WORD = '(?:why|how|what|which|who|whose|where|when)';
-const PROPOSED_DESCRIPTION = /^(?:can|could|would) you (?:please )?describe .+? as (?:(?:(?:very|quite|too|rather|more|less|mostly|highly) )?[a-z][\w-]*(?: to \w+(?: \w+)*)?|a (?:success|failure|strength|weakness|problem|priority))\s*[?.!"')\]]*$/;
+const POLITE_REQUEST = '^(?:can|could|would) you (?:(?:please|briefly|quickly|kindly) )*';
+const DESCRIPTIVE_ADJECTIVE = /(?:(?:very|quite|too|rather|more|less|mostly|highly) )?[a-z][\w-]*(?: (?:to|than) [\w'-]+(?: [\w'-]+)*)?/;
+const PROPOSED_DESCRIPTION = new RegExp(`${POLITE_REQUEST}describe .+? as (?:${DESCRIPTIVE_ADJECTIVE.source}|a (?:success|failure|strength|weakness|problem|priority))\\s*[?.!"')\\]]*$`);
 const CHOICE_SET = 'of (?:these|those|the following)(?: (?:options|choices|alternatives))?';
 
 // First match wins, so the order is the precedence: "how likely" has to be
@@ -46,7 +48,7 @@ const RULES = [
     { type: OPEN_ENDED, pattern: new RegExp(`^${WH_WORD}\\b`), questionOnly: true },
     { type: OPEN_ENDED, pattern: /^(?:describe|explain|elaborate on|tell (?:us|me))\b/ },
     { type: YES_NO, pattern: PROPOSED_DESCRIPTION },
-    { type: OPEN_ENDED, pattern: /^(?:can|could|would) you (?:please )?(?:describe|explain|elaborate on)\b/ },
+    { type: OPEN_ENDED, pattern: new RegExp(`${POLITE_REQUEST}(?:describe|explain|elaborate on)\\b`) },
 
     // The trailing space keeps a half-typed word from matching: "Is" could
     // still become "Issues".

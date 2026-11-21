@@ -159,12 +159,17 @@ test('distinguishes polite requests for explanations from yes/no questions', asy
   assert.equal(guessQuestionType('Can you explain what made onboarding easier?'), 'Open Ended');
   assert.equal(guessQuestionType('Would you please elaborate on that feedback?'), 'Open Ended');
   assert.equal(guessQuestionType('Could you attend the next onboarding session?'), 'Yes/No');
+  assert.equal(guessQuestionType('Could you briefly describe your experience?'), 'Open Ended');
+  assert.equal(guessQuestionType('Could you please briefly explain what happened?'), 'Open Ended');
+  assert.equal(guessQuestionType('Would you usually describe the process to new hires?'), 'Yes/No');
 });
 
 test('distinguishes a proposed characterization from a request for a description', async () => {
   const { guessQuestionType } = await guesser;
   assert.equal(guessQuestionType('Would you describe your experience as positive?'), 'Yes/No');
   assert.equal(guessQuestionType('Would you describe meetings as productive?'), 'Yes/No');
+  assert.equal(guessQuestionType('Would you describe the meetings as more productive than before?'), 'Yes/No');
+  assert.equal(guessQuestionType('Could you briefly describe the meetings as less useful than last year?'), 'Yes/No');
   assert.equal(guessQuestionType('Would you describe Convora as easy to use?'), 'Yes/No');
   assert.equal(guessQuestionType('Would you describe what you do as stressful?'), 'Yes/No');
   assert.equal(guessQuestionType('Would you describe the pilot as a success?'), 'Yes/No');
