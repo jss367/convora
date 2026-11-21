@@ -388,6 +388,10 @@ async function migrateUnifiedResponses(client) {
   await client.query('CREATE UNIQUE INDEX IF NOT EXISTS votes_request_id ON votes (question_id, user_id, request_id)');
 }
 
+async function migrateQueueOrder(client) {
+  await client.query('ALTER TABLE questions ADD COLUMN IF NOT EXISTS queue_position INTEGER');
+}
+
 module.exports = [
   [1, initSchema],
   [2, migrateModerationAndDedup],
@@ -400,4 +404,5 @@ module.exports = [
   [9, migrateDiscussionPseudonymsTable],
   [10, migrateBrainstormInteractions],
   [11, migrateUnifiedResponses],
+  [12, migrateQueueOrder],
 ];

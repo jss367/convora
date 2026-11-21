@@ -5353,6 +5353,39 @@ test('a queued question reaches moderators only, and nobody can answer it, until
   }
 });
 
+test('queue moves require moderator access and the same adjacent unpublished questions', async () => {
+  const { body: room } = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic('queue-order') });
+  const mod = await joinAsModerator(room.slug, room.adminToken);
+  const insert = async (text, queued) => (await pool.query(
+    "INSERT INTO questions (discussion_id, text, type, queued) VALUES ($1, $2, 'Agreement', $3) RETURNING id",
+    [room.id, text, queued])).rows[0].id;
+  try {
+    const first = await insert('First', true), second = await insert('Second', true), third = await insert('Third', true);
+    const live = await insert('Live', false);
+    const swap = (earlier, later, token = room.adminToken) => mod.emit('swapQueuedQuestions', room.slug, earlier, later, token);
+    const refused = waitForEvent(mod, 'error', error => /not authorized/i.test(error.message));
+    swap(first, second, 'wrong');
+    await refused;
+    const reordered = waitForQuestions(mod, questions => questions.filter(question => question.queued)[0]?.id === second, 'saved queue order');
+    swap(first, second);
+    await reordered;
+    for (const pair of [[first, second], [second, third], [third, live]]) {
+      const stale = waitForEvent(mod, 'error', error => /queue has changed/i.test(error.message));
+      swap(...pair);
+      await stale;
+    }
+    await insert('Last', true);
+    const { body: copy } = await jsonRequest('POST', '/api/duplicate-discussion', {
+      originalTopic: room.slug, newTopic: uniqueTopic('ordered-copy'), adminToken: room.adminToken,
+    });
+    const copied = await pool.query(`SELECT text FROM questions JOIN discussions ON discussions.id = discussion_id
+      WHERE slug = $1 AND queued ORDER BY COALESCE(queue_position, questions.id)`, [copy.newSlug]);
+    assert.deepEqual(copied.rows.map(question => question.text), ['Second', 'First', 'Third', 'Last']);
+  } finally {
+    mod.disconnect();
+  }
+});
+
 test('existing questions are published when the queue column is added', async () => {
   await stopServer();
   try {
