@@ -26,6 +26,18 @@ test('preserves separators between runs and around single-character emphasis', a
   ]);
 });
 
+test('escaped closing delimiters stay literal without hiding later emphasis', async () => {
+  const { plainPrompt, promptParts } = await emphasis;
+  for (const marker of ['*', '**']) {
+    const literal = `${marker}word\\${marker}`;
+    const text = `${literal} and *more*`;
+    assert.deepEqual(promptParts(text), [
+      { type: 'text', text: `${literal} and ` }, { type: 'em', text: 'more' },
+    ]);
+    assert.equal(plainPrompt(text), `${literal} and more`);
+  }
+});
+
 test('combining marks are part of words on either side of emphasis markers', async () => {
   const { promptParts } = await emphasis;
   for (const text of ['e\u0301*word*', 'दे**word**', '*word*\u0301']) {

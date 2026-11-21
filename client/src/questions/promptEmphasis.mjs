@@ -5,6 +5,7 @@ export function promptParts(text) {
     let offset = 0;
     for (const match of text.matchAll(emphasis)) {
         const [, prefix, marker, content] = match;
+        if (content.endsWith('\\')) continue;
         const start = match.index + prefix.length;
         if (start > offset) parts.push({ type: 'text', text: text.slice(offset, start) });
         parts.push({ type: marker === '**' ? 'strong' : 'em', text: content });
