@@ -25,3 +25,11 @@ test('preserves separators between runs and around single-character emphasis', a
     { type: 'em', text: 'a' }, { type: 'text', text: '🌟' }, { type: 'strong', text: 'b' },
   ]);
 });
+
+test('combining marks are part of words on either side of emphasis markers', async () => {
+  const { promptParts } = await emphasis;
+  for (const text of ['e\u0301*word*', 'दे**word**', '*word*\u0301']) {
+    assert.deepEqual(promptParts(text), [{ type: 'text', text }]);
+  }
+  assert.deepEqual(promptParts('*दे*'), [{ type: 'em', text: 'दे' }]);
+});

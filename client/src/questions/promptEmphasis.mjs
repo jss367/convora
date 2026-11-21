@@ -1,4 +1,4 @@
-const emphasis = /(^|[^\p{L}\p{N}_*\\])(\*{1,2})([^\s*](?:[^*\r\n]*?[^\s*])?)\2(?![\p{L}\p{N}_*])/gu;
+const emphasis = /(^|[^\p{L}\p{M}\p{N}_*\\])(\*{1,2})([^\s*](?:[^*\r\n]*?[^\s*])?)\2(?![\p{L}\p{M}\p{N}_*])/gu;
 
 export function promptParts(text) {
     const parts = [];
