@@ -635,7 +635,8 @@ const DiscussionPage = () => {
                 method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ adminToken }),
             });
             if (!response.ok) throw new Error((await response.json()).error || 'Could not clear votes and responses.');
-            setClearedRoom(clearTarget);
+            const refreshed = response.status === 204 || (await response.json()).refreshed === true;
+            setClearedRoom({ slug: clearTarget, refreshed });
             setClearTarget(null);
         } catch (error) {
             setClearError(error.message || 'Could not confirm that votes and responses were cleared.');
@@ -1422,7 +1423,9 @@ const DiscussionPage = () => {
                 />
             )}
 
-            {clearedRoom === discussionSlug && <p role="status">Votes and responses cleared. Your questions are still here.</p>}
+            {clearedRoom?.slug === discussionSlug && <p role="status">{clearedRoom.refreshed
+                ? 'Votes and responses cleared. Your questions are still here.'
+                : 'Votes and responses were cleared, but the live view did not update. Ask anyone still seeing old responses to reload. Do not clear again.'}</p>}
             {showClearModal && (
                 <div className="fixed inset-0 z-50 bg-gray-600 bg-opacity-50 flex items-center justify-center p-4">
                     <div ref={clearDialogRef} role="dialog" aria-modal="true" aria-labelledby="clear-title" aria-describedby="clear-description" tabIndex={-1} className="bg-white rounded-lg shadow-xl p-6 w-full max-w-md">

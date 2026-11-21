@@ -1,5 +1,17 @@
 const { test, expect } = require('./lifecycle-fixtures.cjs');
 
+test('an already committed reset with a failed live refresh advises reloading instead of clearing again', async ({ page, rooms }) => {
+  const room = await rooms.create('Refresh warning');
+  await page.goto(`/discussion/${room.slug}?admin=${room.adminToken}`);
+  await page.getByRole('button', { name: 'More ▾' }).click();
+  await page.getByRole('menuitem', { name: 'Clear votes and responses' }).click();
+  await page.route(`**/api/discussions/${room.slug}/responses`, route => route.fulfill({ json: { refreshed: false } }));
+  const dialog = page.getByRole('dialog', { name: 'Clear votes and responses?' });
+  await dialog.getByRole('button', { name: 'Clear votes and responses' }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByRole('status').filter({ hasText: 'Votes and responses were cleared' })).toContainText('reload. Do not clear again.');
+});
+
 test('a moderator can clear a test run without replacing the room or its questions', async ({ page, browser, request, rooms }) => {
   const room = await rooms.create('Practice', 'Agreement');
   const other = await rooms.create('Other');

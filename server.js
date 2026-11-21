@@ -1880,8 +1880,13 @@ app.delete('/api/discussions/:topic/responses', async (req, res) => {
     logError('Error clearing discussion responses:', error);
     return res.status(500).json({ error: 'Could not clear votes and responses.' });
   }
-  emitQuestions(slug).catch(error => logError('Error broadcasting cleared responses:', error));
-  res.sendStatus(204);
+  try {
+    await emitQuestions(slug);
+    res.sendStatus(204);
+  } catch (error) {
+    logError('Error broadcasting cleared responses:', error);
+    res.json({ refreshed: false });
+  }
 });
 
 // Only the creator credential can permanently delete a discussion. Lock the
