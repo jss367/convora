@@ -24,6 +24,7 @@ const RULES = [
     { type: NUMERICAL, pattern: /^(?:(?:in|by|at|for|after|within|over) )?how (?:likely|unlikely|probable|many|much|confident|certain|sure|long|old)\b/ },
     { type: NUMERICAL, pattern: /^(?:(?:in|by) )?(?:what|which) (?:year|percent(?:age)?|%|fraction|proportion|share|number)(?=\W|$)/ },
     { type: NUMERICAL, pattern: /^what(?:'s| is| are| was| were| would be)(?: the| your)? (?:probability|likelihood|odds|chances?|percent(?:age)?|number|fraction|proportion|share)\b/ },
+    { type: NUMERICAL, pattern: /^what chance is there (?:that|of)\b/ },
     { type: NUMERICAL, pattern: /^(?:the )?(?:probability|likelihood|odds|chances?) (?:that|of)\b/ },
     { type: NUMERICAL, pattern: /^(?:estimate|guess)\b/ },
     { type: NUMERICAL, pattern: /^rate (?:your|the|this|our|how)\b/ },
