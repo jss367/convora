@@ -283,6 +283,7 @@ const DisplayPage = () => {
         const join = () => {
             clearTimeout(retry);
             retry = null;
+            setState({});
             socket.emit('joinDisplay', discussionSlug);
         };
         const handlers = {
@@ -349,7 +350,9 @@ const DisplayPage = () => {
     const qrMode = QR_MODES.includes(state.displayQr) ? state.displayQr : 'full';
     const focus = state.displayLayout === 'focus';
     const compare = state.displayLayout === 'compare';
-    const ready = discussion !== undefined && questions !== null;
+    const ready = discussion !== undefined && questions !== null && state.displayHiddenQuestionIds !== undefined;
+    const hiddenIds = new Set(state.displayHiddenQuestionIds);
+    const visibleQuestions = (questions || []).filter(question => !hiddenIds.has(question.id));
 
     let body;
     if (loadFailed && questions === null) {
@@ -370,18 +373,19 @@ const DisplayPage = () => {
                     before={before}
                     after={after}
                     questionId={state.displayQuestionId ?? undefined}
+                    hiddenIds={hiddenIds}
                     wide={qrMode !== 'full'}
                 />
             );
         }
-    } else if (questions.length === 0) {
-        body = <p className="text-4xl text-gray-500">No questions yet</p>;
+    } else if (visibleQuestions.length === 0) {
+        body = <p className="text-4xl text-gray-500">{questions.length ? 'No questions on display' : 'No questions yet'}</p>;
     } else if (focus) {
-        body = <QuestionCard question={focusQuestionOf(questions, state.displayQuestionId)} reactionKeys={reactionKeys} focus />;
+        body = <QuestionCard question={focusQuestionOf(visibleQuestions, state.displayQuestionId)} reactionKeys={reactionKeys} focus />;
     } else {
         body = (
             <ol className={`grid grid-cols-1 gap-8 ${qrMode === 'full' ? '2xl:grid-cols-2' : 'xl:grid-cols-2'}`}>
-                {questions.map(question => (
+                {visibleQuestions.map(question => (
                     <li key={question.id} className="contents">
                         <QuestionCard question={question} reactionKeys={reactionKeys} />
                     </li>
