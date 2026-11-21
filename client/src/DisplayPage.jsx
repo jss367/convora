@@ -348,7 +348,7 @@ const DisplayPage = () => {
         );
     }
 
-    const qrMode = QR_MODES.includes(state.displayQr) ? state.displayQr : 'full';
+    const qrMode = discussion?.slug === discussionSlug && QR_MODES.includes(state.displayQr) ? state.displayQr : 'hidden';
     const focus = state.displayLayout === 'focus';
     const compare = state.displayLayout === 'compare';
     const ready = discussion !== undefined && questions !== null && state.displayHiddenQuestionIds !== undefined;

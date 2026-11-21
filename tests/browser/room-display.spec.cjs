@@ -10,6 +10,44 @@ async function seedVotes(rooms, room) {
   );
 }
 
+test('a hidden join code stays hidden while the display waits for its settings', async ({ page, rooms }) => {
+  const room = await rooms.create('Hidden join code');
+  await rooms.pool.query("UPDATE discussions SET display_qr = 'hidden' WHERE id = $1", [room.id]);
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  await page.route('**/socket.io/**', async route => { await gate; await route.continue(); });
+  try {
+    await page.goto(`/discussion/${room.slug}/display`);
+    await expect(page.getByText('Loading…', { exact: true })).toBeVisible();
+    await expect(page.getByTestId('display-join')).toHaveCount(0);
+  } finally { release(); }
+  await expect(page.getByRole('heading', { name: 'Hidden join code question' })).toBeVisible();
+  await expect(page.getByTestId('display-join')).toHaveCount(0);
+});
+
+test('a comparison refuses an absent question without replacing the current spotlight', async ({ page, browser, rooms, request }) => {
+  const room = await rooms.create('Original', 'Agreement');
+  const path = `/discussion/${room.slug}`;
+  const save = await request.post(`/api/discussions/${room.slug}/snapshots`, { data: { name: 'Before', adminToken: room.adminToken } });
+  expect(save.status()).toBe(201);
+  await rooms.pool.query("INSERT INTO questions (discussion_id, text, type) VALUES ($1, 'Added later', 'Agreement')", [room.id]);
+  const projector = await browser.newPage();
+  try {
+    await projector.goto(`${path}/display`);
+    await page.goto(`${path}?admin=${room.adminToken}`);
+    const card = title => page.locator('.shadow-lg').filter({ has: page.getByRole('heading', { name: title, exact: true }) }).last();
+    await page.getByLabel('Layout', { exact: true }).selectOption('compare');
+    const comparison = projector.getByTestId('display-comparison-view');
+    await expect(comparison).toBeVisible();
+    await card('Original question').getByRole('button', { name: 'Show on display', exact: true }).click();
+    await expect(card('Original question').getByRole('button', { name: 'Back to full comparison' })).toBeVisible();
+    await card('Added later').getByRole('button', { name: 'Show on display', exact: true }).click();
+    await expect(card('Added later').getByRole('alert')).toContainText('not in the selected snapshots');
+    await expect(card('Original question').getByRole('button', { name: 'Back to full comparison' })).toBeVisible();
+    await expect(comparison.getByRole('heading', { name: 'Original question' })).toBeVisible();
+  } finally { await projector.close(); }
+});
+
 test('the room display shows response counts but no results until the moderator always shows them', async ({ page, browser, rooms }) => {
   const room = await rooms.create('Room display', 'Agreement');
   await seedVotes(rooms, room);

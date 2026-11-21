@@ -113,6 +113,7 @@ const DiscussionPage = () => {
     const questionInputRef = useRef(null);
     const [editingIdentity, setEditingIdentity] = useState(false);
     const [error, setError] = useState(null);
+    const [spotlightError, setSpotlightError] = useState(null);
     const [newTopicName, setNewTopicName] = useState('');
     // Inline moderator rename of the discussion title. titleDraft holds the
     // in-progress edit; editingTitle swaps the <h1> for the editor.
@@ -455,7 +456,10 @@ const DiscussionPage = () => {
 
     // Spotlight one question, or clear the spotlight to resume the room's layout.
     const handleShowOnDisplay = (questionId) => {
-        socket.emit('setDisplaySettings', discussionSlug, { questionId }, adminToken);
+        setSpotlightError(null);
+        socket.emit('setDisplaySettings', discussionSlug, { questionId }, adminToken, result => {
+            if (!result?.ok) setSpotlightError({ slug: discussionSlug, questionId, message: result?.message });
+        });
     };
 
     // Show a queued question to everyone and open it for answers.
@@ -2185,6 +2189,9 @@ const DiscussionPage = () => {
                                 >
                                     {onDisplay ? returnLabel : 'Show on display'}
                                 </button>}
+                                {spotlightError?.slug === discussionSlug && spotlightError.questionId === question.id && (
+                                    <span role="alert" className="text-sm text-red-700">{spotlightError.message}</span>
+                                )}
                                 <button
                                     onClick={() => socket.emit('setQuestionHiddenOnDisplay', discussionSlug, question.id, !hiddenOnDisplay, adminToken)}
                                     title={hiddenOnDisplay ? 'Include this question on the room display again' : 'Hide this question on the room display only. Participants can still answer it.'}

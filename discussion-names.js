@@ -1,13 +1,19 @@
 // Shared display-title and canonical-route rules for discussions.
-function slugifyTopic(value) {
+function slugFromTitle(value) {
   return String(value || 'discussion')
     .trim()
     .normalize('NFKD')
     .replace(/[\u0300-\u036f]/g, '')
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 80) || 'discussion';
+    .replace(/^-/, '')
+    .slice(0, 80)
+    .replace(/-$/, '') || 'discussion';
+}
+
+function slugifyTopic(value) {
+  if (typeof value === 'string' && value.length === 80 && /^[a-z0-9]+(?:-[a-z0-9]+)*(?:-|--\d+)$/.test(value)) return value;
+  return slugFromTitle(value);
 }
 
 function formatTopicTitle(value) {
@@ -37,7 +43,7 @@ function suffixSlug(baseSlug, suffix) {
     return baseSlug;
   }
   const suffixText = `-${suffix}`;
-  return `${baseSlug.slice(0, 80 - suffixText.length)}${suffixText}`;
+  return `${baseSlug.slice(0, 80 - suffixText.length).replace(/-$/, '')}${suffixText}`;
 }
 
-module.exports = { slugifyTopic, formatTopicTitle, titleFromSlug, suffixSlug, MAX_TOPIC_LENGTH };
+module.exports = { slugFromTitle, slugifyTopic, formatTopicTitle, titleFromSlug, suffixSlug, MAX_TOPIC_LENGTH };
