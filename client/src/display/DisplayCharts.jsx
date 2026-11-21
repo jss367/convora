@@ -25,10 +25,16 @@ const splitBadge = (a, b, focus) => {
     return null;
 };
 
-const NoResponses = ({ focus }) => (
-    <p className={`${focus ? 'text-4xl' : 'text-2xl'} text-gray-500`}>No responses yet</p>
+export const ResponseCount = ({ count, focus }) => (
+    <p className="flex flex-col items-start">
+        <span className={`${focus ? 'text-[9rem]' : 'text-7xl'} font-bold leading-none tabular-nums text-primary`}>{count}</span>
+        {' '}
+        <span className={`${focus ? 'text-4xl' : 'text-2xl'} mt-2 font-semibold text-gray-800`}>
+            {count === 1 ? 'response' : 'responses'}
+        </span>
+    </p>
 );
-NoResponses.propTypes = { focus: PropTypes.bool };
+ResponseCount.propTypes = { count: PropTypes.number.isRequired, focus: PropTypes.bool };
 
 // One labelled horizontal bar per option, all against the same total.
 const BarRows = ({ rows, total, focus }) => {
@@ -78,7 +84,7 @@ Headline.propTypes = { children: PropTypes.node.isRequired, badge: PropTypes.nod
 export const AgreementChart = ({ question, focus }) => {
     const votes = question.votes || [];
     const total = votes.length;
-    if (total === 0) return <NoResponses focus={focus} />;
+    if (total === 0) return <ResponseCount count={0} focus={focus} />;
     const rows = [...AGREEMENT_SCALE].reverse().map(seg => ({
         ...seg,
         count: votes.filter(v => v.value === seg.key).length,
@@ -102,7 +108,7 @@ AgreementChart.propTypes = { question: PropTypes.object.isRequired, focus: PropT
 export const YesNoChart = ({ question, focus }) => {
     const votes = question.votes || [];
     const total = votes.length;
-    if (total === 0) return <NoResponses focus={focus} />;
+    if (total === 0) return <ResponseCount count={0} focus={focus} />;
     const yes = votes.filter(v => v.value === YesNoOptions.YES).length;
     const no = votes.filter(v => v.value === YesNoOptions.NO).length;
     const rows = [
@@ -140,7 +146,7 @@ export const MultipleChoiceChart = ({ question, focus }) => {
     if (total === 0) {
         return (
             <div>
-                <div className="mb-5"><NoResponses focus={focus} /></div>
+                <div className="mb-5"><ResponseCount count={0} focus={focus} /></div>
                 <BarRows rows={rows} total={0} focus={focus} />
             </div>
         );
@@ -170,7 +176,7 @@ export const NumericalChart = ({ question, minValue, maxValue, focus }) => {
     const s = sizes(focus);
     const values = (question.votes || []).map(v => parseNumericalVote(v.value)).filter(n => Number.isFinite(n));
     const total = values.length;
-    if (total === 0) return <NoResponses focus={focus} />;
+    if (total === 0) return <ResponseCount count={0} focus={focus} />;
 
     const range = Math.max(maxValue - minValue, 1);
     const binCount = Math.min(10, range + 1);
@@ -260,13 +266,7 @@ NumericalChart.propTypes = {
 // answered, so that is the whole chart.
 export const ResponseCountOnly = ({ count, options, focus }) => (
     <div data-testid="display-results-hidden">
-        <p className="flex flex-col items-start">
-            <span className={`${focus ? 'text-[9rem]' : 'text-7xl'} font-bold leading-none tabular-nums text-primary`}>{count}</span>
-            {' '}
-            <span className={`${focus ? 'text-4xl' : 'text-2xl'} mt-2 font-semibold text-gray-800`}>
-                {count === 1 ? 'response' : 'responses'}
-            </span>
-        </p>
+        <ResponseCount count={count} focus={focus} />
         <p className={`${focus ? 'text-2xl' : 'text-lg'} mt-3 text-gray-500`}>Vote on your phone. The moderator will show the results here.</p>
         {Array.isArray(options) && options.length > 0 && (
             <ul className="mt-4 flex max-w-full flex-wrap gap-3" data-testid="display-choice-options">
