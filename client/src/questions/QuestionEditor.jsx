@@ -1,6 +1,6 @@
 import ResponseSettings from './ResponseSettings';
 import PropTypes from 'prop-types';
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { MULTIPLE_CHOICE_LIMITS, QuestionTypes, QuestionTypeDescriptions } from './config';
 import ChoiceOptionsEditor from './ChoiceOptionsEditor';
 import { validateChoiceOptions, validateNumericalRange } from './questionHelpers.mjs';
@@ -17,6 +17,7 @@ const QuestionEditor = ({ question, onSave, onCancel, draft, onDraftChange }) =>
             ? question.options : ['', ''],
     }));
     const currentDraft = draft || localDraft;
+    const saveButtonRef = useRef(null);
     const { text, type, minValue, maxValue, settings, options } = currentDraft;
     const update = (key, value) => {
         const next = { ...currentDraft, [key]: typeof value === 'function' ? value(currentDraft[key]) : value };
@@ -94,7 +95,7 @@ const QuestionEditor = ({ question, onSave, onCancel, draft, onDraftChange }) =>
             </div>
             {type === QuestionTypes.OPEN_ENDED && <ResponseSettings {...settings} onChange={(key, value) => setSettings(prev => ({ ...prev, [key]: value }))} />}
             {type === QuestionTypes.MULTIPLE_CHOICE && (
-                <ChoiceOptionsEditor options={options} onChange={setOptions} />
+                <ChoiceOptionsEditor options={options} onChange={setOptions} onFinish={() => saveButtonRef.current?.focus()} />
             )}
             {type === QuestionTypes.NUMERICAL && (
                 <div className="mb-4 flex space-x-4">
@@ -122,6 +123,7 @@ const QuestionEditor = ({ question, onSave, onCancel, draft, onDraftChange }) =>
             <div className="flex gap-2">
                 <button
                     onClick={handleSave}
+                    ref={saveButtonRef}
                     disabled={saving}
                     className="px-4 py-2 bg-primary text-white rounded hover:bg-opacity-90 transition duration-300 disabled:opacity-50"
                 >

@@ -28,6 +28,7 @@ export default function QuestionComposer({ composer, questionCount, isAdmin, mod
     const { draft: questionDraft, queueNewQuestions, similarPrompt } = state;
     const { text: newQuestion, type: questionType, minValue, maxValue, options: choiceOptions } = questionDraft;
     const questionInputRef = useRef(null);
+    const submitButtonRef = useRef(null);
     const chooseQuestionSetting = (field, value) => dispatch({ type: 'chooseSetting', field, value });
     const typeGuessed = !questionDraft.typeChosen && guessQuestionType(newQuestion) !== null;
     const composerCollapsed = isComposerCollapsed(state, questionCount);
@@ -151,6 +152,7 @@ export default function QuestionComposer({ composer, questionCount, isAdmin, mod
                         <ChoiceOptionsEditor
                             options={choiceOptions}
                             onChange={(options) => dispatch({ type: 'options', options })}
+                            onFinish={() => submitButtonRef.current?.focus()}
                         />
                     )}
                     {questionType === QuestionTypes.NUMERICAL && (
@@ -191,6 +193,7 @@ export default function QuestionComposer({ composer, questionCount, isAdmin, mod
                     )}
                     <button
                         type="submit"
+                        ref={submitButtonRef}
                         className="w-full bg-primary text-white py-3 rounded-md hover:bg-opacity-90 transition duration-300"
                     >
                         {isAdmin && queueNewQuestions ? 'Add to Queue' : 'Add Question'}

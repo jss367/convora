@@ -28,8 +28,9 @@ and can change or undo it like an Agreement or Yes/No vote.
 
 - A question has 2 to 6 options of up to 100 characters each. Options must be
   different from each other, ignoring case and extra spaces.
-- Press Enter in an option to move to the next one, adding it if needed. An
-  option left empty is ignored, so you don't have to remove it.
+- Press Enter in a filled option to move to the next one, adding it if needed.
+  In a blank option or the sixth option, Enter focuses the submit or save button
+  without activating it. Blank options are ignored; there's no need to remove them.
 - Results show one bar per option, in the order you wrote them, with each
   option's count and share of the vote.
 - Like every question, a moderator can edit it only until someone answers, so
