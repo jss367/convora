@@ -143,6 +143,9 @@ test('distinguishes polite requests for explanations from yes/no questions', asy
 test('distinguishes a proposed characterization from a request for a description', async () => {
   const { guessQuestionType } = await guesser;
   assert.equal(guessQuestionType('Would you describe your experience as positive?'), 'Yes/No');
+  assert.equal(guessQuestionType('Would you describe meetings as productive?'), 'Yes/No');
+  assert.equal(guessQuestionType('Would you describe Convora as easy to use?'), 'Yes/No');
+  assert.equal(guessQuestionType('Could you describe how meetings changed as the team grew?'), 'Open Ended');
   assert.equal(guessQuestionType('Would you describe your experience?'), 'Open Ended');
   assert.equal(guessQuestionType('Would you describe your experience as positive, and why?'), 'Open Ended');
 });

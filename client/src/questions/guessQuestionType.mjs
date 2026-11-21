@@ -40,7 +40,7 @@ const RULES = [
     { type: OPEN_ENDED, pattern: new RegExp(`^${WH_WORD}(?:'s|'re| ${AUXILIARY}\\b)`) },
     { type: OPEN_ENDED, pattern: new RegExp(`^${WH_WORD}\\b`), questionOnly: true },
     { type: OPEN_ENDED, pattern: /^(?:describe|explain|elaborate on|tell (?:us|me))\b/ },
-    { type: YES_NO, pattern: /^(?:can|could|would) you (?:please )?describe (?:it|this|that|yourself|yourselves|them|him|her|the|your|our|their|his|my)\b.*? as \w/ },
+    { type: YES_NO, pattern: new RegExp(`^(?:can|could|would) you (?:please )?describe (?!${WH_WORD}\\b).+? as \\S`) },
     { type: OPEN_ENDED, pattern: /^(?:can|could|would) you (?:please )?(?:describe|explain|elaborate on)\b/ },
 
     // The trailing space keeps a half-typed word from matching: "Is" could
