@@ -130,6 +130,12 @@ test('returns null for statements and unrecognized wording', async () => {
   }
 });
 
+test('uses visible wording to infer the type of an emphasized question', async () => {
+  const { guessQuestionType } = await guesser;
+  assert.equal(guessQuestionType('*Should* we proceed?'), 'Yes/No');
+  assert.equal(guessQuestionType('**How** likely is rain?'), 'Numerical');
+});
+
 test('the guess can change as the title is typed', async () => {
   const { guessQuestionType } = await guesser;
   const typed = 'How likely is it?';
