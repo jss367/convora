@@ -1,3 +1,4 @@
+import { sortDisplayQuestions } from './display/sortDisplayQuestions.mjs';
 import { getNumericalRange } from './questions/questionHelpers.mjs';
 import PropTypes from 'prop-types';
 import { QRCodeSVG } from 'qrcode.react';
@@ -381,7 +382,7 @@ const DisplayPage = () => {
     } else {
         body = (
             <ol className={`grid grid-cols-1 gap-8 ${qrMode === 'full' ? '2xl:grid-cols-2' : 'xl:grid-cols-2'}`}>
-                {questions.map(question => (
+                {sortDisplayQuestions(questions, state.displaySort, state.displayPinnedFirst).map(question => (
                     <li key={question.id} className="contents">
                         <QuestionCard question={question} reactionKeys={reactionKeys} />
                     </li>

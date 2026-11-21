@@ -212,7 +212,8 @@ const ModeratorPanel = ({
                         />
                     </Group>
 
-                    <Group title="Room display">
+                    <Group title="Display controls">
+                        <p className="text-xs text-gray-500">Changes apply live to the shared display.</p>
                         {/* A read-only page for the room's shared screen. It carries
                             no moderator token, so projecting it shows only what
                             the results setting lets everyone see. */}
@@ -229,19 +230,42 @@ const ModeratorPanel = ({
                         {/* How the room display presents itself. Set here, so
                             nobody has to walk up to the shared screen. */}
                         <SelectSetting
-                            label="Display QR"
+                            label="QR code"
                             title="How the room display shows the join QR code"
                             value={state.displayQr || 'full'}
                             onChange={(qr) => onSetDisplaySettings({ qr })}
                             options={[['full', 'Large'], ['corner', 'Small, in a corner'], ['hidden', 'Hidden']]}
                         />
                         <SelectSetting
-                            label="Display shows"
+                            label="Layout"
                             title="One question shows the question you chose with Show on display. If you chose none, it shows the first pinned question, or the newest one when nothing is pinned. Before and after compares two opinion snapshots: the first and the latest, unless you chose others under Opinion Snapshots"
                             value={state.displayLayout || 'all'}
                             onChange={(layout) => onSetDisplaySettings({ layout })}
                             options={[['all', 'All questions'], ['focus', 'One question'], ['compare', 'Before and after']]}
                         />
+                        {(state.displayLayout || 'all') === 'all' && (
+                            <>
+                                <SelectSetting
+                                    label="Sort"
+                                    value={state.displaySort || 'oldest'}
+                                    onChange={(sort) => onSetDisplaySettings({ sort })}
+                                    options={[
+                                        ['oldest', 'Oldest first'], ['newest', 'Newest first'],
+                                        ['interesting', 'Most interesting'], ['agreement', 'Most agreement'],
+                                        ['disagreement', 'Most disagreement'], ['controversial', 'Most controversial'],
+                                    ]}
+                                />
+                                <Switch
+                                    label="Pinned questions first"
+                                    checked={state.displayPinnedFirst !== false}
+                                    onChange={(pinnedFirst) => onSetDisplaySettings({ pinnedFirst })}
+                                />
+                                <p className="text-xs text-gray-500">Agreement sorts use only results visible on the display.</p>
+                            </>
+                        )}
+                    </Group>
+
+                    <Group title="This page">
                         <Switch
                             label="Join QR on this page"
                             hint="A floating code you can resize, for when you project this page"
@@ -355,6 +379,8 @@ ModeratorPanel.propTypes = {
         resultsVisibility: PropTypes.string,
         displayQr: PropTypes.string,
         displayLayout: PropTypes.string,
+        displaySort: PropTypes.string,
+        displayPinnedFirst: PropTypes.bool,
         displayQuestionId: PropTypes.number,
         reactionsEnabled: PropTypes.bool,
         reactionsVisible: PropTypes.bool,

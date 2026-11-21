@@ -71,7 +71,7 @@ test('a moderator queues a question, publishes it, and chooses what the room dis
     // One click puts a question on the screen, on its own.
     await moderator.getByRole('button', { name: 'Show on display', exact: true }).click();
     await expect(moderator.getByRole('button', { name: 'On display', exact: true, pressed: true })).toBeVisible();
-    await expect(moderator.getByLabel('Display shows')).toHaveValue('focus');
+    await expect(moderator.getByLabel('Layout', { exact: true })).toHaveValue('focus');
     await expect(shown).toHaveCount(1);
     await expect(shown.getByRole('heading', { name: 'Agenda question' })).toBeVisible();
 
@@ -137,7 +137,7 @@ test('showing results saves a "before" snapshot, and the comparison goes on the 
     // One click puts the comparison on the room's screen.
     await panel.getByRole('button', { name: 'Show this comparison on the room display', exact: true }).click();
     await expect(panel.getByRole('button', { name: 'On the room display', exact: true, pressed: true })).toBeVisible();
-    await expect(page.getByLabel('Display shows')).toHaveValue('compare');
+    await expect(page.getByLabel('Layout', { exact: true })).toHaveValue('compare');
     const comparison = display.getByTestId('display-comparison-view');
     await expect(comparison.getByText('Before results shown: Shift question', { exact: true })).toBeVisible();
     await expect(comparison.getByText('After discussion', { exact: true })).toBeVisible();
@@ -162,12 +162,12 @@ test('showing results saves a "before" snapshot, and the comparison goes on the 
     await expect(comparison.getByText('After discussion', { exact: true })).toHaveCount(0);
 
     // Back to the questions.
-    await page.getByLabel('Display shows').selectOption('all');
+    await page.getByLabel('Layout', { exact: true }).selectOption('all');
     await expect(display.getByTestId('display-comparison-view')).toHaveCount(0);
     await expect(display.getByTestId('display-question')).toHaveCount(1);
 
     // "Before and after" on its own compares the first and the latest snapshot.
-    await page.getByLabel('Display shows').selectOption('compare');
+    await page.getByLabel('Layout', { exact: true }).selectOption('compare');
     await expect(display.getByTestId('display-comparison-view').getByText('End of the evening', { exact: true })).toBeVisible();
   } finally {
     await displayContext.close();
@@ -188,7 +188,7 @@ test('the room display hides a comparison until the moderator shows the question
     await panel.getByLabel('Snapshot name').fill('Start');
     await panel.getByRole('button', { name: 'Save snapshot', exact: true }).click();
     await expect(panel.getByText('Saved “Start”.')).toBeVisible();
-    await page.getByLabel('Display shows').selectOption('compare');
+    await page.getByLabel('Layout', { exact: true }).selectOption('compare');
 
     const display = await displayContext.newPage();
     await display.goto(`/discussion/${room.slug}/display`);

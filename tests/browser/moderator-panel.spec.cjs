@@ -95,7 +95,7 @@ test.describe('on a phone', () => {
 
     await show.click();
     await expect(page.getByRole('switch', { name: 'Locked', exact: true })).toBeVisible();
-    await expect(page.getByLabel('Display QR')).toBeVisible();
+    await expect(page.getByLabel('QR code', { exact: true })).toBeVisible();
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(PHONE.width);
   });
 });

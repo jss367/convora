@@ -344,6 +344,8 @@ async function initializeDatabase(pool) {
     // DISPLAY_QR_MODES and DISPLAY_LAYOUTS in server.js.
     await pool.query("ALTER TABLE discussions ADD COLUMN IF NOT EXISTS display_qr TEXT NOT NULL DEFAULT 'full'");
     await pool.query("ALTER TABLE discussions ADD COLUMN IF NOT EXISTS display_layout TEXT NOT NULL DEFAULT 'all'");
+    await pool.query("ALTER TABLE discussions ADD COLUMN IF NOT EXISTS display_sort TEXT NOT NULL DEFAULT 'oldest'");
+    await pool.query("ALTER TABLE discussions ADD COLUMN IF NOT EXISTS display_pinned_first BOOLEAN NOT NULL DEFAULT TRUE");
     // The question a moderator chose to show on the room display in its
     // one-question view (see setDisplaySettings in server.js). Not a foreign
     // key: the id is checked against the discussion's questions when it is read,
