@@ -2002,6 +2002,7 @@ test('a moderator sets how the room display shows the QR code and questions', as
     assert.equal(state.displayQr, 'full');
     assert.equal(state.displayLayout, 'all');
     assert.equal(state.displaySort, 'oldest');
+    assert.equal(state.displayQuestionType, 'all');
     assert.equal(state.displayPinnedFirst, true);
 
     const outsider = await connectSocket();
@@ -2032,13 +2033,16 @@ test('a moderator sets how the room display shows the QR code and questions', as
       mod.emit('setDisplaySettings', slug, { sort, pinnedFirst: false }, adminToken);
       assert.equal((await changed).displayLayout, 'focus');
     }
-    for (const settings of [{ sort: 'invalid' }, { sort: null }, { pinnedFirst: 'false' }, { pinnedFirst: null }]) {
+    const filtered = waitForEvent(display, 'discussionState', state => state.displayQuestionType === 'Open Ended');
+    mod.emit('setDisplaySettings', slug, { questionType: 'Open Ended' }, adminToken);
+    assert.equal((await filtered).displaySort, 'controversial');
+    for (const settings of [{ questionType: 'invalid' }, { questionType: null }, { sort: 'invalid' }, { sort: null }, { pinnedFirst: 'false' }, { pinnedFirst: null }]) {
       const invalid = waitForEvent(mod, 'error', error => /room display setting/i.test(error.message));
       mod.emit('setDisplaySettings', slug, settings, adminToken);
       await invalid;
     }
-    const stored = await pool.query('SELECT display_sort, display_pinned_first FROM discussions WHERE slug = $1', [slug]);
-    assert.deepEqual(stored.rows[0], { display_sort: 'controversial', display_pinned_first: false });
+    const stored = await pool.query('SELECT display_question_type, display_sort, display_pinned_first FROM discussions WHERE slug = $1', [slug]);
+    assert.deepEqual(stored.rows[0], { display_question_type: 'Open Ended', display_sort: 'controversial', display_pinned_first: false });
 
   } finally {
     display.disconnect();

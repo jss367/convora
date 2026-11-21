@@ -61,7 +61,7 @@ function getQuestionRange(question) {
 
 // The question types a discussion supports. Mirrors QuestionTypes in
 // client/src/questions/config.js — used to validate creates/edits server-side.
-const VALID_QUESTION_TYPES = new Set(['Agreement', 'Yes/No', 'Multiple Choice', 'Numerical', 'Open Ended', 'Brainstorm']);
+const VALID_QUESTION_TYPES = new Set(['Agreement', 'Yes/No', 'Multiple Choice', 'Numerical', 'Open Ended']);
 
 // A Multiple Choice question carries its own answer options, set by whoever
 // writes it. Participants pick exactly one. Mirrors MULTIPLE_CHOICE_LIMITS in
@@ -192,6 +192,7 @@ function normalizeQuestionPayload(question) {
 }
 
 module.exports = {
+  VALID_QUESTION_TYPES,
   normalizeQuestionTools,
   AGREEMENT_OPTIONS, YES_NO_OPTIONS, parseOptions, parseStoredVoteValue,
   getQuestionRange, normalizeNumericalVote, NUMERICAL_DECIMALS, normalizeQuestionPayload, normalizeChoiceOptions, choiceOptionsFor, isValidVote,

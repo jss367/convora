@@ -64,7 +64,7 @@ test('question editing, numerical and binary voting, and brainstorm comments sti
     await page.getByRole('button', { name: 'Post', exact: true }).click();
     await expect(page.getByText('A useful follow-up', { exact: true })).toBeVisible();
 
-    const typePicker = page.getByRole('combobox').filter({ has: page.locator('option[value="Numerical"]') });
+    const typePicker = page.getByLabel('New question type', { exact: true });
     await page.getByPlaceholder('Enter a new question or statement').fill('Estimate effort');
     await typePicker.selectOption('Numerical');
     await page.getByRole('button', { name: 'Add Question', exact: true }).click();
@@ -195,7 +195,7 @@ test('a Multiple Choice question is written with its own options, validated, vot
     await page.goto(`/discussion/${discussion.slug}`);
     const question = 'In the last year, did your p(doom) get higher or lower?';
     await page.getByPlaceholder('Enter a new question or statement').fill(question);
-    await page.getByRole('combobox').filter({ has: page.locator('option[value="Multiple Choice"]') })
+    await page.getByLabel('New question type', { exact: true })
       .selectOption('Multiple Choice');
 
     // Two empty options to start; too few and repeats are caught before sending.

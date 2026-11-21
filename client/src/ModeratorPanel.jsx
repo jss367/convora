@@ -2,6 +2,7 @@ import React, { useId, useState } from 'react';
 import PropTypes from 'prop-types';
 import { ModeratorLinkUnsavedMark } from './ModeratorLinkPanel';
 import { EPISTEMIC_REACTIONS } from './questions/config';
+import { questionTypeFilterOptions } from './questions/questionTypes.mjs';
 
 // The moderator's controls for a discussion, grouped by what they affect.
 // Settings that are either on or off are switches whose label never changes,
@@ -267,6 +268,12 @@ const ModeratorPanel = ({
                         {(state.displayLayout || 'all') === 'all' && (
                             <>
                                 <SelectSetting
+                                    label="Display question type"
+                                    value={state.displayQuestionType || 'all'}
+                                    onChange={questionType => onSetDisplaySettings({ questionType })}
+                                    options={questionTypeFilterOptions}
+                                />
+                                <SelectSetting
                                     label="Sort"
                                     value={state.displaySort || 'oldest'}
                                     onChange={(sort) => onSetDisplaySettings({ sort })}
@@ -394,6 +401,7 @@ ModeratorPanel.propTypes = {
         displayQr: PropTypes.string,
         displayLayout: PropTypes.string,
         displaySort: PropTypes.string,
+        displayQuestionType: PropTypes.string,
         displayPinnedFirst: PropTypes.bool,
         displayQuestionId: PropTypes.number,
         reactionsEnabled: PropTypes.bool,

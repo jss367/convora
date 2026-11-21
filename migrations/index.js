@@ -438,6 +438,10 @@ async function migratePublishedOrder(client) {
   await client.query('ALTER TABLE questions ADD COLUMN IF NOT EXISTS published_position INTEGER');
 }
 
+async function migrateDisplayQuestionType(client) {
+  await client.query("ALTER TABLE discussions ADD COLUMN IF NOT EXISTS display_question_type TEXT NOT NULL DEFAULT 'all'");
+}
+
 module.exports = [
   [1, initSchema],
   [2, migrateModerationAndDedup],
@@ -457,4 +461,5 @@ module.exports = [
   [16, migrateIndependentAnswers],
   [17, migrateSpeakingQueue],
   [18, migratePublishedOrder],
+  [19, migrateDisplayQuestionType],
 ];

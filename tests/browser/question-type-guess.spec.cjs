@@ -3,7 +3,7 @@ const { test, expect } = require('./lifecycle-fixtures.cjs');
 test('switching away from Open Ended ignores its invalid retained limit', async ({ page, rooms }) => {
   const room = await rooms.create('Retained response setting');
   await page.goto(`/discussion/${room.slug}`);
-  const picker = page.getByRole('combobox').filter({ has: page.locator('option[value="Numerical"]') });
+  const picker = page.getByLabel('New question type', { exact: true });
   await picker.selectOption('Open Ended');
   await page.getByLabel('Maximum responses per person (blank for unlimited)').fill('0');
   await picker.selectOption('Agreement');
@@ -19,7 +19,7 @@ test('idea guesses use unified Open Ended and preserve explicitly chosen respons
   const room = await rooms.create('Unified guess');
   await page.goto(`/discussion/${room.slug}`);
   const input = page.getByPlaceholder('Enter a new question or statement');
-  const picker = page.getByRole('combobox').filter({ has: page.locator('option[value="Numerical"]') });
+  const picker = page.getByLabel('New question type', { exact: true });
   await expect(picker.locator('option[value="Brainstorm"]')).toHaveCount(0);
   await input.fill('What are some ways to improve this?');
   await expect(picker).toHaveValue('Open Ended');
@@ -42,7 +42,7 @@ for (const guessed of [false, true]) {
     const room = await rooms.create('Confirmed type');
     await page.goto(`/discussion/${room.slug}`);
     const input = page.getByPlaceholder('Enter a new question or statement');
-    const picker = page.getByRole('combobox').filter({ has: page.locator('option[value="Numerical"]') });
+    const picker = page.getByLabel('New question type', { exact: true });
     if (guessed) await input.fill('How many seats do we need?');
     const chosen = guessed ? 'Numerical' : 'Agreement';
     await expect(picker).toHaveValue(chosen);
@@ -65,7 +65,7 @@ test('the type picker follows the wording until the author chooses a type', asyn
   const room = await rooms.create('Type guess');
   await page.goto(`/discussion/${room.slug}`);
   const input = page.getByPlaceholder('Enter a new question or statement');
-  const typePicker = page.getByRole('combobox').filter({ has: page.locator('option[value="Numerical"]') });
+  const typePicker = page.getByLabel('New question type', { exact: true });
   const hint = page.getByRole('status').filter({ hasText: 'based on your wording' });
   const range = page.getByRole('spinbutton');
   const storedType = async text => {
