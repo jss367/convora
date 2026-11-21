@@ -1,10 +1,5 @@
-export const QuestionTypes = {
-    AGREEMENT: 'Agreement',
-    YES_NO: 'Yes/No',
-    MULTIPLE_CHOICE: 'Multiple Choice',
-    NUMERICAL: 'Numerical',
-    OPEN_ENDED: 'Open Ended'
-};
+import { QuestionTypes } from './questionTypes.mjs';
+export { QuestionTypes, MULTIPLE_CHOICE_LIMITS } from './questionTypes.mjs';
 
 // Shown under the type picker so creators understand what each type does.
 export const QuestionTypeDescriptions = {
@@ -13,14 +8,6 @@ export const QuestionTypeDescriptions = {
     [QuestionTypes.MULTIPLE_CHOICE]: 'Each participant picks one of the answers you write, such as Higher, Lower or About the same.',
     [QuestionTypes.NUMERICAL]: 'Each participant submits one number between your min and max, with the slider or by typing it. Decimals such as 0.5 are allowed.',
     [QuestionTypes.OPEN_ENDED]: 'Participants can add, edit, and delete multiple responses, with ratings, reactions, and comments.',
-};
-
-// Bounds on a Multiple Choice question's options. Mirror the
-// MULTIPLE_CHOICE_* constants in question-data.js, which enforces them.
-export const MULTIPLE_CHOICE_LIMITS = {
-    MIN_OPTIONS: 2,
-    MAX_OPTIONS: 6,
-    MAX_OPTION_LENGTH: 100,
 };
 
 export const VoteOptions = {

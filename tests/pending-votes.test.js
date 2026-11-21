@@ -1,104 +1,105 @@
 const assert = require('node:assert/strict');
-const { readFileSync } = require('node:fs');
-const path = require('node:path');
-const vm = require('node:vm');
 const { test } = require('node:test');
 const { io } = require('socket.io-client');
 
-// Exercise the hook with the real Socket.IO buffering/ack implementation, without
-// opening a connection. Only React's state/effect scheduling is supplied here.
-function mountPendingVotes(socket) {
-  let state;
-  const effects = [];
-  const source = readFileSync(path.join(__dirname, '../client/src/hooks/useDiscussionRoom.js'), 'utf8');
-  const hook = source.slice(source.indexOf('export function usePendingVotes('), source.indexOf('// Subscribe once per room.'))
-    .replace('export function', 'function');
-  const context = {
-    useState: initial => {
-      state = initial;
-      return [state, update => { state = update(state); }];
-    },
-    useRef: current => ({ current }),
-    useEffect: effect => effects.push(effect),
-    useCallback: callback => callback,
-  };
-  vm.createContext(context);
-  vm.runInContext(`${hook}\nthis.mount = usePendingVotes;`, context);
-  const [, sendVote] = context.mount(socket);
-  const cleanups = effects.map(effect => effect());
-  return { sendVote, pending: () => state, unmount: () => cleanups.forEach(cleanup => cleanup()) };
+function offlineSocket() {
+  const socket = io('http://127.0.0.1:1', { autoConnect: false, forceNew: true });
+  socket.io.engine = { transport: { writable: true }, _hasPingExpired: () => false };
+  socket.packet = () => {};
+  return socket;
 }
 
-function disconnectedSocket() {
-  return io('http://127.0.0.1:1', { autoConnect: false, forceNew: true });
+async function track(context, socket = offlineSocket()) {
+  const { trackPendingVotes } = await import('../client/src/hooks/pendingVotes.mjs');
+  const changes = [];
+  const tracker = trackPendingVotes(socket, pending => changes.push(pending));
+  context.after(tracker.dispose);
+  return { socket, changes, ...tracker };
 }
 
-test('buffered votes block repeat submissions until the real acknowledgment', () => {
-  const socket = disconnectedSocket();
-  const hook = mountPendingVotes(socket);
-  assert.equal(hook.sendVote(7, 'Yes', 'vote', 'room', 7, 'Yes', 'user'), true);
-  assert.equal(hook.sendVote(7, 'No', 'vote', 'room', 7, 'No', 'user'), false);
-  assert.equal(socket.sendBuffer.length, 1);
-  socket.onack({ id: socket.sendBuffer[0].id, data: [{ ok: true }] });
-  assert.equal(hook.pending()[7], undefined);
-  hook.unmount();
+test('votes lock only their own question until acknowledged, including clear and repeated votes', async context => {
+  const { socket, changes, sendVote } = await track(context);
+  socket.onconnect('online');
+  assert.equal(sendVote(7, 'Yes', 'vote', 'room', 7, 'Yes', 'user'), true);
+  assert.equal(sendVote(7, null, 'clearVote', 'room', 7, 'user'), false);
+  assert.equal(sendVote(8, null, 'clearVote', 'room', 8, 'user'), true);
+  socket.onack({ id: 1, data: [{ ok: true }] });
+  socket.onack({ id: 0, data: [{ ok: true }] });
+  assert.equal(sendVote(7, 'Yes', 'vote', 'room', 7, 'Yes', 'user'), true);
+  assert.deepEqual(changes, [{ 7: 'Yes' }, { 7: 'Yes', 8: null }, { 7: 'Yes' }, {}, { 7: 'Yes' }]);
 });
 
-test('a vote buffered after heartbeat expiry stays pending through disconnect', () => {
-  const socket = disconnectedSocket();
-  socket.connected = true;
-  socket.io.engine = { transport: { writable: true }, _hasPingExpired: () => true };
-  const hook = mountPendingVotes(socket);
-  hook.sendVote(7, 'Idea', 'vote', 'room', 7, 'Idea', 'user');
-  assert.equal(socket.sendBuffer.length, 1, 'Socket.IO buffered despite connected=true');
-  socket.onclose('ping timeout');
-  assert.equal(hook.pending()[7], 'Idea');
-  assert.equal(hook.sendVote(7, 'Idea', 'vote', 'room', 7, 'Idea', 'user'), false);
+test('a buffered vote replays once and delivers the server result after clearing pending', async context => {
+  const { socket, changes, sendVote } = await track(context);
+  const result = { ok: false, added: false, reason: 'duplicate' };
+  const results = [];
+  const args = ['room', 7, 'Idea', 'user', 'Name', 'custom'];
+  sendVote(7, 'Idea', 'vote', ...args, value => {
+    assert.deepEqual(changes.at(-1), {});
+    results.push(value);
+  });
+  assert.equal(sendVote(7, 'Idea', 'vote', ...args, assert.fail), false);
   assert.equal(socket.sendBuffer.length, 1);
-  // Reconnect flushes the packet before emitting `connect`. It must now count
-  // as sent, so another disconnect does not strand its pending marker.
-  socket.packet = () => {};
+  assert.deepEqual(socket.sendBuffer[0].data, ['vote', ...args]);
+  const { id } = socket.sendBuffer[0];
+  const lateAck = socket.acks[id];
+  socket.onconnect('reconnected');
+  assert.equal(socket.sendBuffer.length, 0);
+  assert.deepEqual(changes, [{ 7: 'Idea' }]);
+  socket.onack({ id, data: [result] });
+  lateAck({ ok: true });
+  assert.deepEqual(results, [result]);
+  assert.deepEqual(changes, [{ 7: 'Idea' }, {}]);
+});
+
+test('heartbeat timeout drops sent votes but not buffered ones until replay', async context => {
+  const { socket, changes, sendVote } = await track(context);
+  socket.onconnect('online');
+  sendVote(7, null, 'clearVote', 'room', 7, 'user', assert.fail);
+  socket.io.engine._hasPingExpired = () => true;
+  sendVote(8, 'Idea', 'vote', 'room', 8, 'Idea', 'user', assert.fail);
+  assert.equal(socket.sendBuffer.length, 1);
+  socket.onclose('ping timeout');
+  assert.deepEqual(changes.at(-1), { 8: 'Idea' });
+  assert.equal(sendVote(8, null, 'clearVote', 'room', 8, 'user'), false);
+  socket.io.engine._hasPingExpired = () => false;
   socket.onconnect('reconnected');
   assert.equal(socket.sendBuffer.length, 0);
   socket.onclose('transport close');
-  assert.equal(hook.pending()[7], undefined);
-  hook.unmount();
+  assert.deepEqual(changes.at(-1), {});
 });
 
-test('sent votes clear on disconnect and stale acks cannot clear a newer answer', () => {
-  const socket = disconnectedSocket();
-  socket.connected = true;
-  socket.io.engine = { transport: { writable: true }, _hasPingExpired: () => false };
-  socket.packet = () => {};
-  const hook = mountPendingVotes(socket);
-  hook.sendVote(7, 'Yes', 'vote', 'room', 7, 'Yes', 'user');
-  const oldAck = socket.acks[0];
+test('a late ack after disconnect neither calls back nor clears the replacement vote', async context => {
+  const { socket, changes, sendVote } = await track(context);
+  socket.onconnect('online');
+  sendVote(7, 'Yes', 'vote', 'room', 7, 'Yes', 'user', assert.fail);
+  const lateAck = socket.acks[0];
   socket.onclose('transport close');
-  assert.equal(hook.pending()[7], undefined);
-  assert.equal(hook.sendVote(7, null, 'clearVote', 'room', 7, 'user'), true);
-  oldAck({ ok: true });
-  assert.equal(hook.pending()[7], null);
-  hook.unmount();
+  assert.equal(sendVote(7, null, 'clearVote', 'room', 7, 'user'), true);
+  lateAck({ ok: true });
+  assert.deepEqual(changes, [{ 7: 'Yes' }, {}, { 7: null }]);
+  socket.onconnect('reconnected');
+  socket.onack({ id: 1, data: [{ ok: true }] });
+  assert.deepEqual(changes.at(-1), {});
 });
 
-test('leaving a discussion removes its pending-vote listeners', () => {
-  const socket = disconnectedSocket();
-  const hook = mountPendingVotes(socket);
-  hook.unmount();
+test('cleanup detaches listeners and invalidates acks, even after setup on the same socket', async context => {
+  const first = await track(context);
+  const { socket } = first;
+  first.sendVote(7, 'Yes', 'vote', 'room', 7, 'Yes', 'user', assert.fail);
+  first.dispose();
   assert.equal(socket.listeners('disconnect').length, 0);
   assert.equal(socket.listenersAnyOutgoing().length, 0);
-});
-
-test('a duplicate result clears pending and reaches the Brainstorm notice callback', () => {
-  const socket = disconnectedSocket();
-  const hook = mountPendingVotes(socket);
-  const result = { ok: false, added: false, reason: 'duplicate' };
-  let received;
-  hook.sendVote(7, 'Idea', 'vote', 'room', 7, 'Idea', 'user', 'Name', 'custom', value => { received = value; });
-  assert.equal(socket.sendBuffer[0].data.length, 7, 'only the wire arguments reach Socket.IO');
-  socket.onack({ id: socket.sendBuffer[0].id, data: [result] });
-  assert.equal(hook.pending()[7], undefined);
-  assert.equal(received, result);
-  assert.equal(hook.sendVote(7, 'Another idea', 'vote', 'room', 7, 'Another idea', 'user'), true);
-  hook.unmount();
+  const next = await track(context, socket);
+  first.dispose();
+  assert.equal(socket.listeners('disconnect').length, 1);
+  assert.equal(socket.listenersAnyOutgoing().length, 1);
+  assert.equal(first.sendVote(8, null, 'clearVote', 'room', 8, 'user'), false);
+  assert.equal(next.sendVote(7, 'No', 'vote', 'room', 7, 'No', 'user'), true);
+  socket.onconnect('reconnected');
+  socket.onack({ id: 0, data: [{ ok: true }] });
+  assert.deepEqual(first.changes, [{ 7: 'Yes' }]);
+  assert.deepEqual(next.changes, [{ 7: 'No' }]);
+  socket.onack({ id: 1, data: [{ ok: true }] });
+  assert.deepEqual(next.changes.at(-1), {});
 });

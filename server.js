@@ -6,9 +6,10 @@ const { Pool } = require('pg');
 const path = require('path');
 const crypto = require('crypto');
 const cors = require('cors');
-const { analyzeClusters } = require('./clustering');
+const { analyzeViewerClusters, ClusterBusyError } = require('./cluster-service');
 const { buildOpinionSnapshot, OPINION_TYPES } = require('./opinion-snapshots');
 const { createVoteStore } = require('./votes');
+const { createQuestionBroadcaster } = require('./question-broadcaster');
 const { createInterestUpdates } = require('./interest-updates');
 const interestUpdates = createInterestUpdates();
 const { logError } = require('./logging');
@@ -364,129 +365,21 @@ function restViewer(req) {
   };
 }
 
-// Send the questions to a discussion's room, or to one socket. When results are
-// always shown everyone gets the same payload in one room broadcast. Otherwise
-// each socket gets its own view: moderators (sockets that proved a token through
-// checkModerator) the full payload, everyone else the payload with the results
-// of questions they have not answered removed. Views are built once per
-// participant and shared by their sockets, from a single questions query. Room
-// displays get the display view, whatever else their socket has claimed.
-// Queued questions go to moderators only, in either mode, so a discussion that
-// has any is also sent socket by socket.
-// `isCurrent`, given with `onlySocket`, is checked once the data has loaded; a
-// caller whose request has been superseded meanwhile sends nothing.
-//
-// Room-wide sends for one discussion run one at a time. Overlapping sends could
-// finish out of order, and an older payload arriving last would undo a newer
-// change, such as a moderator hiding results again. A request made while a send
-// is running queues one more send, which starts after it and so reads the
-// change; requests made before that queued send starts share it. Each caller
-// waits only for the send that covers its request, never for later ones, so a
-// busy room cannot hold up a vote's acknowledgment. A failed send rejects only
-// its own callers; the next one still runs. A send to one socket is dropped
-// only once a room-wide send that started after it has been delivered: the
-// socket is in the room already and has the newer payload. A room-wide send
-// that started but then failed does not cancel it.
-//
-// A discussion's entry is removed once it is idle: no room-wide send running or
-// queued and no send to one socket still loading. Until then its counters stay,
-// so a send in flight is always compared against the same entry.
-const questionBroadcasts = new Map(); // slug -> { runs, delivered, tail, queued, busy, personal }
+const questionBroadcaster = createQuestionBroadcaster({
+  getQuestions, getResultsAccess, withoutQueued, displayView, hideUnansweredResults,
+  audience,
+  displays(slug) {
+    const room = displayRoom(slug);
+    return io.sockets.adapter.rooms.get(room)?.size ? io.to(room) : null;
+  },
+  participants(slug) {
+    return [...(io.sockets.adapter.rooms.get(slug) || [])].map(id => io.sockets.sockets.get(id)).filter(Boolean);
+  },
+});
 
-function questionRoom(slug) {
-  let room = questionBroadcasts.get(slug);
-  if (!room) {
-    room = { runs: 0, delivered: 0, tail: Promise.resolve(), queued: null, busy: false, personal: 0 };
-    questionBroadcasts.set(slug, room);
-  }
-  return room;
-}
-
-function evictIfIdle(slug, room) {
-  if (!room.busy && room.personal === 0 && questionBroadcasts.get(slug) === room) {
-    questionBroadcasts.delete(slug);
-  }
-}
-
-function emitQuestions(topic, onlySocket = null, isCurrent = () => true) {
+function emitQuestions(topic, onlySocket = null, isCurrent) {
   const slug = slugifyTopic(topic);
-  const room = questionRoom(slug);
-  if (onlySocket) {
-    room.personal += 1;
-    return sendQuestions(slug, room, { onlySocket, isCurrent, startedAfterRun: room.runs })
-      .finally(() => {
-        room.personal -= 1;
-        evictIfIdle(slug, room);
-      });
-  }
-  if (room.queued) return room.queued;
-  room.busy = true;
-  const run = room.tail.catch(() => {}).then(async () => {
-    // From here on, a new request needs a send that starts after this one.
-    room.queued = null;
-    room.runs += 1;
-    await sendQuestions(slug, room, { run: room.runs });
-  });
-  room.tail = run;
-  room.queued = run;
-  run.catch(() => {}).then(() => {
-    // Nothing was chained after this run: the room has no send left.
-    if (room.tail !== run) return;
-    room.busy = false;
-    evictIfIdle(slug, room);
-  });
-  return run;
-}
-
-// One send of the questions: to `onlySocket`, or room-wide as room run `run`.
-// A room-wide send records itself as delivered in the same synchronous step as
-// its emits, so a send to one socket never sees it half done.
-async function sendQuestions(slug, room, { onlySocket = null, isCurrent = () => true, startedAfterRun = 0, run = 0 } = {}) {
-  const respondents = new Map();
-  const questions = await getQuestions(slug, { respondents });
-  const access = await getResultsAccess(slug);
-  if (onlySocket && room.delivered > startedAfterRun) return;
-  if (onlySocket && !isCurrent()) return;
-  const markDelivered = () => {
-    if (!onlySocket) room.delivered = Math.max(room.delivered, run);
-  };
-  // What everyone but a moderator may be sent.
-  const published = withoutQueued(questions);
-  if (access.alwaysShow && published === questions) {
-    if (onlySocket?.data.isDisplay && onlySocket.data.display !== slug) return;
-    (onlySocket || audience(slug)).emit('questions', questions);
-    markDelivered();
-    return;
-  }
-  const forDisplay = () => (access.alwaysShow ? published : displayView(published, respondents));
-  if (onlySocket?.data.isDisplay) {
-    // The display may have moved to another discussion while this was loading.
-    if (onlySocket.data.display !== slug) return;
-    onlySocket.emit('questions', forDisplay());
-    return;
-  }
-  if (!onlySocket && io.sockets.adapter.rooms.get(displayRoom(slug))?.size) {
-    io.to(displayRoom(slug)).emit('questions', forDisplay());
-  }
-  const targets = onlySocket
-    ? [onlySocket]
-    : [...(io.sockets.adapter.rooms.get(slug) || [])].map(id => io.sockets.sockets.get(id)).filter(Boolean);
-  const views = new Map();
-  for (const target of targets) {
-    const moderator = target.data.moderator;
-    if (moderator && moderator.slug === slug && access.isModerator(moderator.token)) {
-      target.emit('questions', questions);
-      continue;
-    }
-    if (access.alwaysShow) {
-      target.emit('questions', published);
-      continue;
-    }
-    const userId = target.data.userId || null;
-    if (!views.has(userId)) views.set(userId, hideUnansweredResults(published, respondents, userId));
-    target.emit('questions', views.get(userId));
-  }
-  markDelivered();
+  return onlySocket ? questionBroadcaster.sendTo(slug, onlySocket, isCurrent) : questionBroadcaster.broadcast(slug);
 }
 
 // A socket's view can change without any vote: it identifies itself after
@@ -3564,8 +3457,9 @@ app.get('/api/discussions/:topic/clusters', async (req, res) => {
     // (sizes, per-statement means), never individual ids.
     // Statements the viewer may not see results for arrive with no votes, so
     // the groups are computed only from statements this viewer has answered.
-    const questions = await getQuestionsForViewer(req.params.topic, { ...restViewer(req), includeUserIds: true });
-    const analysis = analyzeClusters(questions);
+    const analysis = await analyzeViewerClusters(() =>
+      getQuestionsForViewer(req.params.topic, { ...restViewer(req), includeUserIds: true })
+    );
 
     res.json({
       discussion: {
@@ -3574,9 +3468,9 @@ app.get('/api/discussions/:topic/clusters', async (req, res) => {
         createdAt: discussion.created_at,
       },
       ...analysis,
-      hiddenStatementCount: questions.filter(q => q.resultsHidden && q.type === 'Agreement').length,
     });
   } catch (err) {
+    if (err instanceof ClusterBusyError) return res.status(503).json({ error: err.message });
     logError('Request failed:', err);
     res.status(500).json({ error: 'Server error' });
   }

@@ -152,6 +152,10 @@ const ClusterPage = () => {
         setError(null);
         try {
             const response = await fetch(`/api/discussions/${encodedTopic}/clusters`, { headers: await viewerHeaders(slugifyTopic(topic)) });
+            if (response.status === 503) {
+                setError('Opinion group analysis is busy. Please try again in a moment.');
+                return;
+            }
             if (!response.ok) {
                 throw new Error('Failed to load clusters');
             }
@@ -184,7 +188,12 @@ const ClusterPage = () => {
             </div>
 
             {loading && <p className="text-gray-600">Finding opinion groups…</p>}
-            {error && <p className="text-red-600">{error}</p>}
+            {error && (
+                <div>
+                    <p role="alert" className="text-red-600">{error}</p>
+                    <button type="button" className="mt-2 text-primary underline" onClick={load}>Try again</button>
+                </div>
+            )}
 
             {!loading && !error && data?.hiddenStatementCount > 0 && (
                 <p className="text-sm text-gray-600 mb-4" data-testid="results-hidden">

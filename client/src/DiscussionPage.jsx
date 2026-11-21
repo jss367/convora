@@ -1,5 +1,4 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { flushSync } from 'react-dom';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { QRCodeSVG } from 'qrcode.react';
 import { getEffectiveNameMode, NameModes, MAX_CUSTOM_NAME_LENGTH } from './identity';
@@ -14,26 +13,16 @@ import OpinionSnapshots from './OpinionSnapshots';
 import ModeratorLinkPanel, { moderatorLinkPromptState, useModeratorLinkPrompt } from './ModeratorLinkPanel';
 import ModeratorPanel from './ModeratorPanel';
 import { downloadForViewer } from './viewer';
-import ResponseSettings from './questions/ResponseSettings';
 import QuestionEditor from './questions/QuestionEditor';
 import { AgreementResults, YesNoResults, MultipleChoiceResults } from './questions/OpinionResults';
-import ChoiceOptionsEditor from './questions/ChoiceOptionsEditor';
 import OpenEndedQuestion from './questions/OpenEndedQuestion';
 import NumericalResults from './questions/NumericalResults';
-import { clampNumericalValue, getNumericalRange, validateNumericalRange, sortQuestionsMostRecent, sortQuestionsMostInteresting, validateChoiceOptions } from './questions/questionHelpers.mjs';
-import { guessQuestionType } from './questions/guessQuestionType.mjs';
-import QuestionTextBox from './QuestionTextBox';
+import { clampNumericalValue, getNumericalRange, sortQuestionsMostRecent, sortQuestionsMostInteresting } from './questions/questionHelpers.mjs';
+import QuestionComposer, { useQuestionComposer } from './questions/QuestionComposer.jsx';
 import {
-    QuestionTypes, QuestionTypeDescriptions, VoteOptions, YesNoOptions,
-    ALL_REACTION_KEYS, MULTIPLE_CHOICE_LIMITS,
+    QuestionTypes, VoteOptions, YesNoOptions,
+    ALL_REACTION_KEYS,
 } from './questions/config';
-
-// A blank Add Question form. Multiple Choice starts with two empty options, the
-// minimum it needs; they are kept while the type changes so switching away and
-// back does not lose what was typed.
-const emptyQuestionDraft = () => ({
-    text: '', type: QuestionTypes.AGREEMENT, minValue: 0, maxValue: 100, options: ['', ''], typeChosen: false,
-});
 
 // Color themes a moderator can apply to a discussion. Keys and the palettes
 // they map to are defined in client/src/index.css ([data-theme] blocks) and
@@ -82,35 +71,9 @@ const DiscussionPage = () => {
     const [pendingVotes, sendVote] = usePendingVotes(socket);
     const [discussion, setDiscussion] = useState(null);
     const [questions, setQuestions] = useState([]);
-    const [questionDraft, setQuestionDraft] = useState(emptyQuestionDraft);
-    const { text: newQuestion, type: questionType, minValue, maxValue, options: choiceOptions } = questionDraft;
-    // Until the author picks a type themselves, the type follows the wording:
-    // the guess when there is one, otherwise the default.
-    const updateQuestionText = (text) => setQuestionDraft(current => ({
-        ...current,
-        text,
-        queued: text.trim() !== '' && (current.queued || (isAdmin && queueNewQuestions)),
-        type: current.typeChosen ? current.type : guessQuestionType(text) ?? QuestionTypes.AGREEMENT,
-    }));
-    // Changing the type or the numerical range by hand is a deliberate choice,
-    // so later edits to the wording leave it alone.
-    const chooseQuestionSetting = (field, value) => setQuestionDraft(current => ({ ...current, [field]: value, typeChosen: true }));
-    const typeGuessed = !questionDraft.typeChosen && guessQuestionType(newQuestion) !== null;
-    const updateQuestionDraft = (field, value) => setQuestionDraft(current => ({ ...current, [field]: value }));
-    // Moderators only: add the next questions to the queue instead of publishing
-    // them. It stays set from one question to the next, so a moderator can
-    // prepare a whole agenda in a row.
-    const [queueNewQuestions, setQueueNewQuestions] = useState(false);
     const [sliderValues, setSliderValues] = useState({});
     const [sortOption, setSortOption] = useState(SortOptions.MOST_RECENT);
     const [showUnansweredOnly, setShowUnansweredOnly] = useState(false);
-    // On a phone the Add Question composer starts collapsed behind a button so
-    // the first question is visible without scrolling. questionsLoaded tells an
-    // empty discussion (composer stays open: adding is the main task) apart
-    // from one whose questions have not arrived yet.
-    const [composerOpen, setComposerOpen] = useState(false);
-    const [questionsLoaded, setQuestionsLoaded] = useState(false);
-    const questionInputRef = useRef(null);
     const [editingIdentity, setEditingIdentity] = useState(false);
     const [error, setError] = useState(null);
     const [spotlightError, setSpotlightError] = useState(null);
@@ -154,7 +117,6 @@ const DiscussionPage = () => {
         reactionsEnabled: false, reactionsVisible: true, commentsEnabled: false,
         reactionKeys: ALL_REACTION_KEYS,
     });
-    const [similarPrompt, setSimilarPrompt] = useState(null);
     // Modal panels: Escape closes, focus is kept inside while open and handed
     // back on close. Duplicate is opened from the More menu, whose item is gone
     // by then, so its focus returns to the More button.
@@ -165,8 +127,6 @@ const DiscussionPage = () => {
     const shareDialogRef = useModalDialog(showShareModal, () => setShowShareModal(false), shareButtonRef);
     const deleteDialogRef = useModalDialog(showDeleteModal, () => { if (!deleting) setShowDeleteModal(false); }, actionsMenuButtonRef);
     const duplicateDialogRef = useModalDialog(showDuplicateModal, () => setShowDuplicateModal(false), duplicateReturnFocusRef);
-    const similarDialogRef = useModalDialog(Boolean(similarPrompt), () => setSimilarPrompt(null));
-    const questionPendingRef = useRef(false);
     const [adminLinkCopied, setAdminLinkCopied] = useState(false);
     // Id of the question a moderator is currently editing inline (null when none).
     const [editingQuestionId, setEditingQuestionId] = useState(null);
@@ -213,6 +173,8 @@ const DiscussionPage = () => {
     const moderatorLink = useModeratorLinkPrompt(discussionSlug, adminToken);
     useEffect(() => { setAdminLinkCopied(false); }, [discussionSlug, adminToken]);
     const isAdmin = !!adminToken;
+    const composer = useQuestionComposer({ socket, discussionSlug, adminToken, setError });
+    const { onQuestionsLoaded, onSimilarQuestion } = composer;
     const { locked, moderatorOnly } = discussionState;
     const theme = THEME_KEYS.includes(discussionState.theme) ? discussionState.theme : DEFAULT_THEME;
     // Which epistemic reactions are active for this session (creator-configurable,
@@ -724,7 +686,7 @@ const DiscussionPage = () => {
     };
 
     const handleQuestionsUpdate = useCallback((updatedQuestions) => {
-        setQuestionsLoaded(true);
+        onQuestionsLoaded();
         setQuestions(prevQuestions => {
             // The server always emits a full snapshot of the discussion's
             // questions, so we rebuild the list from the incoming set. Building
@@ -745,13 +707,13 @@ const DiscussionPage = () => {
             });
             return Array.from(nextMap.values());
         });
-    }, []);
+    }, [onQuestionsLoaded]);
 
     useDiscussionRoom(socket, {
         topic, discussionSlug, userId,
         onDiscussion: setDiscussion, onQuestions: handleQuestionsUpdate,
         onPresence: setPresence, onState: setDiscussionState,
-        onSimilarQuestion: setSimilarPrompt, onBrainstormState: setMyBrainstorm,
+        onSimilarQuestion, onBrainstormState: setMyBrainstorm,
         onModeratorGranted: handleModeratorGranted, onModeratorRevoked: handleModeratorRevoked,
         onPseudonymSync: handlePseudonymSync,
         // The server's reason for refusing an action, such as a vote sent just
@@ -777,10 +739,6 @@ const DiscussionPage = () => {
     useEffect(() => {
         setEditingTitle(false);
         setTitleDraft('');
-        // Composer expansion and loading belong to this room too. Preserve an
-        // open composer during live updates, but start fresh after navigation.
-        setComposerOpen(false);
-        setQuestionsLoaded(false);
     }, [discussionSlug]);
 
     // The participant list is fetched on request, so after navigation the
@@ -789,114 +747,6 @@ const DiscussionPage = () => {
         setParticipants([]);
         setShowParticipants(false);
     }, [discussionSlug]);
-
-    const handleAddQuestion = (event) => {
-        // Submitted from the form (Enter or the Add Question button); stop the
-        // browser's native submit from reloading the page.
-        event?.preventDefault();
-        // Check if question text is empty
-        if (newQuestion.trim() === '') {
-            console.error('Failed to add question: Question text is empty.');
-            // You might want to set an error state here to display to the user
-            setError('Question text cannot be empty.');
-            return;
-        }
-
-        let question = {
-            text: newQuestion.trim(),
-            type: questionType,
-            timestamp: Date.now(),
-            maxResponses: questionDraft.maxResponses,
-            showAttribution: questionDraft.showAttribution,
-        };
-
-        // Handle numerical questions
-        if (questionType === QuestionTypes.NUMERICAL) {
-            const range = validateNumericalRange(minValue, maxValue);
-            if (range.error) {
-                setError(range.error);
-                return;
-            }
-            Object.assign(question, range);
-        }
-
-        if (questionType === QuestionTypes.MULTIPLE_CHOICE) {
-            const { options, error: optionsError } = validateChoiceOptions(choiceOptions, MULTIPLE_CHOICE_LIMITS);
-            if (optionsError) {
-                setError(optionsError);
-                return;
-            }
-            question.options = options;
-        }
-
-        if (questionDraft.queued && !isAdmin) {
-            setError('This draft is private to the moderator queue. Moderator access is required to submit it.');
-            return;
-        }
-        if (questionDraft.queued || (isAdmin && queueNewQuestions)) question.queued = true;
-
-        submitQuestion(question, false);
-    };
-
-    // Emits a question to the server. When force is false the server may reply
-    // with a 'similarQuestion' event instead of adding it; when true it adds
-    // regardless of near-duplicates. The form is reset only once the server acks
-    // that the question was actually added, so a near-duplicate bounce (or an
-    // error) leaves the user's draft intact for them to edit or re-post.
-    const submitQuestion = (question, force) => {
-        if (questionPendingRef.current) return;
-        questionPendingRef.current = true;
-        const submittedDraft = questionDraft;
-        try {
-            setError(null);
-            socket.timeout(10000).emit('addQuestion', discussionSlug, question, force, adminToken, (err, resp) => {
-                questionPendingRef.current = false;
-                if (err) {
-                    setError('Could not confirm the question was added. Check the discussion before trying again.');
-                    return;
-                }
-                if (resp && resp.added) {
-                    // Reset the whole draft atomically only if it has not been
-                    // edited since submission. Also match the payload because
-                    // Post Anyway may be confirming an older similarity prompt.
-                    setQuestionDraft(current => {
-                        if (current !== submittedDraft
-                            || current.text.trim() !== question.text
-                            || current.type !== question.type
-                            || (question.type === QuestionTypes.OPEN_ENDED
-                                && ((Number(current.maxResponses) || null) !== (Number(question.maxResponses) || null)
-                                    || (current.showAttribution !== false) !== (question.showAttribution !== false)))
-                            || (question.type === QuestionTypes.NUMERICAL
-                                && (current.minValue === '' || current.maxValue === ''
-                                    || Number(current.minValue) !== question.minValue || Number(current.maxValue) !== question.maxValue))
-                            || (question.type === QuestionTypes.MULTIPLE_CHOICE
-                                && validateChoiceOptions(current.options, MULTIPLE_CHOICE_LIMITS).options?.join('\n')
-                                    !== question.options.join('\n'))) return current;
-                        return emptyQuestionDraft();
-                    });
-                } else if (resp && resp.reason === 'moderator_only') {
-                    setError('Only the moderator can add questions right now.');
-                } else if (resp && resp.reason === 'not_authorized') {
-                    setError('Only a moderator can add a question to the queue.');
-                } else if (resp && resp.reason === 'locked') {
-                    setError('This discussion is locked, so new questions are closed.');
-                } else if (!resp || resp.reason !== 'similar') {
-                    setError('Could not add the question. Please try again.');
-                }
-            });
-        } catch (error) {
-            questionPendingRef.current = false;
-            console.error('Error emitting addQuestion event:', error);
-            setError('Failed to add question. Please try again.');
-        }
-    };
-
-    const handlePostAnyway = () => {
-        if (similarPrompt) {
-            submitQuestion(similarPrompt.question, true);
-            setSimilarPrompt(null);
-        }
-    };
 
     // onResult is optional. The server acks a stored vote with { added: true }
     // and free-text limits with { added: false, reason: 'limit' }.
@@ -1251,9 +1101,6 @@ const DiscussionPage = () => {
     const orderedQuestions = [...sortedAndFilteredQuestions].sort(
         (a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0)
     );
-
-    // Only takes effect on narrow screens: the classes it drives are overridden from `sm` up.
-    const composerCollapsed = !composerOpen && !(questionsLoaded && questions.length === 0);
 
     return (
         <div
@@ -1865,168 +1712,8 @@ const DiscussionPage = () => {
             )}
 
             {/* Near-duplicate prompt */}
-            {similarPrompt && (
-                <div
-                    className="fixed inset-0 z-50 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full flex items-center justify-center"
-                    onClick={() => setSimilarPrompt(null)}
-                >
-                    <div
-                        ref={similarDialogRef}
-                        role="dialog"
-                        aria-modal="true"
-                        aria-labelledby="similar-dialog-title"
-                        tabIndex={-1}
-                        className="bg-white p-6 rounded-lg shadow-xl max-w-md"
-                        onClick={(e) => e.stopPropagation()}
-                    >
-                        <h2 id="similar-dialog-title" className="text-xl font-bold mb-3">A similar statement already exists</h2>
-                        <p className="text-sm text-gray-600 mb-2">Someone already posted:</p>
-                        <blockquote className="border-l-4 border-primary pl-3 italic text-gray-800 mb-4">
-                            {similarPrompt.candidate}
-                        </blockquote>
-                        <p className="text-sm text-gray-600 mb-4">
-                            Consider voting on the existing one to keep the discussion focused — or post yours anyway if it&apos;s meaningfully different.
-                        </p>
-                        <div className="flex justify-end gap-2">
-                            <button
-                                onClick={() => setSimilarPrompt(null)}
-                                className="px-4 py-2 bg-primary text-white rounded hover:bg-opacity-90"
-                            >
-                                Use existing
-                            </button>
-                            <button
-                                onClick={handlePostAnyway}
-                                className="px-4 py-2 bg-gray-200 rounded hover:bg-gray-300"
-                            >
-                                Post anyway
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            )}
-
-            {/* When the moderator has restricted question-asking, let participants
-                know why they can't add one (voting stays open). Hidden from the
-                moderator, who keeps the form and the toggle. */}
-            {!locked && moderatorOnly && !isAdmin && (
-                <div className="mb-8 bg-indigo-50 border border-indigo-200 text-indigo-800 rounded-md p-3 text-center">
-                    Only the moderator can add questions right now. You can still vote on the ones below.
-                </div>
-            )}
-
-            {!locked && (!moderatorOnly || isAdmin) && composerCollapsed && (
-                <button
-                    type="button"
-                    onClick={() => {
-                        // Flush so the input is on screen and can take focus
-                        // inside this tap (iOS only opens the keyboard then).
-                        flushSync(() => setComposerOpen(true));
-                        questionInputRef.current?.focus();
-                    }}
-                    className="sm:hidden w-full mb-4 py-2 rounded-md border border-primary text-primary font-medium hover:bg-gray-50"
-                >
-                    + Add a statement
-                </button>
-            )}
-            {!locked && (!moderatorOnly || isAdmin) && (
-            <form
-                onSubmit={handleAddQuestion}
-                // Using the composer pins it open, so it does not collapse under
-                // someone's hands when the first question arrives.
-                onFocus={() => setComposerOpen(true)}
-                className={`${composerCollapsed ? 'hidden sm:block ' : ''}bg-white shadow-lg rounded-lg p-6 mb-8`}
-            >
-                <QuestionTextBox
-                    ref={questionInputRef}
-                    value={newQuestion}
-                    onChange={(e) => updateQuestionText(e.target.value)}
-                    // Holding Enter auto-repeats; submit once per key press.
-                    onKeyDown={(e) => { if (e.key === 'Enter' && e.repeat) e.preventDefault(); }}
-                    placeholder="Enter a new question or statement"
-                    className="w-full p-3 border border-gray-300 rounded-md mb-4 focus:outline-none focus:ring-2 focus:ring-primary"
-                />
-                <div className="mb-4">
-                    <label className="block mb-2">Question Type:</label>
-                    <select
-                        value={questionType}
-                        onPointerDown={() => setQuestionDraft(current => ({ ...current, typeChosen: true }))}
-                        onKeyDown={(event) => {
-                            // Confirming this picker must not submit the question
-                            // if the native menu has already consumed its close.
-                            if (event.key === 'Enter') event.preventDefault();
-                            if (['Enter', ' ', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) {
-                                setQuestionDraft(current => ({ ...current, typeChosen: true }));
-                            }
-                        }}
-                        onChange={(e) => chooseQuestionSetting('type', e.target.value)}
-                        className="w-full p-3 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary"
-                    >
-                        {Object.values(QuestionTypes).map(type => (
-                            <option key={type} value={type}>{type}</option>
-                        ))}
-                    </select>
-                    {/* A status, so screen readers hear the type change while
-                        the author is still in the text box. */}
-                    {typeGuessed && (
-                        <p role="status" className="mt-2 text-sm text-primary">
-                            Set to {questionType} based on your wording. Pick another type if that is not what you meant.
-                        </p>
-                    )}
-                    {QuestionTypeDescriptions[questionType] && (
-                        <p className="mt-2 text-sm text-gray-500">{QuestionTypeDescriptions[questionType]}</p>
-                    )}
-                </div>
-                {questionType === QuestionTypes.OPEN_ENDED && <ResponseSettings maxResponses={questionDraft.maxResponses} showAttribution={questionDraft.showAttribution} onChange={chooseQuestionSetting} />}
-                {questionType === QuestionTypes.MULTIPLE_CHOICE && (
-                    <ChoiceOptionsEditor
-                        options={choiceOptions}
-                        onChange={(options) => updateQuestionDraft('options', options)}
-                    />
-                )}
-                {questionType === QuestionTypes.NUMERICAL && (
-                    <div className="mb-4 flex space-x-4">
-                        <div className="flex-1">
-                            <label className="block mb-2">Min Value:</label>
-                            <input
-                                type="number"
-                                value={minValue}
-                                onChange={(e) => chooseQuestionSetting('minValue', e.target.value)}
-                                className="w-full p-3 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary"
-                            />
-                        </div>
-                        <div className="flex-1">
-                            <label className="block mb-2">Max Value:</label>
-                            <input
-                                type="number"
-                                value={maxValue}
-                                onChange={(e) => chooseQuestionSetting('maxValue', e.target.value)}
-                                className="w-full p-3 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary"
-                            />
-                        </div>
-                    </div>
-                )}
-                {isAdmin && (
-                    <label className="mb-4 flex items-start gap-2 text-sm text-gray-700">
-                        <input
-                            type="checkbox"
-                            checked={queueNewQuestions}
-                            onChange={(e) => { setQueueNewQuestions(e.target.checked); updateQuestionDraft('queued', e.target.checked); }}
-                            className="mt-1"
-                        />
-                        <span>
-                            <span className="font-medium">Add to the queue</span>
-                            <span className="block text-gray-500">Only moderators see a queued question until you publish it.</span>
-                        </span>
-                    </label>
-                )}
-                <button
-                    type="submit"
-                    className="w-full bg-primary text-white py-3 rounded-md hover:bg-opacity-90 transition duration-300"
-                >
-                    {isAdmin && queueNewQuestions ? 'Add to Queue' : 'Add Question'}
-                </button>
-            </form>
-            )}
+            <QuestionComposer composer={composer} questionCount={questions.length}
+                locked={locked} moderatorOnly={moderatorOnly} isAdmin={isAdmin} />
             {error && <div className="text-red-500 mb-4">{error}</div>}
             {connectionLost && (
                 <div

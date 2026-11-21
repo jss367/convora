@@ -20,31 +20,38 @@ to show a saving state until the answer is handled. `question-data.js` owns ques
 value parsing, and `reports.js` builds discussion summaries and printable reports
 without database or HTTP access. `client/src/questions/` contains the question
 editor, answer components, result charts, and their shared display configuration;
-`DiscussionPage.jsx` coordinates discussion state and user actions. Its connection
-and room subscriptions live in `client/src/hooks/useDiscussionRoom.js`; participant
+`DiscussionPage.jsx` coordinates discussion state and user actions. `QuestionComposer.jsx`
+renders the question form and duplicate prompt; `composerLifecycle.mjs` handles draft
+changes and acknowledgments. `client/src/hooks/pendingVotes.mjs` tracks sent and
+buffered votes across disconnects. Connection and room subscriptions live in
+`client/src/hooks/useDiscussionRoom.js`; participant
 identity and ownership live in `useParticipantIdentity.js`, and moderator token
 adoption, verification, and revocation live in `useModeratorAccess.js`.
 The moderator's controls are `client/src/ModeratorPanel.jsx`: grouped settings,
 with a switch for each one that is either on or off, collapsible to a one-line
 summary.
-`database.js` applies the schema and startup migrations before the server listens,
-preserving their required order and independent parallel group; `discussion-names.js`
-shares canonical slug and display-title rules between migrations and live requests.
+`database.js` takes a PostgreSQL advisory lock and applies pending migrations
+in a transaction before the server listens. The `schema_migrations` table records
+completed versions. To change the schema, append a version to `migrations/index.js`;
+don't edit an already-applied step or rely on startup to repeat a backfill.
+`discussion-names.js` shares canonical slug and display-title rules between
+migrations and live requests.
 `logging.js` keeps raw database errors and their potentially sensitive details out
 of server logs.
 
 ### Results visibility
 
 `discussions.results_visibility` is `after_vote` (the default) or `always`. In
-`after_vote` mode the server removes the votes of Agreement, Yes/No and Numerical
+`after_vote` mode the server removes the votes of Agreement, Yes/No, Multiple Choice and Numerical
 questions a viewer has not answered and marks them `resultsHidden`
 (`hideUnansweredResults` in `server.js`), so the `questions` payload differs per
-participant. `emitQuestions` therefore replaces the room broadcast: it runs one
-questions query, builds one view per participant in the room, and sends each
-socket its own. A socket is a participant once it has sent `identify`, and a
+participant. `emitQuestions` delegates to `question-broadcaster.js`, which loads
+one set of questions per send, reuses each participant's view across sockets,
+and serializes room-wide broadcasts so older results can't arrive last. A
+socket is a participant once it has sent `identify`, and a
 moderator once `checkModerator` or `claimModerator` has accepted its token; the
-token is checked again on every send. In `always` mode it is a single room
-broadcast as before. Any new code that changes votes or questions must call
+token is checked again on personalized sends. In `always` mode a room with no
+queued questions can use one broadcast. Any code that changes votes or questions must call
 `emitQuestions` and never emit `questions` to the room directly.
 
 The REST endpoints that return results (`summary`, `clusters`, `snapshots`,
@@ -52,6 +59,12 @@ The REST endpoints that return results (`summary`, `clusters`, `snapshots`,
 `getQuestionsForViewer`. The client identifies the viewer with the
 `X-Convora-User` and `X-Convora-Moderator` headers (`client/src/viewer.js`); a
 request without them sees only what a participant who has answered nothing sees.
+
+Opinion-group analysis (`cluster-service.js`) runs in a worker so it doesn't
+block live votes or room updates. Each server process admits one analysis and
+two waiting requests. Further requests receive HTTP 503 and may be retried.
+Only viewer-visible Agreement votes and request-local participant IDs go to
+the worker; the worker has 30 seconds to finish.
 
 ### Question interest
 
