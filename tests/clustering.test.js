@@ -1,6 +1,7 @@
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
 const { analyzeClusters } = require('../clustering');
+const { analyzeViewerClusters } = require('../cluster-service');
 
 const vote = (userId, value) => ({ userId, value });
 
@@ -35,6 +36,25 @@ function againstGroupOnFirstStatement(analysis) {
     .map(c => c.definingStatements.find(st => st.id === 1))
     .find(st => st && st.mean < 0);
 }
+
+test('worker reports match the synchronous analysis for each viewer', async () => {
+  const questions = townHall();
+  questions[0].votes[0].userId = 'private-participant-token';
+  questions[1].votes[0].userId = 'private-participant-token';
+  questions[0].votes.unshift(vote('private-participant-token', 'Disagree'));
+  questions[0].votes.push(vote(null, 'Agree'), vote('invalid-voter', 'constructor'));
+  questions[0].votes[0].unused = () => {}; // Would fail structured cloning.
+  questions.push({ id: 3, type: 'Text', text: 'Not a statement', votes: [] });
+  const restricted = questions.map(question => question.id === 2
+    ? { ...question, resultsHidden: true, votes: [] }
+    : question);
+
+  for (const [view, hiddenStatementCount] of [[questions, 0], [restricted, 1]]) {
+    const result = await analyzeViewerClusters(() => view);
+    assert.deepEqual(result, { ...analyzeClusters(view), hiddenStatementCount });
+    assert.ok(!JSON.stringify(result).includes('private-participant-token'));
+  }
+});
 
 test('cluster statements report the strong votes separately from the totals', () => {
   const analysis = analyzeClusters(townHall());

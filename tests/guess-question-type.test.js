@@ -1,5 +1,4 @@
 const assert = require('node:assert/strict');
-const { readFileSync } = require('node:fs');
 const { test } = require('node:test');
 
 const guesser = import('../client/src/questions/guessQuestionType.mjs');
@@ -137,13 +136,4 @@ test('the guess can change as the title is typed', async () => {
   assert.equal(guesses[typed.indexOf('w')], null);
   assert.equal(guesses[typed.indexOf('y')], 'Numerical');
   assert.equal(guesses.at(-1), 'Numerical');
-});
-
-test('every guessed type is a real question type', () => {
-  // The guesser repeats the type names so Node can import it without the
-  // client's config module; this keeps the two in step.
-  const config = readFileSync(require.resolve('../client/src/questions/config.js'), 'utf8');
-  const block = config.match(/export const QuestionTypes = \{([^}]*)\}/)[1];
-  const types = [...block.matchAll(/'([^']+)'/g)].map(match => match[1]);
-  for (const type of Object.keys(CASES)) assert.ok(types.includes(type), type);
 });

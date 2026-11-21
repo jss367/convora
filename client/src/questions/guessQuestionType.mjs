@@ -1,14 +1,9 @@
 // Guesses a question's type from its wording, so the composer can preselect the
 // type picker while someone types. A handful of ordered phrase rules, not a
 // classifier: it is right for common openings and returns null for anything it
-// does not recognize, so the caller keeps its default. Kept free of React so
-// the Node test suite can import it directly (hence the .mjs extension), which
-// is also why the type names are repeated here; a test keeps them in step with
-// QuestionTypes in config.js.
-const AGREEMENT = 'Agreement';
-const YES_NO = 'Yes/No';
-const NUMERICAL = 'Numerical';
-const OPEN_ENDED = 'Open Ended';
+// does not recognize, so the caller keeps its default.
+import { QuestionTypes } from './questionTypes.mjs';
+const { AGREEMENT, YES_NO, NUMERICAL, OPEN_ENDED } = QuestionTypes;
 
 const AUXILIARY = '(?:is|are|was|were|do|does|did|will|would|should|can|could|has|have)';
 const WH_WORD = '(?:why|how|what|which|who|whose|where|when)';

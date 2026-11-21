@@ -1,63 +1,38 @@
 const assert = require('node:assert/strict');
-const { readFileSync } = require('node:fs');
 const { test } = require('node:test');
-const vm = require('node:vm');
+const composer = import('../client/src/questions/composerLifecycle.mjs');
 
-// Exercise the page's actual room-change effect and collapse decision without
-// creating a browser, listener, or database. Keep state across route renders,
-// as React Router does when only the discussion parameter changes.
-function composer() {
-  const source = readFileSync(require.resolve('../client/src/DiscussionPage.jsx'), 'utf8');
-  const start = source.indexOf('    useEffect(() => {', source.indexOf('// The rename editor is scoped'));
-  const end = source.indexOf('    }, [discussionSlug]);', start) + '    }, [discussionSlug]);'.length;
-  const decision = source.match(/const composerCollapsed = (.*);/)[1];
-  let previousSlug;
-  const context = {
-    composerOpen: false, questionsLoaded: false, questions: [],
-    setEditingTitle() {}, setTitleDraft() {},
-    setComposerOpen: value => { context.composerOpen = value; },
-    setQuestionsLoaded: value => { context.questionsLoaded = value; },
-    useEffect(effect, [slug]) {
-      if (slug !== previousSlug) effect();
-      previousSlug = slug;
-    },
-  };
-  vm.createContext(context);
-  return {
-    state: context,
-    navigate(slug) {
-      context.discussionSlug = slug;
-      vm.runInContext(source.slice(start, end), context);
-    },
-    collapsed: () => vm.runInContext(decision, context),
-  };
-}
-
-test('room navigation resets composer expansion and question-loading state', () => {
-  const page = composer();
-  page.navigate('original');
-  page.state.questionsLoaded = true;
-  page.state.questions = [{ id: 1 }];
-  page.state.composerOpen = true;
-  assert.equal(page.collapsed(), false);
-  page.navigate('copy');
-  assert.equal(page.state.questionsLoaded, false);
-  assert.equal(page.collapsed(), true);
-  page.state.questionsLoaded = true;
-  page.state.questions = [];
-  assert.equal(page.collapsed(), false);
-  page.navigate('original');
-  assert.equal(page.collapsed(), true);
+test('on phones only a loaded empty room auto-expands; opening pins the form until navigation', async () => {
+  const { initialComposerState, isComposerCollapsed, composerReducer } = await composer;
+  let state = initialComposerState();
+  const dispatch = type => { state = composerReducer(state, { type }); };
+  assert.equal(isComposerCollapsed(state, 0), true);
+  dispatch('questionsLoaded');
+  assert.equal(isComposerCollapsed(state, 0), false);
+  assert.equal(isComposerCollapsed(state, 1), true);
+  dispatch('open');
+  dispatch('questionsLoaded');
+  assert.equal(isComposerCollapsed(state, 2), false);
+  dispatch('roomChanged');
+  assert.equal(isComposerCollapsed(state, 0), true);
+  dispatch('questionsLoaded');
+  assert.equal(isComposerCollapsed(state, 1), true);
 });
 
-test('live questions and rerenders preserve an explicitly opened composer', () => {
-  const page = composer();
-  page.navigate('room');
-  page.state.questionsLoaded = true;
-  assert.equal(page.collapsed(), false);
-  page.state.composerOpen = true;
-  page.state.questions = [{ id: 1 }];
-  page.navigate('room');
-  assert.equal(page.state.questionsLoaded, true);
-  assert.equal(page.collapsed(), false);
+test('the type follows wording until a deliberate picker or settings change', async () => {
+  const { initialComposerState, composerReducer } = await composer;
+  let state = initialComposerState();
+  const dispatch = action => { state = composerReducer(state, action); };
+  dispatch({ type: 'text', text: 'How many people will attend?', isAdmin: false });
+  assert.equal(state.draft.type, 'Numerical');
+  dispatch({ type: 'text', text: 'A statement', isAdmin: false });
+  assert.equal(state.draft.type, 'Agreement');
+  dispatch({ type: 'chooseSetting', field: 'type', value: 'Multiple Choice' });
+  dispatch({ type: 'options', options: ['Tea', 'Coffee'] });
+  dispatch({ type: 'chooseSetting', field: 'type', value: 'Numerical' });
+  dispatch({ type: 'chooseSetting', field: 'maxValue', value: '50' });
+  dispatch({ type: 'text', text: 'Why now?', isAdmin: false });
+  assert.equal(state.draft.type, 'Numerical');
+  dispatch({ type: 'chooseSetting', field: 'type', value: 'Multiple Choice' });
+  assert.deepEqual(state.draft.options, ['Tea', 'Coffee']);
 });

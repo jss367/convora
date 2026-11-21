@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import io from 'socket.io-client';
 import { rememberDiscussion } from '../knownDiscussions';
+import { trackPendingVotes } from './pendingVotes.mjs';
 
 // Same-origin by default; split-origin deployments can provide the socket URL.
 const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || undefined;
@@ -48,61 +49,25 @@ export function useConnectionLost(socket) {
 // so their controls can show a saving state and refuse a second tap. Emits made
 // while disconnected are buffered by Socket.IO and stay pending until the
 // replayed emit is acknowledged.
+const NO_PENDING_VOTES = {};
 export function usePendingVotes(socket) {
     // questionId -> the value being saved (null while clearing the vote).
-    const [pendingVotes, setPendingVotes] = useState({});
-    const inFlight = useRef(new Map());
+    const [pendingVotes, setPendingVotes] = useState(NO_PENDING_VOTES);
+    const tracker = useRef(null);
 
-    useEffect(() => {
-        // connected can still be true after a sleeping tab's heartbeat expires;
-        // Socket.IO buffers that emit until reconnect. Track actual sends so a
-        // disconnect never unlocks controls for an answer still in the buffer.
-        const markSent = (event, topic, questionId) => {
-            if (event !== 'vote' && event !== 'clearVote') return;
-            const entry = inFlight.current.get(questionId);
-            if (entry) entry.sent = true;
-        };
-        // An emit that had already left when the connection dropped is never
-        // acknowledged or resent. Stop waiting; rejoining the room on reconnect
-        // rebroadcasts the questions, which shows whether it was applied.
-        const dropSent = () => {
-            const lost = [...inFlight.current].filter(([, entry]) => entry.sent).map(([id]) => id);
-            if (lost.length === 0) return;
-            for (const id of lost) inFlight.current.delete(id);
-            setPendingVotes(prev => {
-                const next = { ...prev };
-                for (const id of lost) delete next[id];
-                return next;
-            });
-        };
-        socket.onAnyOutgoing(markSent);
-        socket.on('disconnect', dropSent);
+    useLayoutEffect(() => {
+        const current = trackPendingVotes(socket, setPendingVotes);
+        tracker.current = current;
+        setPendingVotes(NO_PENDING_VOTES);
         return () => {
-            socket.offAnyOutgoing(markSent);
-            socket.off('disconnect', dropSent);
+            tracker.current = null;
+            current.dispose();
         };
     }, [socket]);
 
     // Emits `event` with an acknowledgment callback appended. Returns false,
     // without emitting, when this question already has an answer in flight.
-    const sendVote = useCallback((questionId, value, event, ...args) => {
-        if (inFlight.current.has(questionId)) return false;
-        const onResult = typeof args[args.length - 1] === 'function' ? args.pop() : undefined;
-        const entry = { sent: false };
-        inFlight.current.set(questionId, entry);
-        setPendingVotes(prev => ({ ...prev, [questionId]: value }));
-        socket.emit(event, ...args, result => {
-            if (inFlight.current.get(questionId) !== entry) return;
-            inFlight.current.delete(questionId);
-            setPendingVotes(prev => {
-                const next = { ...prev };
-                delete next[questionId];
-                return next;
-            });
-            if (onResult) onResult(result);
-        });
-        return true;
-    }, [socket]);
+    const sendVote = useCallback((...args) => tracker.current?.sendVote(...args) ?? false, []);
 
     return [pendingVotes, sendVote];
 }
