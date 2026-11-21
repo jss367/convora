@@ -10,7 +10,9 @@ const AUXILIARY = '(?:is|are|was|were|do|does|did|will|would|should|can|could|ha
 const WH_WORD = '(?:why|how|what|which|who|whose|where|when)';
 const POLITE_REQUEST = '^(?:can|could|would) you (?:(?:please|briefly|quickly|kindly) )*';
 const DESCRIPTIVE_ADJECTIVE = /(?:(?:very|quite|too|rather|more|less|mostly|highly) )?[a-z][\w-]*(?: (?:to|than) [\w'-]+(?: [\w'-]+)*)?/;
-const PROPOSED_DESCRIPTION = new RegExp(`${POLITE_REQUEST}describe .+? as (?:not )?(?:${DESCRIPTIVE_ADJECTIVE.source}|a (?:success|failure|strength|weakness|problem|priority))\\s*[?.!"')\\]]*$`);
+const NOMINAL_DESCRIPTION = /a (?:success|failure|strength|weakness|problem|priority)(?: (?:for|with|of|in|to) [\w'-]+(?: [\w'-]+)*)?/;
+const PROPOSED_DESCRIPTION = new RegExp(`${POLITE_REQUEST}describe .+? as (?:not )?(?:${DESCRIPTIVE_ADJECTIVE.source}|${NOMINAL_DESCRIPTION.source})\\s*[?.!"')\\]]*$`);
+const TELL_REQUEST = `tell (?:us|me) (?:about|more|a|an|the|your|${WH_WORD})`;
 const CHOICE_SET = 'of (?:these|those|the following)(?: (?:options|choices|alternatives))?';
 
 // First match wins, so the order is the precedence: "how likely" has to be
@@ -48,7 +50,7 @@ const RULES = [
     { type: OPEN_ENDED, pattern: new RegExp(`^${WH_WORD}\\b`), questionOnly: true },
     { type: OPEN_ENDED, pattern: /^(?:describe|explain|elaborate on|tell (?:us|me))\b/ },
     { type: YES_NO, pattern: PROPOSED_DESCRIPTION },
-    { type: OPEN_ENDED, pattern: new RegExp(`${POLITE_REQUEST}(?:describe|explain|elaborate on|tell (?:us|me) (?:about|${WH_WORD}))\\b`) },
+    { type: OPEN_ENDED, pattern: new RegExp(`${POLITE_REQUEST}(?:describe|explain|elaborate on|${TELL_REQUEST})\\b`) },
 
     // The trailing space keeps a half-typed word from matching: "Is" could
     // still become "Issues".

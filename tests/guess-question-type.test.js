@@ -159,6 +159,9 @@ test('distinguishes polite requests for explanations from yes/no questions', asy
   assert.equal(guessQuestionType('Can you explain what made onboarding easier?'), 'Open Ended');
   assert.equal(guessQuestionType('Can you tell us what happened?'), 'Open Ended');
   assert.equal(guessQuestionType('Could you please tell me about the problem?'), 'Open Ended');
+  assert.equal(guessQuestionType('Could you tell me more about the problem?'), 'Open Ended');
+  assert.equal(guessQuestionType('Can you tell us a little about your role?'), 'Open Ended');
+  assert.equal(guessQuestionType('Would you tell us your biggest concern?'), 'Open Ended');
   assert.equal(guessQuestionType('Would you tell me if plans changed?'), 'Yes/No');
   assert.equal(guessQuestionType('Would you please elaborate on that feedback?'), 'Open Ended');
   assert.equal(guessQuestionType('Could you attend the next onboarding session?'), 'Yes/No');
@@ -178,6 +181,8 @@ test('distinguishes a proposed characterization from a request for a description
   assert.equal(guessQuestionType('Would you describe Convora as easy to use?'), 'Yes/No');
   assert.equal(guessQuestionType('Would you describe what you do as stressful?'), 'Yes/No');
   assert.equal(guessQuestionType('Would you describe the pilot as a success?'), 'Yes/No');
+  assert.equal(guessQuestionType('Would you describe climate change as a priority for your organization?'), 'Yes/No');
+  assert.equal(guessQuestionType('Would you describe the delay as a problem with capacity?'), 'Yes/No');
   assert.equal(guessQuestionType('Could you describe your responsibilities as a manager?'), 'Open Ended');
   assert.equal(guessQuestionType('Could you describe the situation as it was?'), 'Open Ended');
   assert.equal(guessQuestionType('Could you describe how meetings changed as the team grew?'), 'Open Ended');
