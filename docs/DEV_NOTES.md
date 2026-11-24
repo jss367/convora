@@ -157,7 +157,8 @@ their count and tokens are hidden; the Most Interesting sort always uses upvotes
 
 ### Connect to remote database
 
-`heroku pg:psql`
+In Render, open **convora-db → Connect → External Connection**, copy the
+**External Database URL**, and run `psql "<EXTERNAL_DATABASE_URL>"`.
 
 ## Tests
 
@@ -205,24 +206,10 @@ tables between cases, they refuse to run unless `DATABASE_URL` points at a
 localhost database whose name ends with `_test`; set `ALLOW_NON_TEST_DATABASE=1`
 only for a disposable nonstandard test database.
 
-## Production Deployment on Heroku
+## Production Deployment
 
-### Pushing from your git branch to heroku main
-
-* `git add .`
-* `git commit -m "Update ..."`
-* `git push heroku my_branch:main`
-
-This allows you to be working on a branch, `my_branch`, and push to main in heroku.
-
-Push from a branch might make it a little easier to revert if it doesn't go well, but if you want to push from main, it would be:
-
-`git push heroku main:main`
-
-
-## Dashboard
-
-* `https://dashboard.heroku.com/apps/convora`
+Production runs on Render at https://convora.xyz. Merging to `main` deploys it
+automatically. See [DEPLOY.md](DEPLOY.md) for setup and configuration.
 
 ## Other Notes
 
@@ -233,11 +220,12 @@ const socket = io(SOCKET_URL, {
 });
 ```
 
-# Shut down
+## Old Heroku deployment
 
-I deleted the PostgreSQL with this: `heroku addons:destroy heroku-postgresql --app convora`
+The app used to run on Heroku. That app and its database no longer exist.
+`latest.dump` is a backup of the Heroku database; see [DEPLOY.md](DEPLOY.md) for
+how to restore it.
 
-If you want to turn on the app, you'll have to add it back. Before deleting, I downloaded a backup and save it at `/Users/julius/git/convora/latest.dump`.
 ## Composer wording contract
 
 The type picker suggests a response format; it does not need to parse every English sentence. A manual choice wins over the suggestion. The three polite-request tables in `tests/guess-question-type.test.js` are the acceptance set. Use contrasting examples when proposing a change to this contract:

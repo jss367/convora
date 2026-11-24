@@ -1,9 +1,11 @@
 # convora
 Have better group conversations
 
+Use it at [convora.xyz](https://convora.xyz/).
+
 A web app for people to have better conversations as a group. Key features include:
 
-You can create a discussion, which generates its own URL. For example, if the app's URL is convora.com and you wanted to discuss AI safety, you could create a discussion and it would create the URL, say convora.com/ai-safety.
+You can create a discussion, which generates its own URL. For example, if you wanted to discuss AI safety, you could create a discussion and it would create a URL such as `convora.xyz/discussion/ai-safety`.
 
 From there, users can submit questions and people can vote on how much they agree with them. For example, someone could say, "The biggest risk of AI is through AI weapons" and each person can vote that they strongly agree, agree, are unsure, disagree, or strongly disagree. The app would show the aggregates. That way you could find which statement most people disagree with.
 
@@ -95,14 +97,14 @@ In the moderator panel, **Question posting** lets you choose who can publish. Ch
 
 When creating or editing a question as moderator, you can also enable:
 
-- **Clarification:** participants can privately ask about wording before answering. This is not an “unsure” vote.
-- **Vote explanations:** on a poll, participants can privately explain their own answer after voting. Changing or undoing the vote removes its old explanation.
-- **Missing answers:** on multiple-choice questions, participants can suggest an alternative privately. It doesn't change the options other people voted on.
-- **Independent answers:** on open-ended questions, each participant sees only their own responses until a moderator reveals everyone's answers together. The shared display does not show hidden responses.
+- **Ask for clarification:** participants can privately ask about wording before answering. This is not an “unsure” vote.
+- **Explain my vote:** on a poll, participants can privately explain their own answer after voting. Changing or undoing the vote removes its old explanation.
+- **Suggest a missing answer:** on multiple-choice questions, participants can suggest an alternative privately. It doesn't change the options other people voted on.
+- **Collect independent answers:** on open-ended questions, each participant sees only their own responses until a moderator reveals everyone's answers together. The shared display does not show hidden responses.
 
 For already-submitted questions, **Moderator order** is the default discussion
 sort. Select **Question type → Open Ended** (or another type) to filter your own
-list. Combine it with **Show questions I haven’t answered**, or select **All types**
+list. Combine it with **Show only questions I haven’t answered**, or select **All types**
 to remove the type filter. With both filters off, moderators can use **Move up** and
 **Move down** on a question, even after it has answers. Pinned questions stay
 above unpinned ones. Before the first move, the list is newest first; after a
@@ -147,7 +149,7 @@ A moderator can change this in the moderator controls, under **Results shown**:
 - **After voting** is the default, for new and existing discussions.
 - **Always** shows every result to everyone.
 
-With **Show results after you vote**, a moderator can also reveal one question
+With **After voting** selected, a moderator can also reveal one question
 at a time: click **Show results** on the question to show its results to
 everyone now, whether or not they have voted, and **Hide results** to go back.
 This is the usual way to run a live poll: collect votes, then reveal the answer
@@ -180,13 +182,13 @@ that tab to the display.
 
 The display is read-only. It doesn't count as a participant, can't vote or add
 anything, and never uses a moderator's access, even when opened from the
-moderator's browser. It follows the **Results** setting:
+moderator's browser. It follows the **Results shown** setting:
 
-- With **Show results after you vote**, the server sends the display each
+- With **After voting**, the server sends the display each
   question's response count but no tallies, percentages or histograms. The
   display has not voted, so it sees what a participant who has not voted sees.
-- With **Always show results**, it shows the live results as charts sized for
-  the room: a labelled bar with count and percentage for each agreement,
+- With **Always**, it shows the live results as charts sized for
+  the room: a labeled bar with count and percentage for each agreement,
   yes/no or multiple choice option, and a histogram with the average and median
   for numerical questions. While results are hidden, a multiple choice question
   still lists its options under the response count.
@@ -204,7 +206,7 @@ With **All questions**, use **Display question type** to show only one type on
 the projector without changing anyone’s personal list. Spotlighting a question
 temporarily overrides the list filter; returning to the list restores it.
 **Sort** offers Oldest first (the default), Newest
-first, Most interesting, Most agreed with, Most disagreed with and Most divisive.
+first, Moderator order, Most interesting, Most agreed with, Most disagreed with and Most divisive.
 **Most agreed with** counts Yes or agreement votes; **Most disagreed with** counts
 No or disagreement votes. **Most divisive** ranks by the number of votes on the smaller side.
 **Pinned questions first** is on by default; turn it off to apply the sort across
@@ -283,7 +285,7 @@ averages, the change between them, and one histogram with a column per
 snapshot in each bin. Click **On the room display** to go back to the
 questions.
 
-Choosing **Before and after** under **Display shows** does the same without
+Choosing **Before and after** under **Layout** does the same without
 opening the snapshots: it compares the first snapshot with the latest one,
 unless you chose a pair before. If you leave the later snapshot unchosen, the
 display also compares against the latest one, so a snapshot saved while the
@@ -304,12 +306,43 @@ answer histories. Comparisons describe the group at each point in time;
 participants may differ between snapshots. Questions with changed wording,
 types, scales, or answer options are flagged and shown separately.
 
+## Free-text questions
 
-## Tech notes:
+Open Ended supports multiple responses per participant, with no limit by default.
+Question creators can set a maximum number of responses per person and hide author
+pseudonyms; pseudonyms are shown by default. Participants can edit or delete their
+own responses. Identical responses are allowed, including from the same person.
+Moderators can enable quality votes, agreement ratings, reactions, and comments.
 
-This is a React app with a Node.js backend. It uses WebSockets for real-time communication.
+Existing Brainstorm questions become Open Ended and retain hidden attribution.
+Existing Open Ended questions retain their one-response limit. Responses and
+feedback survive migration, with previous upvotes carried over as quality votes.
+
+## Delete a discussion
+
+The creator can choose **More → Delete discussion** and confirm permanent deletion.
+This removes the discussion and all its questions, responses, comments, and saved
+snapshots for everyone. Connected participants return to the home page and room
+displays show that the discussion is gone. Deleted discussion routes stay reserved;
+creating the same title later gives it a new link. Promoted
+moderators cannot delete discussions. As with other creator controls, anyone with
+the creator's saved moderator link has the same authority.
+
+## Tech notes
+
+This is a React app with a Node.js backend and a PostgreSQL database. It uses WebSockets for real-time communication.
+
+- [Deployment guide](docs/DEPLOY.md): hosting on Render and optional Google sign-in
+- [Developer notes](docs/DEV_NOTES.md): code structure, local setup, and tests
 
 ## Local development
+
+You need Node 20 and Docker. Install the dependencies and build the client:
+
+```bash
+npm ci
+npm run build
+```
 
 Start Postgres with Docker Compose:
 
@@ -322,6 +355,9 @@ Run the backend against that database:
 ```bash
 npm run dev:server:docker
 ```
+
+Open `http://localhost:3001`. Run `npm run build` again after changing the
+client; the server restarts by itself when you change server code.
 
 Run the integration harness, which starts an isolated Docker Postgres and tests
 the real HTTP and Socket.IO paths:
@@ -350,31 +386,3 @@ the client and starts an isolated test server.
 
 GitHub Actions runs lint, the production build, PostgreSQL integration tests,
 and Chromium interaction tests on Node 20.15 and the latest Node 20 release.
-
-## Website
-
-[https://convora-e40a9ae358dc.herokuapp.com/](https://convora-e40a9ae358dc.herokuapp.com/)
-
-https://console.cloud.google.com/welcome?pli=1&inv=1&invt=Ab0Pdg&project=convora-7cba7
-
-## Free-text questions
-
-Open Ended supports multiple responses per participant, with no limit by default.
-Question creators can set a maximum number of responses per person and hide author
-pseudonyms; pseudonyms are shown by default. Participants can edit or delete their
-own responses. Identical responses are allowed, including from the same person.
-Moderators can enable quality votes, agreement ratings, reactions, and comments.
-
-Existing Brainstorm questions become Open Ended and retain hidden attribution.
-Existing Open Ended questions retain their one-response limit. Responses and
-feedback survive migration, with previous upvotes carried over as quality votes.
-
-## Delete a discussion
-
-The creator can choose **More → Delete discussion** and confirm permanent deletion.
-This removes the discussion and all its questions, responses, comments, and saved
-snapshots for everyone. Connected participants return to the home page and room
-displays show that the discussion is gone. Deleted discussion routes stay reserved;
-creating the same title later gives it a new link. Promoted
-moderators cannot delete discussions. As with other creator controls, anyone with
-the creator's saved moderator link has the same authority.
