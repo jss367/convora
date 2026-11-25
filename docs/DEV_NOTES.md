@@ -20,7 +20,13 @@ to show a saving state until the answer is handled. `question-data.js` owns ques
 value parsing, and `reports.js` builds discussion summaries and printable reports
 without database or HTTP access. `client/src/questions/` contains the question
 editor, answer components, result charts, and their shared display configuration;
-`DiscussionPage.jsx` coordinates discussion state and user actions. `QuestionComposer.jsx`
+`DiscussionPage.jsx` holds the room's data and wires together the hooks and
+components that act on it. Its sections (title, toolbar, dialogs, moderator
+controls, queued questions, filters, question cards) are in `client/src/discussion/`,
+the answer controls for each question type are in `questions/VotingControls.jsx`,
+and each group of page state and actions (share links, discussion actions,
+question moderation, votes, brainstorm responses, filters) is a hook in
+`client/src/hooks/`. `QuestionComposer.jsx`
 renders the question form and duplicate prompt; `composerLifecycle.mjs` handles draft
 changes and acknowledgments. `client/src/hooks/pendingVotes.mjs` tracks sent and
 buffered votes across disconnects. Connection and room subscriptions live in

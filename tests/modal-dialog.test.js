@@ -131,9 +131,9 @@ for (const [nested, withToken] of [[false, false], [true, false], [false, true],
     const actionsMenuButtonRef = { current: env.trigger };
     const duplicate = env.mount(() => {}, duplicateReturnFocusRef);
     const similar = nested ? env.mount(() => {}) : null;
-    const source = readFileSync(require.resolve('../client/src/DiscussionPage.jsx'), 'utf8');
+    const source = readFileSync(require.resolve('../client/src/hooks/useDiscussionActions.js'), 'utf8');
     const start = source.indexOf('    const handleDuplicateDiscussion =');
-    const end = source.indexOf('    const handleQuestionsUpdate =', start);
+    const end = source.indexOf('\n    return {', start);
     const handler = vm.runInNewContext(`${source.slice(start, end)}\nhandleDuplicateDiscussion`, {
       newTopicName: 'Destination', discussionSlug: 'original', console,
       // The source discussion's moderator token, sent so the copy keeps its

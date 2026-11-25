@@ -1,9 +1,7 @@
 const assert = require('node:assert/strict');
-const { readFileSync } = require('node:fs');
 const { test } = require('node:test');
-const vm = require('node:vm');
 const React = require('react');
-const { transformSync } = require('esbuild');
+const { loadClientModule } = require('./helpers/client-module.cjs');
 
 // Inspect the real React voting elements without creating a browser or socket.
 for (const [type, options] of [
@@ -11,20 +9,12 @@ for (const [type, options] of [
   ['Yes/No', ['Yes', 'No']],
 ]) {
   test(`${type} vote names stay stable through selection, pending replacement, and undo`, async () => {
-    const source = readFileSync(require.resolve('../client/src/DiscussionPage.jsx'), 'utf8');
-    const start = source.indexOf('    const renderVotingMechanism =');
-    const end = source.indexOf('    const sortedAndFilteredQuestions =', start);
-    const code = transformSync(`${source.slice(start, end)}\nthis.render = renderVotingMechanism;`, { loader: 'jsx' }).code;
+    const { default: VotingControls } = loadClientModule('client/src/questions/VotingControls.jsx');
     const context = {
-      React, plainPrompt: (await import('../client/src/questions/promptEmphasis.mjs')).plainPrompt,
-      locked: false, pendingVotes: {}, isMyVote: () => true,
-      QuestionTypes: { AGREEMENT: 'Agreement', YES_NO: 'Yes/No' },
-      VoteOptions: { STRONGLY_AGREE: options[0], AGREE: options[1], UNSURE: options[2], DISAGREE: options[3], STRONGLY_DISAGREE: options[4] },
-      YesNoOptions: { YES: 'Yes', NO: 'No' }, AgreementResults: () => null, YesNoResults: () => null,
-      handleVote() {}, handleClearVote() {},
+      locked: false, pendingVotes: {}, sliderValues: {}, isMyVote: () => true,
+      handleVote() {}, handleClearVote() {}, handleSliderChange() {},
     };
-    vm.createContext(context);
-    vm.runInContext(code, context);
+    context.render = question => VotingControls({ ...context, question });
     const question = { id: 7, type, text: '*Proceed*?', votes: [] };
     function render() {
       const nodes = [];

@@ -1,28 +1,19 @@
 const assert = require('node:assert/strict');
-const { readFileSync } = require('node:fs');
-const vm = require('node:vm');
 const { test } = require('node:test');
 const React = require('react');
-const { transformSync } = require('esbuild');
+const { loadClientModule } = require('./helpers/client-module.cjs');
 
 // Render the actual voting controls as React elements without a browser or
 // transport. This checks the merged pending-vote and numerical-draft behavior.
 async function controls({ saved } = {}) {
-  const { clampNumericalValue } = await import('../client/src/questions/questionHelpers.mjs');
-  const source = readFileSync(require.resolve('../client/src/DiscussionPage.jsx'), 'utf8');
-  const start = source.indexOf('    const renderVotingMechanism =');
-  const end = source.indexOf('    const sortedAndFilteredQuestions =', start);
-  const code = transformSync(`${source.slice(start, end)}\nthis.render = renderVotingMechanism;`, { loader: 'jsx' }).code;
+  const { default: VotingControls } = loadClientModule('client/src/questions/VotingControls.jsx');
   const context = {
-    React, clampNumericalValue, plainPrompt: (await import('../client/src/questions/promptEmphasis.mjs')).plainPrompt,
-    QuestionTypes: { NUMERICAL: 'Numerical' }, NumericalResults: () => null,
     pendingVotes: {}, sliderValues: {}, locked: false,
     isMyVote: () => true,
     handleSliderChange(id, value) { context.sliderValues[id] = value; },
-    handleVote() {},
+    handleVote() {}, handleClearVote() {},
   };
-  vm.createContext(context);
-  vm.runInContext(code, context);
+  context.render = question => VotingControls({ ...context, question });
   const question = {
     id: 7, text: 'Temperature', type: 'Numerical', minValue: -100, maxValue: 100,
     votes: saved === undefined ? [] : [{ value: String(saved) }],
