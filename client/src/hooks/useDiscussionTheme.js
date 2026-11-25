@@ -2,7 +2,7 @@ import { useEffect } from 'react';
 
 // Color themes a moderator can apply to a discussion. Keys and the palettes
 // they map to are defined in client/src/index.css ([data-theme] blocks) and
-// validated server-side (ALLOWED_THEMES in server.js); `swatch` is only the
+// validated server-side (ALLOWED_THEMES in discussion-state.js); `swatch` is only the
 // picker dot color and mirrors each theme's primary. Keep all three in sync.
 export const THEMES = [
     { key: 'indigo', label: 'Indigo', swatch: '#4F46E5' },

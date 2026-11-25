@@ -1,9 +1,7 @@
 const assert = require('node:assert/strict');
-const { readFileSync } = require('node:fs');
 const { test } = require('node:test');
-const vm = require('node:vm');
 const { createInterestUpdates } = require('../interest-updates');
-const { slugifyTopic } = require('../discussion-names');
+const { registerPostingAndVoting } = require('../posting-and-voting');
 
 function deferred() {
   let resolve, reject;
@@ -12,18 +10,12 @@ function deferred() {
 }
 
 function handlers({ updates, userId, write, read }) {
-  const source = readFileSync(require.resolve('../server.js'), 'utf8');
-  const start = source.indexOf("  socket.on('setQuestionInterest'");
-  const end = source.indexOf("  socket.on('toggleResponseVote'", start);
-  const bindStart = source.indexOf('function bindSocketUser(');
-  const bindEnd = source.indexOf('\n}', bindStart) + 2;
   const registered = {}, errors = [];
-  const context = {
-    socket: { data: { userId }, on: (name, fn) => { registered[name] = fn; }, emit() {} },
-    slugifyTopic, interestUpdates: updates, setQuestionInterest: write,
+  const socket = { data: { userId }, on: (name, fn) => { registered[name] = fn; }, emit() {} };
+  registerPostingAndVoting(socket, {
+    interestUpdates: updates, setQuestionInterest: write,
     pool: { query: read }, emitQuestions: async () => {}, logError: (...args) => errors.push(args),
-  };
-  vm.runInNewContext(source.slice(bindStart, bindEnd) + source.slice(start, end), context);
+  });
   return { registered, errors };
 }
 

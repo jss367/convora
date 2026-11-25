@@ -37,4 +37,30 @@ async function initializeDatabase(pool) {
   }
 }
 
-module.exports = { initializeDatabase };
+function createTransactionRunner(pool) {
+  // Run `work(client)` in a transaction on one pooled connection: commit when it
+  // returns, roll back when it throws, and always release the connection.
+  async function withTransaction(work) {
+    const client = await pool.connect();
+    let releaseError;
+    try {
+      await client.query('BEGIN');
+      const result = await work(client);
+      await client.query('COMMIT');
+      return result;
+    } catch (error) {
+      try {
+        await client.query('ROLLBACK');
+      } catch (rollbackError) {
+        releaseError = rollbackError;
+      }
+      throw error;
+    } finally {
+      client.release(releaseError);
+    }
+  }
+
+  return withTransaction;
+}
+
+module.exports = { initializeDatabase, createTransactionRunner };

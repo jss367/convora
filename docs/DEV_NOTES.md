@@ -43,14 +43,34 @@ don't edit an already-applied step or rely on startup to repeat a backfill.
 `discussion-names.js` shares canonical slug and display-title rules between
 migrations and live requests.
 `logging.js` keeps raw database errors and their potentially sensitive details out
-of server logs.
+of server logs, and `logInfo` carries routine messages such as the request log.
+
+`server.js` creates the database pool, Express and Socket.IO, wires the modules
+together, and starts listening. Each group of socket events has a `register*`
+module that takes its collaborators as explicit dependencies:
+`room-membership.js` (joining and leaving discussions and room displays),
+`posting-and-voting.js` (posting questions, votes, and question interest),
+`moderator-roles.js` (claiming, checking, promoting and removing moderators),
+`question-moderation.js` (publishing, ordering, editing, revealing and deleting
+questions), `discussion-settings.js` (discussion and room display settings),
+`response-interactions.js` (ratings, reactions and comments on responses),
+`pseudonyms.js`, `question-tools.js` and `speaking-queue.js`. Moderator-only
+events that answer with `error` events share the token check in
+`moderatorAction` (`moderator-roles.js`). The REST routes live in
+`discussion-api.js` (creating, finding, clearing, deleting and duplicating
+discussions, and short links) and `results-api.js` (summaries, clusters,
+snapshots and exports). `question-views.js` loads the questions and shapes each
+viewer's copy, `room-broadcasts.js` decides which sockets receive which
+payload, and `discussions.js`, `discussion-state.js`, `question-store.js`,
+`opinion-snapshot-store.js`, `short-codes.js` and `discussion-export.js` hold
+the rest of the domain logic.
 
 ### Results visibility
 
 `discussions.results_visibility` is `after_vote` (the default) or `always`. In
 `after_vote` mode the server removes the votes of Agreement, Yes/No, Multiple Choice and Numerical
 questions a viewer has not answered and marks them `resultsHidden`
-(`hideUnansweredResults` in `server.js`), so the `questions` payload differs per
+(`hideUnansweredResults` in `question-views.js`), so the `questions` payload differs per
 participant. `emitQuestions` delegates to `question-broadcaster.js`, which loads
 one set of questions per send, reuses each participant's view across sockets,
 and serializes room-wide broadcasts so older results can't arrive last. A
@@ -120,9 +140,10 @@ their count and tokens are hidden; the Most Interesting sort always uses upvotes
    npm run build
    ```
 
-3. Start the server:
+3. Start the server, pointing it at your local database (without `DATABASE_URL`
+   it connects to the Docker database from Option A):
    ```
-   node server.js
+   DATABASE_URL=postgresql://localhost:5432/convora node server.js
    ```
 
 4. Access the application at `http://localhost:3001`
