@@ -191,7 +191,15 @@ In Render, open **convora-db → Connect → External Connection**, copy the
 
 This repo has a Postgres-backed integration harness that starts Docker Compose,
 boots the real server on an ephemeral port, and verifies both HTTP and Socket.IO
-flows.
+flows. The integration tests are split by feature into `tests/integration-*.test.js`,
+with their shared setup in `tests/helpers/integration.cjs`. Node runs the files
+concurrently, so each file starts its own server and creates its own database
+next to the one in `DATABASE_URL` (for example `convora_integration_voting_test`),
+then drops it when the file finishes. The database user therefore needs
+permission to create databases, which the Docker and CI users have. A test that
+asserts on elapsed time can be named in the `exclusive` option of
+`useIntegrationServer`; it then waits for other files' tests to finish and runs
+alone.
 
 Run the full harness:
 ```bash
