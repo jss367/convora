@@ -4,6 +4,7 @@
 // file's cleanup, row counts, and lock waits from reaching another file's tests.
 const assert = require('node:assert/strict');
 const { spawn } = require('node:child_process');
+const crypto = require('node:crypto');
 const fs = require('node:fs');
 const net = require('node:net');
 const path = require('node:path');
@@ -25,7 +26,7 @@ let databaseUrl;
 let pool;
 
 // Every file holds this advisory lock in shared mode while it sets up, runs a
-// test, or drops its database. A test that measures elapsed time takes it in exclusive
+// test, or tears down. A test that measures elapsed time takes it in exclusive
 // mode instead, so it runs while no other file loads the CPU or Postgres.
 // Advisory locks are per database, so every file takes it in the shared one.
 const EXCLUSIVE_LOCK = "hashtext('convora:integration-tests')";
@@ -89,15 +90,18 @@ function useIntegrationServer(testFile, { exclusive = [] } = {}) {
   });
 
   test.after(async () => {
-    await pool.end();
-    await stopServer();
-    if (!gate) return;
     try {
-      await lock('_shared');
-      await dropDatabase(gate, databaseName);
+      try {
+        if (gate) await lock('_shared');
+      } finally {
+        // The server must not outlive the file, even if the lock fails.
+        await pool.end();
+        await stopServer();
+      }
+      if (gate) await dropDatabase(gate, databaseName);
     } finally {
       // Closing the session also releases its advisory lock.
-      await gate.end();
+      if (gate) await gate.end();
     }
   });
 
@@ -111,12 +115,22 @@ function useIntegrationServer(testFile, { exclusive = [] } = {}) {
 
 // Derive a name such as convora_integration_voting_test from the shared
 // convora_test database and the test file's name. The name keeps the _test
-// suffix that the destructive-test guard requires.
+// suffix that the destructive-test guard requires. PostgreSQL would silently
+// truncate a longer name, so two files could end up sharing one database; such
+// a name is shortened here instead, with a hash that keeps it unique.
+const MAX_DATABASE_NAME_BYTES = 63;
+
 function fileDatabaseName(connectionString, testFile) {
   const { database } = new Client({ connectionString }).connectionParameters;
   const stem = String(database).replace(/_test$/, '');
   const file = path.basename(testFile).replace(/\.test\.js$/, '').replace(/[^a-z0-9]+/gi, '_').toLowerCase();
-  return `${stem}_${file}_test`;
+  const name = `${stem}_${file}_test`;
+  if (Buffer.byteLength(name) <= MAX_DATABASE_NAME_BYTES) return name;
+  const hash = crypto.createHash('sha256').update(name).digest('hex').slice(0, 12);
+  const suffix = `_${hash}_test`;
+  // Cutting by bytes can split a multibyte character, which decodes to U+FFFD.
+  const prefix = Buffer.from(name).subarray(0, MAX_DATABASE_NAME_BYTES - suffix.length).toString().replace(/�+$/, '');
+  return `${prefix}${suffix}`;
 }
 
 function withDatabase(connectionString, databaseName) {
@@ -436,6 +450,7 @@ async function joinAsModerator(slug, adminToken) {
 
 module.exports = {
   useIntegrationServer,
+  fileDatabaseName,
   rootDir,
   claimModerator,
   addBrainstormQuestion,
