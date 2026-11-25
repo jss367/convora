@@ -183,7 +183,7 @@ test('navigation and identity changes isolate pending state and stale callbacks'
 });
 
 test('the rendered button is disabled while saving or waiting for reconciled ownership', () => {
-  const page = readFileSync(require.resolve('../client/src/DiscussionPage.jsx'), 'utf8');
+  const page = readFileSync(require.resolve('../client/src/discussion/QuestionCard.jsx'), 'utf8');
   assert.match(page, /const handleToggleInterest = questionInterest\.toggle/);
   assert.match(page, /disabled=\{locked \|\| !questionInterest\.ready \|\| interestPending\}/);
   assert.match(page, /aria-busy=\{interestPending\}/);

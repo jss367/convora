@@ -45,7 +45,7 @@ test('the editor draft survives being remounted from the queue into the publishe
 });
 
 test('both editor locations use the same parent draft map and explicit draft cleanup', () => {
-  const source = read('client/src/DiscussionPage.jsx');
+  const source = read('client/src/discussion/QueuedQuestions.jsx') + read('client/src/discussion/QuestionCard.jsx');
   const editors = source.match(/<QuestionEditor[\s\S]*?\/>/g);
   assert.equal(editors.length, 2);
   for (const editor of editors) {

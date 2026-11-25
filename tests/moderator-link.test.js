@@ -170,7 +170,7 @@ for (const result of ['resolve', 'reject']) {
     let indicatorUpdates = 0;
     let timers = 0;
     const pending = new Promise((resolve, reject) => { finish = result === 'resolve' ? resolve : reject; });
-    const source = readFileSync(path.join(__dirname, '../client/src/DiscussionPage.jsx'), 'utf8');
+    const source = readFileSync(path.join(__dirname, '../client/src/hooks/useShareLinks.js'), 'utf8');
     const handler = source.slice(source.indexOf('const handleCopyAdminLink ='), source.indexOf('    const saveShortLink'))
       .replace('const handleCopyAdminLink =', 'this.copy =');
     const context = {
