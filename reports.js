@@ -209,7 +209,7 @@ function buildSummary(discussion, questions) {
 
   const questionSummaries = questions.map((question) => {
     // Results this viewer may not see yet (see hideUnansweredResults in
-    // server.js). The question is listed, but it contributes to no count,
+    // question-views.js). The question is listed, but it contributes to no count,
     // ranking or dashboard signal, where it would read as having no responses.
     if (question.resultsHidden) {
       typeCounts[question.type] = (typeCounts[question.type] || 0) + 1;

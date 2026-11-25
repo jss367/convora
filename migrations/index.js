@@ -285,11 +285,11 @@ async function migrateModerationAndDedup(client) {
   await client.query("ALTER TABLE discussions ADD COLUMN IF NOT EXISTS theme TEXT NOT NULL DEFAULT 'indigo'");
   await client.query('ALTER TABLE questions ADD COLUMN IF NOT EXISTS pinned BOOLEAN NOT NULL DEFAULT FALSE');
   // A moderator has shown this question's results to everyone, voted or not
-  // (see setResultsRevealed in server.js). Off until a moderator turns it on.
+  // (see setResultsRevealed in question-moderation.js). Off until a moderator turns it on.
   await client.query('ALTER TABLE questions ADD COLUMN IF NOT EXISTS results_revealed BOOLEAN NOT NULL DEFAULT FALSE');
   // When participants see the results of tallied questions: 'after_vote' (only
   // once they have answered, the default for existing discussions too) or
-  // 'always'. See RESULTS_VISIBILITY_MODES in server.js.
+  // 'always'. See RESULTS_VISIBILITY_MODES in question-views.js.
   await client.query("ALTER TABLE discussions ADD COLUMN IF NOT EXISTS results_visibility TEXT NOT NULL DEFAULT 'after_vote'");
   // Whether the discussion is listed publicly on the home page. Discussions are
   // unlisted unless their moderator chooses otherwise, existing ones included.
@@ -298,20 +298,20 @@ async function migrateModerationAndDedup(client) {
   // small in a corner, or hidden ('full', 'corner', 'hidden'), and whether it
   // shows every question, one at a time, or two opinion snapshots side by side
   // ('all', 'focus', 'compare'). See
-  // DISPLAY_QR_MODES and DISPLAY_LAYOUTS in server.js.
+  // DISPLAY_QR_MODES and DISPLAY_LAYOUTS in discussion-state.js.
   await client.query("ALTER TABLE discussions ADD COLUMN IF NOT EXISTS display_qr TEXT NOT NULL DEFAULT 'full'");
   await client.query("ALTER TABLE discussions ADD COLUMN IF NOT EXISTS display_layout TEXT NOT NULL DEFAULT 'all'");
   await client.query("ALTER TABLE discussions ADD COLUMN IF NOT EXISTS display_sort TEXT NOT NULL DEFAULT 'oldest'");
   await client.query("ALTER TABLE discussions ADD COLUMN IF NOT EXISTS display_pinned_first BOOLEAN NOT NULL DEFAULT TRUE");
   // The question a moderator chose to show on the room display in its
-  // one-question view (see setDisplaySettings in server.js). Not a foreign
+  // one-question view (see setDisplaySettings in discussion-settings.js). Not a foreign
   // key: the id is checked against the discussion's questions when it is read,
   // so deleting a question needs no lock on its discussion.
   await client.query('ALTER TABLE discussions ADD COLUMN IF NOT EXISTS display_question_id INTEGER');
   await client.query("ALTER TABLE discussions ADD COLUMN IF NOT EXISTS display_hidden_question_ids INTEGER[] NOT NULL DEFAULT '{}'");
   // Set on a snapshot the server saved by itself, just before this question's
   // results were first shown to everyone (see saveSnapshotBeforeReveal in
-  // server.js). The unique index keeps that to one snapshot per question.
+  // opinion-snapshot-store.js). The unique index keeps that to one snapshot per question.
   await client.query('ALTER TABLE opinion_snapshots ADD COLUMN IF NOT EXISTS auto_question_id INTEGER');
   await client.query(
     `CREATE UNIQUE INDEX IF NOT EXISTS opinion_snapshots_auto_question_idx
@@ -325,7 +325,7 @@ async function migrateModerationAndDedup(client) {
   await client.query('ALTER TABLE discussions ADD COLUMN IF NOT EXISTS display_after_snapshot_id INTEGER');
   // A queued question is one a moderator has written but not published yet.
   // Only moderators receive it, and nobody can answer it, until a moderator
-  // publishes it (see publishQuestion in server.js).
+  // publishes it (see publishQuestion in question-moderation.js).
   await client.query('ALTER TABLE questions ADD COLUMN IF NOT EXISTS queued BOOLEAN NOT NULL DEFAULT FALSE');
 
   await client.query('SAVEPOINT optional_pg_trgm');

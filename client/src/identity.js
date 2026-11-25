@@ -187,7 +187,7 @@ export function getIdentity() {
 // grouping of one anonymous participant's separate ideas within a prompt).
 //
 // IMPORTANT: this MUST stay byte-for-byte identical to the server-side
-// ownerToken() in server.js. If you change the formula, change it in both.
+// ownerToken() in participant-identity.js. If you change the formula, change it in both.
 export async function ownerToken(idPart, userId) {
     if (idPart === null || idPart === undefined || !userId) return null;
     const data = new TextEncoder().encode(`${idPart}:${userId}`);
@@ -206,7 +206,7 @@ export async function ownerToken(idPart, userId) {
 
 // The opaque handle the server lists a participant under: "participant-" plus
 // the first 16 hex chars of sha256(userId). MUST stay byte-for-byte identical to
-// participantHandle() in server.js. Lets a client recognize its OWN row in the
+// participantHandle() in moderator-roles.js. Lets a client recognize its OWN row in the
 // moderator panel so it can hide the self-promote / self-remove controls (acting
 // on your own row tangles the creator's admin_token with a per-user grant).
 export async function participantHandle(userId) {

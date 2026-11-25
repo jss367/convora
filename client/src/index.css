@@ -15,7 +15,7 @@
  * --color-primary-dark  darker shade for the header gradient's end stop
  *
  * Theme keys here MUST stay in sync with THEME_KEYS on the client
- * (DiscussionPage.jsx) and ALLOWED_THEMES on the server (server.js).
+ * (DiscussionPage.jsx) and ALLOWED_THEMES on the server (discussion-state.js).
  */
 :root,
 [data-theme='indigo'] {

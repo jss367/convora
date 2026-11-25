@@ -1,27 +1,27 @@
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const { execFileSync } = require('node:child_process');
 const { test } = require('node:test');
-const vm = require('node:vm');
-const { normalizeQuestionPayload } = require('../question-data');
-const { buildOpinionSnapshot, OPINION_TYPES } = require('../opinion-snapshots');
-const source = process.env.HOST_CONTROL_BASE
-  ? execFileSync('git', ['show', process.env.HOST_CONTROL_BASE + ':server.js'], { encoding: 'utf8' })
-  : fs.readFileSync(require.resolve('../server.js'), 'utf8');
-const declaration = name => { const start = source.indexOf('async function ' + name + '('); return source.slice(start, source.indexOf('\n}', start) + 2); };
-const listener = name => { const start = source.indexOf("  socket.on('" + name + "'"); return source.slice(start, source.indexOf('\n  });', start) + 7); };
-function load(names, events, additions) {
+const { createTransactionRunner } = require('../database');
+const { createQuestionStore } = require('../question-store');
+const { createSnapshotStore } = require('../opinion-snapshot-store');
+const { createRoomBroadcasts } = require('../room-broadcasts');
+const { registerQuestionModeration } = require('../question-moderation');
+const { registerDiscussionSettings } = require('../discussion-settings');
+
+// Registers the moderator events on a stand-in socket. Each moderator check
+// passes; `additions` replaces the database and broadcast stand-ins.
+function load(additions = {}) {
   const handlers = {}, emitted = [], trace = [];
-  const context = vm.createContext({ normalizeQuestionPayload, buildOpinionSnapshot, OPINION_TYPES, ...require('../question-posting'),
-    MAX_SNAPSHOT_NAME_LENGTH: 120, DISPLAY_QR_MODES: ['full', 'corner', 'hidden'], DISPLAY_LAYOUTS: ['all', 'focus', 'compare'],
-    slugifyTopic: value => value, verifyAdmin: async () => 1, isDiscussionLocked: async () => false,
-    parseOptions: value => value, logError() {}, emitQuestions: async () => {}, emitDiscussionState: async () => {},
+  const socket = { data: {}, on: (name, fn) => { handlers[name] = fn; }, emit: (...args) => emitted.push(args) };
+  const deps = {
+    verifyAdmin: async () => 1, isDiscussionLocked: async () => false, logError() {},
+    emitQuestions: async () => {}, emitDiscussionState: async () => {}, emitDiscussion: async () => {},
     audience: () => ({ emit: name => { trace.push(name); } }),
-    socket: { data: {}, on: (name, fn) => { handlers[name] = fn; }, emit: (...args) => emitted.push(args) },
     ...additions,
-  });
-  vm.runInContext(names.map(declaration).join('\n') + '\n' + events.map(listener).join('\n'), context);
-  return { handlers, emitted, trace, context };
+  };
+  if (deps.pool) deps.withTransaction = createTransactionRunner(deps.pool);
+  registerQuestionModeration(socket, deps);
+  registerDiscussionSettings(socket, deps);
+  return { handlers, emitted, trace };
 }
 
 test('a lock that wins before the insert transaction keeps a question uninserted', async () => {
@@ -32,8 +32,10 @@ test('a lock that wins before the insert transaction keeps a question uninserted
     if (/INSERT INTO questions/.test(sql)) return { rows: [{ id: 7, options: [] }] };
     return { rows: [] };
   } };
-  const { context } = load(['addQuestion'], [], { pool: { connect: async () => client }, getOrCreateDiscussionForSlug: async () => ({ id: 1 }) });
-  const result = await context.addQuestion('synthetic-room', { text: 'Fictional question', type: 'Agreement' }, { queueRequested: false });
+  const { addQuestion } = createQuestionStore({
+    pool: { connect: async () => client }, verifyAdmin: async () => 1, getOrCreateDiscussionForSlug: async () => ({ id: 1 }),
+  });
+  const result = await addQuestion('synthetic-room', { text: 'Fictional question', type: 'Agreement' }, { queueRequested: false });
   assert.equal(result.reason, 'locked');
   assert.equal(statements.some(sql => /INSERT INTO questions/.test(sql)), false);
   assert.ok(statements.some(sql => /SELECT locked.*FOR SHARE/.test(sql)));
@@ -51,7 +53,7 @@ function publisher({ locked = false, failDelivery = false } = {}) {
     return { rows: [] };
   };
   const client = { query, release() {} };
-  const loaded = load(['withTransaction'], ['publishQuestion'], {
+  const loaded = load({
     pool: { connect: async () => client, query },
     emitQuestions: async () => { deliveries++; trace.push('delivery'); if (failDelivery && deliveries === 1) throw new Error('synthetic broadcast failure'); },
   });
@@ -88,7 +90,7 @@ for (const settings of [{ beforeSnapshotId: 3 }, { afterSnapshotId: 2 }]) {
       if (/UPDATE discussions/.test(sql)) writes++;
       return { rows: [] };
     };
-    const hook = load(['withTransaction'], ['setDisplaySettings'], { pool: { query, connect: async () => ({ query, release() {} }) } });
+    const hook = load({ pool: { query, connect: async () => ({ query, release() {} }) } });
     await hook.handlers.setDisplaySettings('synthetic-room', settings, 'token');
     assert.equal(writes, 0);
     assert.ok(hook.emitted.some(([event]) => event === 'error'));
@@ -104,7 +106,7 @@ test('valid partial display pairs and explicit null values remain accepted', asy
       if (/UPDATE discussions/.test(sql)) writes++;
       return { rows: [] };
     };
-    const hook = load(['withTransaction'], ['setDisplaySettings'], { pool: { query, connect: async () => ({ query, release() {} }) } });
+    const hook = load({ pool: { query, connect: async () => ({ query, release() {} }) } });
     await hook.handlers.setDisplaySettings('synthetic-room', settings, 'token');
     assert.equal(writes, 1);
   }
@@ -147,11 +149,12 @@ function revelation({ failReveal = false, failCapture = false } = {}) {
     } };
   };
   const pool = { connect: async () => client(), query: (...args) => client().query(...args) };
-  const hook = load(['withTransaction', 'saveOpinionSnapshot', 'saveSnapshotBeforeReveal'], ['setResultsRevealed'], {
-    pool, snapshotNameBeforeReveal: () => 'Synthetic before',
+  const snapshots = createSnapshotStore(pool);
+  const hook = load({
+    pool, saveSnapshotBeforeReveal: snapshots.saveSnapshotBeforeReveal,
     audience: () => ({ emit: name => { events.push(name); trace.push(name); } }),
   });
-  return { ...hook, shared, events, trace,
+  return { ...hook, shared, events, trace, snapshots,
     retry() { failReveal = false; value = '4.5'; },
   };
 }
@@ -178,16 +181,29 @@ test('capture failure rolls back to its savepoint while preserving the reveal-on
 });
 
 test('moderator resends are discarded after leaving or revisiting a room', async () => {
-  let guard;
-  const socket = { data: { topic: 'synthetic-A', discussionVisit: 1 } };
-  const hook = load(['resendQuestionsIfPersonalized'], [], { emitQuestions: async (_slug, _socket, current) => { guard = current; }, getResultsAccess: async () => ({ alwaysShow: true }) });
-  await hook.context.resendQuestionsIfPersonalized(socket, { moderatorChanged: true });
-  assert.equal(typeof guard, 'function');
-  assert.equal(guard(), true);
-  socket.data.topic = 'synthetic-B'; socket.data.discussionVisit = 2;
-  assert.equal(guard(), false);
-  socket.data.topic = 'synthetic-A'; socket.data.discussionVisit = 3;
-  assert.equal(guard(), false);
+  const loads = [];
+  const { resendQuestionsIfPersonalized } = createRoomBroadcasts({
+    io: {}, getDiscussionState: async () => null, getDiscussionBySlug: async () => null,
+    getQuestions: () => new Promise(resolve => { loads.push(() => resolve([])); }),
+    getResultsAccess: async () => ({ alwaysShow: true, isModerator: () => false }),
+  });
+  const sent = [];
+  const socket = { data: {}, emit: (...args) => sent.push(args) };
+  // Resend from the first visit to synthetic-A, moving the socket while the
+  // questions load.
+  async function resend(...moves) {
+    socket.data.topic = 'synthetic-A'; socket.data.discussionVisit = 1;
+    const pending = resendQuestionsIfPersonalized(socket);
+    for (const [topic, visit] of moves) { socket.data.topic = topic; socket.data.discussionVisit = visit; }
+    loads.shift()();
+    await pending;
+  }
+  await resend();
+  assert.equal(sent.length, 1, 'a socket still on its visit receives the resend');
+  await resend(['synthetic-B', 2]);
+  assert.equal(sent.length, 1, 'leaving the room discards the resend');
+  await resend(['synthetic-B', 2], ['synthetic-A', 3]);
+  assert.equal(sent.length, 1, 'revisiting the room discards the resend');
 });
 
 test('manual saves preserve historical snapshot payloads while new snapshots use the new bins', async () => {
@@ -195,7 +211,7 @@ test('manual saves preserve historical snapshot payloads while new snapshots use
   const historical = { id: 41, data: { questions: [{ type: 'Numerical', distribution: [{ min: 0, max: 1, count: 1 }] }] } };
   hook.shared.snapshots.push(historical);
   const before = JSON.stringify(historical);
-  const saved = await hook.context.saveOpinionSnapshot(1, 'Synthetic manual');
+  const saved = await hook.snapshots.saveOpinionSnapshot(1, 'Synthetic manual');
   assert.equal(saved.snapshot.data.questions[0].distribution.length, 6);
   assert.equal(JSON.stringify(hook.shared.snapshots[0]), before);
   assert.ok(hook.trace.includes('BEGIN ISOLATION LEVEL REPEATABLE READ'));
