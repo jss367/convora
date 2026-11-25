@@ -7,4 +7,9 @@ function logError(context, error) {
   console.error(context, { code });
 }
 
-module.exports = { logError };
+// Routine operational messages, such as requests, connections and startup.
+function logInfo(...args) {
+  console.log(...args);
+}
+
+module.exports = { logError, logInfo };

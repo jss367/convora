@@ -21,7 +21,7 @@ import { slugifyTopic } from './slugs';
 // not as a participant, so it is never counted and cannot vote, and it never
 // reads this browser's participant identity or moderator token. The server
 // decides what it may see: with results shown after voting, tallied questions
-// arrive with only their response count (see displayView in server.js).
+// arrive with only their response count (see displayView in question-views.js).
 
 const THEME_KEYS = ['indigo', 'orange', 'emerald', 'rose', 'slate'];
 const TALLIED_TYPES = [QuestionTypes.AGREEMENT, QuestionTypes.YES_NO, QuestionTypes.MULTIPLE_CHOICE, QuestionTypes.NUMERICAL];
