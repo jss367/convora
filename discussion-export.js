@@ -13,14 +13,17 @@ function escapeCsv(value) {
   }
   const stringValue = Array.isArray(value) ? JSON.stringify(value)
     : value instanceof Date ? value.toISOString() : String(value);
-  // Neutralize text a spreadsheet would run as a formula. A number is not one,
-  // and quoting it would turn a negative answer into text.
-  const neutralizedValue = typeof value !== 'number' && /^[=+\-@]/.test(stringValue) ? `'${stringValue}` : stringValue;
+  // Neutralize text a spreadsheet would run as a formula, including text that
+  // starts with a tab or line break before one. A number is not a formula, and
+  // quoting it would turn a negative answer into text.
+  const neutralizedValue = typeof value !== 'number' && /^[=+\-@\t\r\n]/.test(stringValue) ? `'${stringValue}` : stringValue;
   return `"${neutralizedValue.replace(/"/g, '""')}"`;
 }
 
 // Stands in for the responses of a question whose results the person exporting
 // may not see yet, so the row is not mistaken for a question with no responses.
+const TEXT_VALUE_TYPES = new Set(['Multiple Choice', 'Open Ended', 'Brainstorm']);
+
 const RESULTS_HIDDEN_NOTE = '(results hidden until you vote)';
 
 // The CSV of the responses in `questions`, one row per response and one row
@@ -61,7 +64,9 @@ function responsesCsv(discussion, questions) {
       question.created_at,
       vote.id,
       vote.pseudonym || 'Anonymous',
-      question.type === 'Multiple Choice' ? vote.value : parseStoredVoteValue(vote.value),
+      // Written answers are exported as typed. Parsing them as JSON would turn
+      // an answer like "null" into an empty cell.
+      TEXT_VALUE_TYPES.has(question.type) ? vote.value : parseStoredVoteValue(vote.value),
       vote.created_at,
     ]);
   });

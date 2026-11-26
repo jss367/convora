@@ -94,6 +94,7 @@ function createResponseInteractions({ pool, withTransaction }) {
          JOIN questions q ON v.question_id = q.id
          JOIN discussions d ON q.discussion_id = d.id
          WHERE v.id = $1 AND d.slug = $2 AND NOT d.locked
+           AND q.type IN ('Open Ended', 'Brainstorm')
            AND (NOT q.independent_answers OR q.results_revealed)
            AND d.reactions_enabled AND d.reactions_visible FOR SHARE OF d, q`,
         [responseId, slug]
@@ -311,7 +312,13 @@ function registerResponseInteractions(socket, {
         reply({ added: false });
         return;
       }
-      await emitQuestions(discussionSlug);
+      // The comment is saved. A failed broadcast must not report it as not
+      // added, or the client retries and stores a second copy.
+      try {
+        await emitQuestions(discussionSlug);
+      } catch (error) {
+        logError('Error broadcasting questions after comment:', error);
+      }
       reply({ added: true });
     } catch (error) {
       logError('Error adding response comment:', error);

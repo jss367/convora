@@ -48,7 +48,11 @@ function registerDiscussionSettings(socket, {
       const changed = await withTransaction(async client => {
         const current = await client.query(`SELECT display_before_snapshot_id, display_after_snapshot_id, display_hidden_question_ids,
                                                   display_layout, display_question_id FROM discussions WHERE id = $1 FOR UPDATE`, [discussionId]);
-        if (!current.rows.length) return false;
+        if (!current.rows.length) {
+          // The discussion was deleted after the moderator check.
+          refuse('Discussion not found.');
+          return false;
+        }
         const effectiveBefore = beforeSnapshotId === undefined ? current.rows[0].display_before_snapshot_id : beforeSnapshotId;
         const effectiveAfter = afterSnapshotId === undefined ? current.rows[0].display_after_snapshot_id : afterSnapshotId;
         if ((beforeSnapshotId !== undefined || afterSnapshotId !== undefined)

@@ -140,10 +140,12 @@ their count and tokens are hidden; the Most Interesting sort always uses upvotes
    npm run build
    ```
 
-3. Start the server, pointing it at your local database (without `DATABASE_URL`
-   it connects to the Docker database from Option A):
+3. Point the server at your local database and start it. Without `DATABASE_URL`
+   the server connects to the Docker database from Option A, so export it in
+   the shell you start and restart the server from:
    ```
-   DATABASE_URL=postgresql://localhost:5432/convora node server.js
+   export DATABASE_URL=postgresql://localhost:5432/convora
+   node server.js
    ```
 
 4. Access the application at `http://localhost:3001`
@@ -156,17 +158,15 @@ their count and tokens are hidden; the Most Interesting sort always uses upvotes
    ```
    npm run build
    ```
-3. Restart the server:
-   ```
-   NODE_ENV=development node server.js
-   ```
+3. Restart the server the way you started it: `npm run dev:server:docker` for
+   the Docker database, or `node server.js` from the shell where you exported
+   `DATABASE_URL` for a local database.
 
 ### Backend Changes
 1. Make your changes in the server code
-2. Restart the server:
-   ```
-   NODE_ENV=development node server.js
-   ```
+2. Restart the server the way you started it: `npm run dev:server:docker` for
+   the Docker database, or `node server.js` from the shell where you exported
+   `DATABASE_URL` for a local database.
 
 ## Databases
 

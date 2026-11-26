@@ -7,6 +7,20 @@ function lockPollVote(client, questionId, userId) {
   return client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`poll_vote:${questionId}:${userId}`]);
 }
 
+// Lock the question's discussion row FOR SHARE and report whether voting is
+// closed. Locking the discussion makes a moderator's lock (an UPDATE of that
+// row) wait for this write, and makes a write that arrives during the lock
+// wait and then see it. It runs before the question row is locked, matching
+// the discussion-then-question order the moderator handlers use.
+async function discussionLockedForQuestion(client, questionId) {
+  const { rows: [room] } = await client.query(
+    `SELECT d.locked FROM discussions d JOIN questions q ON q.discussion_id = d.id
+      WHERE q.id = $1 FOR SHARE OF d`,
+    [questionId]
+  );
+  return room ? room.locked : null;
+}
+
 function createVoteStore(pool) {
   async function inTransaction(work) {
     const client = await pool.connect();
@@ -34,6 +48,7 @@ function createVoteStore(pool) {
   // cannot delete itself.
   function addVote(questionId, vote, userId, pseudonym) {
     return inTransaction(async client => {
+      if (await discussionLockedForQuestion(client, questionId)) return { added: false, reason: 'locked' };
       // FOR SHARE holds off a moderator's edit (editQuestion locks the row FOR
       // UPDATE) until this vote is stored, and makes a vote that arrives during
       // an edit wait and then read the edited row. Either way the vote is
@@ -115,12 +130,14 @@ function createVoteStore(pool) {
   // responses removed one at a time by id, never through this.
   function clearVote(questionId, userId) {
     return inTransaction(async client => {
+      if (await discussionLockedForQuestion(client, questionId)) return { cleared: false, reason: 'locked' };
       const typeResult = await client.query('SELECT id, type, max_responses FROM questions WHERE id = $1', [questionId]);
       const question = typeResult.rows[0];
       if (!question) throw new Error('Question not found');
-      if (['Open Ended', 'Brainstorm'].includes(question.type)) return;
+      if (['Open Ended', 'Brainstorm'].includes(question.type)) return { cleared: false };
       await lockPollVote(client, question.id, userId);
       await client.query('DELETE FROM votes WHERE question_id = $1 AND user_id = $2', [question.id, userId]);
+      return { cleared: true };
     });
   }
 
