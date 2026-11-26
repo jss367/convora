@@ -41,6 +41,10 @@ test('creator access follows a linked account across browsers while guests retai
     await expect(original.getByText("You're the moderator")).toBeVisible();
     expect(await original.evaluate(() => localStorage.getItem('convora_admin_' + location.pathname.split('/').pop()))).toBeNull();
     const second = await laptop.newPage();
+    // This browser never opened either discussion; the account supplies them.
+    await second.goto('/');
+    await expect(second.getByRole('heading', { name: topic, exact: true })).toBeVisible();
+    await expect(second.getByRole('heading', { name: newTitle, exact: true })).toBeVisible();
     await second.goto('/account');
     await expect(second.getByRole('link', { name: newTitle, exact: true })).toBeVisible();
     await second.getByRole('link', { name: topic, exact: true }).click();
