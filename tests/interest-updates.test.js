@@ -76,6 +76,22 @@ test('the recovery event rejects invalid inputs before reading and scopes unknow
   assert.equal(ack.error, 'not_found');
 });
 
+test('a failed discussion refresh still broadcasts the added question and acknowledges it', async () => {
+  const registered = {}, errors = [], broadcasts = [];
+  const socket = { data: { userId: 'fictional-participant' }, on: (name, fn) => { registered[name] = fn; }, emit() {} };
+  registerPostingAndVoting(socket, {
+    addQuestion: async () => ({}),
+    emitDiscussion: async () => { throw new Error('synthetic discussion refresh failure'); },
+    emitQuestions: async slug => { broadcasts.push(slug); },
+    logError: (...args) => errors.push(args),
+  });
+  let ack;
+  await registered.addQuestion('room', { text: 'Fictional question?', type: 'Open Ended' }, true, undefined, result => { ack = result; });
+  assert.equal(broadcasts.length, 1, 'the question broadcast must still run');
+  assert.deepEqual(ack, { added: true });
+  assert.equal(errors.length, 1);
+});
+
 test('recovery database errors are acknowledged without inventing an interest state', async () => {
   const { registered, errors } = handlers({
     updates: createInterestUpdates(), userId: 'fictional-participant', write: async () => true,

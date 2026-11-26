@@ -47,11 +47,14 @@ function registerPostingAndVoting(socket, {
       }
       // The question is saved. A failed broadcast must not report it as not
       // added, or the composer keeps the draft and a forced retry saves a copy.
-      try {
-        await emitDiscussion(discussionSlug);
-        await emitQuestions(discussionSlug);
-      } catch (error) {
-        logError('Error broadcasting added question:', error);
+      // Each broadcast is attempted on its own, so a failed discussion refresh
+      // does not keep the new question from reaching viewers.
+      for (const broadcast of [emitDiscussion, emitQuestions]) {
+        try {
+          await broadcast(discussionSlug);
+        } catch (error) {
+          logError('Error broadcasting added question:', error);
+        }
       }
       reply(added.participant_suggested ? { added: true, suggested: true, queued: true } : { added: true });
     } catch (error) {
