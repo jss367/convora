@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
+import { accountRequest, getAccount } from './account';
 import { getKnownDiscussions, reconcileKnownDiscussions, rememberDiscussion } from './knownDiscussions';
 import { moderatorLinkPromptState } from './ModeratorLinkPanel';
 
@@ -7,6 +8,8 @@ const HomePage = () => {
     // Discussions are unlisted, so this is only what this browser created or
     // opened (see knownDiscussions.js), never a server-wide list.
     const [discussions, setDiscussions] = useState(getKnownDiscussions);
+    // Discussions linked to the signed-in Google account, from any browser.
+    const [accountDiscussions, setAccountDiscussions] = useState([]);
     const [newDiscussion, setNewDiscussion] = useState('');
     // Discussions their moderators chose to list; null until loaded.
     const [publicDiscussions, setPublicDiscussions] = useState(null);
@@ -42,6 +45,17 @@ const HomePage = () => {
         return () => {
             cancelled = true;
         };
+    }, []);
+
+    useEffect(() => {
+        let cancelled = false;
+        // Signed out, or Google sign-in disabled: show only what this browser
+        // remembers.
+        getAccount()
+            .then(info => (info.signedIn ? accountRequest('/discussions') : []))
+            .then(found => { if (!cancelled && Array.isArray(found)) setAccountDiscussions(found); })
+            .catch(error => console.error('Error fetching account discussions:', error));
+        return () => { cancelled = true; };
     }, []);
 
     useEffect(() => {
@@ -101,8 +115,15 @@ const HomePage = () => {
     };
 
     // Entries seeded from a stored moderator token have no title until the
-    // server confirms them.
-    const namedDiscussions = discussions.filter(discussion => discussion.topic);
+    // server confirms them. This browser's discussions come first, most
+    // recently opened first, followed by the account's other discussions,
+    // newest first.
+    const browserDiscussions = discussions.filter(discussion => discussion.topic);
+    const browserSlugs = new Set(discussions.map(discussion => discussion.slug));
+    const namedDiscussions = [
+        ...browserDiscussions,
+        ...accountDiscussions.filter(discussion => discussion.topic && !browserSlugs.has(discussion.slug)),
+    ];
 
     const renderDiscussionLinks = list => (
         <div className="grid gap-6">

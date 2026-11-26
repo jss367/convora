@@ -15,7 +15,8 @@ When Google sign-in is enabled, open **My discussions** and sign in with Google.
 On each browser where you already moderate, choose **Link my discussions** to
 add discussions whose creator links you hold. You can then open them on another
 device by signing in with the same Google account. Discussions you create or
-duplicate while signed in appear automatically.
+duplicate while signed in appear automatically. While you're signed in, the
+home page's **Your Discussions** list includes them too.
 
 You can still create, join, and moderate discussions without signing in. Save
 the private moderator link if you want to moderate a guest-created discussion
@@ -130,9 +131,10 @@ Turn it off to take a discussion off the list; its link keeps working either way
 duplicated discussion starts unlisted.
 
 The home page shows **Your Discussions**: the ones this browser created or
-opened, remembered in the browser's local storage. Clearing site data or using
-another browser or device empties that list; the discussions themselves are
-unaffected and still open from their links.
+opened, remembered in the browser's local storage, plus the ones linked to your
+Google account when you're signed in. Clearing site data or using another
+browser or device empties the browser's part of that list; the discussions
+themselves are unaffected and still open from their links.
 
 Unlisted is not private: links are derived from the discussion title, and anyone
 who has or guesses a link can read and take part.

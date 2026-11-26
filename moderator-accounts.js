@@ -75,7 +75,7 @@ function registerModeratorAccounts(app, pool, {
 
   app.get('/api/account/discussions', async (req, res) => {
     const { rows } = await pool.query(
-      'SELECT slug, topic FROM discussions WHERE creator_google_sub = $1 ORDER BY created_at DESC, id DESC',
+      'SELECT slug, topic, created_at FROM discussions WHERE creator_google_sub = $1 ORDER BY created_at DESC, id DESC',
       [req.googleSubject]);
     res.json(rows);
   });
