@@ -45,8 +45,17 @@ function registerPostingAndVoting(socket, {
         reply({ added: false, reason: added.reason });
         return;
       }
-      await emitDiscussion(discussionSlug);
-      await emitQuestions(discussionSlug);
+      // The question is saved. A failed broadcast must not report it as not
+      // added, or the composer keeps the draft and a forced retry saves a copy.
+      // Each broadcast is attempted on its own, so a failed discussion refresh
+      // does not keep the new question from reaching viewers.
+      for (const broadcast of [emitDiscussion, emitQuestions]) {
+        try {
+          await broadcast(discussionSlug);
+        } catch (error) {
+          logError('Error broadcasting added question:', error);
+        }
+      }
       reply(added.participant_suggested ? { added: true, suggested: true, queued: true } : { added: true });
     } catch (error) {
       logError('Error adding question:', error);
@@ -110,6 +119,12 @@ function registerPostingAndVoting(socket, {
       // (possibly pre-reservation, colliding) local pick — see canonicalPseudonym.
       const handle = await canonicalPseudonym(discussionSlug, target.discussionId, userId, mode, pseudonym);
       const result = await addVote(questionId, vote, userId, handle);
+      if (result.reason === 'locked') {
+        // A moderator locked the discussion after the check above.
+        socket.emit('error', { message: 'Voting is closed for this discussion.' });
+        reply(false);
+        return;
+      }
       if (result.reason === 'invalid') {
         // The question was edited between the check above and the write, and
         // this vote no longer fits it.
@@ -155,7 +170,12 @@ function registerPostingAndVoting(socket, {
         reply(false);
         return;
       }
-      await clearVote(questionId, userId);
+      const cleared = await clearVote(questionId, userId);
+      if (cleared?.reason === 'locked') {
+        socket.emit('error', { message: 'Voting is closed for this discussion.' });
+        reply(false);
+        return;
+      }
       await emitQuestions(discussionSlug);
       reply(true);
     } catch (error) {

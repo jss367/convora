@@ -808,3 +808,33 @@ test('a Numerical vote may be a decimal and is stored to two places', async () =
     second.disconnect();
   }
 });
+
+for (const action of ['vote', 'clear']) {
+  test(`a ${action === 'vote' ? 'vote' : 'cleared vote'} that waits for a moderator's lock is refused once the lock commits`, async () => {
+    const created = await jsonRequest('POST', '/api/discussions', { topic: uniqueTopic(`lock-race-${action}`) });
+    const inserted = await pool.query(
+      'INSERT INTO questions (discussion_id, text, type) VALUES ($1, $2, $3) RETURNING id',
+      [created.body.id, 'Closing soon', 'Yes/No']
+    );
+    const questionId = inserted.rows[0].id;
+    const store = createVoteStore(pool);
+    if (action === 'clear') assert.deepEqual(await store.addVote(questionId, 'Yes', 'racer', null), { added: true });
+    const locker = await pool.connect();
+    let pending;
+    try {
+      // The moderator's lock holds the discussion row while the write arrives.
+      await locker.query('BEGIN');
+      await locker.query('UPDATE discussions SET locked = TRUE WHERE id = $1', [created.body.id]);
+      pending = action === 'vote' ? store.addVote(questionId, 'No', 'racer', null) : store.clearVote(questionId, 'racer');
+      await waitForQuestionLockWait();
+      await locker.query('COMMIT');
+      assert.equal((await pending).reason, 'locked');
+      const values = (await storedVotes(questionId)).map(vote => vote.value ?? vote);
+      assert.equal(values.length, action === 'vote' ? 0 : 1);
+    } finally {
+      await locker.query('ROLLBACK').catch(() => {});
+      locker.release();
+      await Promise.allSettled([pending]);
+    }
+  });
+}

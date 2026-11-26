@@ -91,47 +91,43 @@ function registerDiscussionApi(app, {
       return res.status(403).json({ error: 'Only the creator can delete this discussion.' });
     }
     const slug = slugifyTopic(req.params.topic);
-    let client;
     try {
-      client = await pool.connect();
-      await client.query('BEGIN');
-      // Deletion reserves several related routes. Exclude lifecycle writers
-      // before taking any slug/row lock so aliases cannot invert their order.
-      await client.query("SELECT pg_advisory_xact_lock(hashtext('discussion_routes'))");
-      await lockDiscussionSlug(client, slug);
-      const result = await client.query(
-        'SELECT id, topic FROM discussions WHERE slug = $1 AND admin_token = $2 FOR UPDATE',
-        [slug, token]
-      );
-      if (!result.rows.length) {
-        await client.query('ROLLBACK');
+      const deleted = await withTransaction(async client => {
+        // Deletion reserves several related routes. Exclude lifecycle writers
+        // before taking any slug/row lock so aliases cannot invert their order.
+        await client.query("SELECT pg_advisory_xact_lock(hashtext('discussion_routes'))");
+        await lockDiscussionSlug(client, slug);
+        const result = await client.query(
+          'SELECT id, topic FROM discussions WHERE slug = $1 AND admin_token = $2 FOR UPDATE',
+          [slug, token]
+        );
+        if (!result.rows.length) return false;
+        const id = result.rows[0].id;
+        const title = result.rows[0].topic;
+        const alias = slugifyTopic(title);
+        await lockDiscussionSlug(client, alias);
+        const otherOwner = await client.query('SELECT id FROM discussions WHERE slug = $1 AND id <> $2', [alias, id]);
+        if (!otherOwner.rows.length) {
+          await client.query('INSERT INTO deleted_discussion_slugs (slug) VALUES ($1) ON CONFLICT DO NOTHING', [alias]);
+        }
+        await client.query('INSERT INTO deleted_discussion_aliases (topic) VALUES ($1) ON CONFLICT DO NOTHING', [title]);
+        await client.query('SELECT id FROM questions WHERE discussion_id = $1 ORDER BY id FOR UPDATE', [id]);
+        await client.query('DELETE FROM votes WHERE question_id IN (SELECT id FROM questions WHERE discussion_id = $1)', [id]);
+        await client.query('DELETE FROM questions WHERE discussion_id = $1', [id]);
+        await client.query('INSERT INTO deleted_discussion_slugs (slug) VALUES ($1) ON CONFLICT DO NOTHING', [slug]);
+        await client.query('DELETE FROM discussions WHERE id = $1', [id]);
+        return true;
+      });
+      if (!deleted) {
         return res.status(403).json({ error: 'Only the creator can delete this discussion.' });
       }
-      const id = result.rows[0].id;
-      const title = result.rows[0].topic;
-      const alias = slugifyTopic(title);
-      await lockDiscussionSlug(client, alias);
-      const otherOwner = await client.query('SELECT id FROM discussions WHERE slug = $1 AND id <> $2', [alias, id]);
-      if (!otherOwner.rows.length) {
-        await client.query('INSERT INTO deleted_discussion_slugs (slug) VALUES ($1) ON CONFLICT DO NOTHING', [alias]);
-      }
-      await client.query('INSERT INTO deleted_discussion_aliases (topic) VALUES ($1) ON CONFLICT DO NOTHING', [title]);
-      await client.query('SELECT id FROM questions WHERE discussion_id = $1 ORDER BY id FOR UPDATE', [id]);
-      await client.query('DELETE FROM votes WHERE question_id IN (SELECT id FROM questions WHERE discussion_id = $1)', [id]);
-      await client.query('DELETE FROM questions WHERE discussion_id = $1', [id]);
-      await client.query('INSERT INTO deleted_discussion_slugs (slug) VALUES ($1) ON CONFLICT DO NOTHING', [slug]);
-      await client.query('DELETE FROM discussions WHERE id = $1', [id]);
-      await client.query('COMMIT');
       audience(slug).emit('discussionDeleted', { slug });
       emitDiscussion.broadcastValue(slug, null);
       audience(slug).emit('questions', []);
       res.json({ deleted: true });
     } catch (error) {
-      if (client) await client.query('ROLLBACK');
       logError('Error deleting discussion:', error);
       res.status(500).json({ error: 'Could not delete the discussion. Please try again.' });
-    } finally {
-      if (client) client.release();
     }
   });
 

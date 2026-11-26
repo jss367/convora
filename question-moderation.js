@@ -19,24 +19,30 @@ function registerQuestionModeration(socket, {
     // SHARE while it is stored (see addVote), so one that arrives during the
     // delete waits and then finds no question, instead of landing between
     // the two deletes and leaving the question behind with its votes gone.
-    await withTransaction(async client => {
+    //
+    // Removing the spotlighted question also restores the underlying layout.
+    // That runs in the same transaction, so a failed broadcast cannot leave the
+    // display pointing at a deleted question. It runs first, so the discussion
+    // row is locked before the question row, the order votes lock them in.
+    const spotlightCleared = await withTransaction(async client => {
+      const cleared = await client.query(
+        `UPDATE discussions SET display_question_id = NULL,
+            display_layout = CASE WHEN display_layout = 'spotlight' THEN 'all' ELSE display_layout END
+          WHERE id = $1 AND display_question_id = $2`,
+        [discussionId, questionId]
+      );
       const target = await client.query(
         'SELECT id FROM questions WHERE id = $1 AND discussion_id = $2 FOR UPDATE',
         [questionId, discussionId]
       );
-      if (!target.rows.length) return;
-      await client.query('DELETE FROM votes WHERE question_id = $1', [target.rows[0].id]);
-      await client.query('DELETE FROM questions WHERE id = $1', [target.rows[0].id]);
+      if (target.rows.length) {
+        await client.query('DELETE FROM votes WHERE question_id = $1', [target.rows[0].id]);
+        await client.query('DELETE FROM questions WHERE id = $1', [target.rows[0].id]);
+      }
+      return cleared.rowCount > 0;
     });
     await emitQuestions(discussionSlug);
-    // Removing the spotlighted question also restores the underlying layout.
-    const cleared = await pool.query(
-      `UPDATE discussions SET display_question_id = NULL,
-          display_layout = CASE WHEN display_layout = 'spotlight' THEN 'all' ELSE display_layout END
-        WHERE id = $1 AND display_question_id = $2`,
-      [discussionId, questionId]
-    );
-    if (cleared.rowCount > 0) await emitDiscussionState(discussionSlug);
+    if (spotlightCleared) await emitDiscussionState(discussionSlug);
   }));
 
   // Moderator-only: show one question's results to everyone now, voted or not,

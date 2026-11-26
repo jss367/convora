@@ -126,7 +126,7 @@ io.on('connection', (socket) => {
     pool, withTransaction, verifyAdmin, toggleResponseVote, getResponseContext, getMyBrainstormState,
     canonicalPseudonym, emitQuestions, logError,
   });
-  registerPseudonyms(socket, { pool, assignPseudonym, emitPseudonymSync, emitQuestions, logError });
+  registerPseudonyms(socket, { withTransaction, assignPseudonym, emitPseudonymSync, emitQuestions, logError });
 });
 
 // HTTP routes

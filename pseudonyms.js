@@ -239,7 +239,7 @@ function createPseudonyms(pool) {
   return { canonicalPseudonym, assignPseudonym };
 }
 
-function registerPseudonyms(socket, { pool, assignPseudonym, emitPseudonymSync, emitQuestions, logError }) {
+function registerPseudonyms(socket, { withTransaction, assignPseudonym, emitPseudonymSync, emitQuestions, logError }) {
   // Hand the client a display handle that's guaranteed unique within this
   // discussion. The client proposes its locally-generated name; the server keeps
   // it if free and substitutes a different one if it's already taken, so two
@@ -299,28 +299,33 @@ function registerPseudonyms(socket, { pool, assignPseudonym, emitPseudonymSync, 
     try {
       if (!topic || !userId) return;
       const pseudonym = sanitizePseudonym(displayName);
-      await pool.query(
-        `UPDATE votes SET pseudonym = $1
-         WHERE user_id = $2
-           AND question_id IN (
-             SELECT id FROM questions
-             WHERE discussion_id = (SELECT id FROM discussions WHERE slug = $3)
-           )`,
-        [pseudonym, userId, discussionSlug]
-      );
-      // Brainstorm comments persist their author's name separately, so rename /
-      // anonymize must reach them too — otherwise old comments keep showing the
-      // previous name after a privacy action.
-      await pool.query(
-        `UPDATE response_comments SET pseudonym = $1
-         WHERE user_id = $2
-           AND response_id IN (
-             SELECT v.id FROM votes v
-             JOIN questions q ON v.question_id = q.id
-             WHERE q.discussion_id = (SELECT id FROM discussions WHERE slug = $3)
-           )`,
-        [pseudonym, userId, discussionSlug]
-      );
+      // Both renames commit together, so a failure cannot leave the old name on
+      // comments after the responses changed. Locking the discussion row FOR
+      // UPDATE first waits for votes and comments being stored right now (they
+      // hold it FOR SHARE), so their rows exist when the rename runs.
+      await withTransaction(async client => {
+        const { rows: [room] } = await client.query('SELECT id FROM discussions WHERE slug = $1 FOR UPDATE', [discussionSlug]);
+        if (!room) return;
+        await client.query(
+          `UPDATE votes SET pseudonym = $1
+           WHERE user_id = $2
+             AND question_id IN (SELECT id FROM questions WHERE discussion_id = $3)`,
+          [pseudonym, userId, room.id]
+        );
+        // Brainstorm comments persist their author's name separately, so rename /
+        // anonymize must reach them too — otherwise old comments keep showing the
+        // previous name after a privacy action.
+        await client.query(
+          `UPDATE response_comments SET pseudonym = $1
+           WHERE user_id = $2
+             AND response_id IN (
+               SELECT v.id FROM votes v
+               JOIN questions q ON v.question_id = q.id
+               WHERE q.discussion_id = $3
+             )`,
+          [pseudonym, userId, room.id]
+        );
+      });
       await emitQuestions(discussionSlug);
     } catch (error) {
       logError('Error updating display name:', error);

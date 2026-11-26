@@ -199,7 +199,7 @@ test('moderator resends are discarded after leaving or revisiting a room', async
     await pending;
   }
   await resend();
-  assert.equal(sent.length, 1, 'a socket still on its visit receives the resend');
+  assert.deepEqual(sent, [['questions', []]], 'a socket still on its visit receives the resend');
   await resend(['synthetic-B', 2]);
   assert.equal(sent.length, 1, 'leaving the room discards the resend');
   await resend(['synthetic-B', 2], ['synthetic-A', 3]);
